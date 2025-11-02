@@ -314,42 +314,86 @@ export function resolveTsInheritance(sourceFile: SourceFile, fileNode: AstNode, 
 }
 
 /**
+ * Helper function to find a ts-morph function-like node by its location.
+ * Handles both direct function declarations and variable-assigned functions.
+ */
+function findFunctionNodeByLocation(sourceFile: SourceFile, functionNode: AstNode): Node | undefined {
+    const allFunctions = [
+        ...sourceFile.getFunctions(),
+        ...sourceFile.getDescendantsOfKind(SK.FunctionExpression),
+        ...sourceFile.getDescendantsOfKind(SK.ArrowFunction),
+        ...sourceFile.getDescendantsOfKind(SK.MethodDeclaration)
+    ];
+
+    // First try to find by exact function location
+    let found = allFunctions.find(fn =>
+        fn.getStartLineNumber() === functionNode.startLine &&
+        fn.getStart() - fn.getStartLinePos() === functionNode.startColumn
+    );
+
+    if (found) return found;
+
+    // For arrow functions/function expressions assigned to variables,
+    // the AstNode location is from the VariableDeclaration, not the function itself.
+    // Try to find a variable declaration at this location with a function initializer.
+    const variableDecls = sourceFile.getDescendantsOfKind(SK.VariableDeclaration);
+    for (const varDecl of variableDecls) {
+        if (varDecl.getStartLineNumber() === functionNode.startLine &&
+            varDecl.getStart() - varDecl.getStartLinePos() === functionNode.startColumn) {
+            const initializer = varDecl.getInitializer();
+            if (initializer &&
+                (Node.isFunctionExpression(initializer) ||
+                 Node.isArrowFunction(initializer))) {
+                return initializer;
+            }
+        }
+    }
+
+    return undefined;
+}
+
+/**
+ * Helper function to get the body from any function-like node.
+ */
+function getFunctionBody(node: Node): Node | undefined {
+    if (Node.isFunctionDeclaration(node) ||
+        Node.isFunctionExpression(node) ||
+        Node.isArrowFunction(node) ||
+        Node.isMethodDeclaration(node)) {
+        return node.getBody();
+    }
+    return undefined;
+}
+
+/**
  * Resolves cross-file CALLS and MUTATES_STATE relationships for TS/JS.
+ * Now processes ALL functions from nodeIndex, not just top-level declarations.
  */
 export function resolveTsCrossFileInteractions(sourceFile: SourceFile, fileNode: AstNode, context: ResolverContext): void {
-     const { logger, nodeIndex } = context; // Destructure only what's needed directly
+     const { logger, nodeIndex } = context;
 
-     const functions = sourceFile.getFunctions();
-     for (const funcDecl of functions) {
-         const body = funcDecl.getBody();
-         if (!body) continue;
-         const sourceTargetInfo = getTargetDeclarationInfo(funcDecl, fileNode.filePath, context.resolveImportPath, context.logger);
-         // --- DEBUG LOG ---
-         logger.debug(`[resolveTsCrossFileInteractions] Processing function: ${funcDecl.getName() ?? 'anonymous'}. Generated sourceTargetInfo: ${JSON.stringify(sourceTargetInfo)}`);
-         // --- END DEBUG LOG ---
-         const sourceNode = sourceTargetInfo ? nodeIndex.get(sourceTargetInfo.entityId) : undefined;
-         if (sourceNode) {
-             analyzeTsBodyInteractions(body, sourceNode, context);
-         } else {
-              logger.warn(`Could not find source node for function cross-file interaction analysis in ${fileNode.filePath} (EntityId: ${sourceTargetInfo?.entityId})`);
-         }
-     }
+     // Get ALL Function nodes from nodeIndex for this file (includes arrow functions, callbacks, etc.)
+     const allFunctionNodes = Array.from(nodeIndex.values())
+         .filter(node =>
+             node.kind === 'Function' &&
+             node.filePath === fileNode.filePath
+         );
 
-     const methods = sourceFile.getDescendantsOfKind(SK.MethodDeclaration);
-     for (const methodDecl of methods) {
-         const body = Node.isMethodDeclaration(methodDecl) ? methodDecl.getBody() : undefined;
-         if (!body) continue;
-         const sourceTargetInfo = getTargetDeclarationInfo(methodDecl, fileNode.filePath, context.resolveImportPath, context.logger);
-         // --- DEBUG LOG ---
-         // Use type guard before accessing getName
-         const methodName = Node.isMethodDeclaration(methodDecl) ? methodDecl.getName() : 'anonymous';
-         logger.debug(`[resolveTsCrossFileInteractions] Processing method: ${methodName}. Generated sourceTargetInfo: ${JSON.stringify(sourceTargetInfo)}`);
-         // --- END DEBUG LOG ---
-         const sourceNode = sourceTargetInfo ? nodeIndex.get(sourceTargetInfo.entityId) : undefined;
-         if (sourceNode) {
-             analyzeTsBodyInteractions(body, sourceNode, context);
+     logger.debug(`[resolveTsCrossFileInteractions] Processing ${allFunctionNodes.length} functions in ${fileNode.name}`);
+
+     for (const functionNode of allFunctionNodes) {
+         // Find corresponding ts-morph node by location
+         const tsMorphNode = findFunctionNodeByLocation(sourceFile, functionNode);
+
+         if (tsMorphNode) {
+             const body = getFunctionBody(tsMorphNode);
+             if (body) {
+                 analyzeTsBodyInteractions(body, functionNode, context);
+             } else {
+                 logger.debug(`[resolveTsCrossFileInteractions] No body found for function: ${functionNode.name}`);
+             }
          } else {
-              logger.warn(`Could not find source node for method cross-file interaction analysis in ${fileNode.filePath} (EntityId: ${sourceTargetInfo?.entityId})`);
+             logger.warn(`[resolveTsCrossFileInteractions] Could not find ts-morph node for function: ${functionNode.name} at ${functionNode.filePath}:${functionNode.startLine}:${functionNode.startColumn}`);
          }
      }
 }
