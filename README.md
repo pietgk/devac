@@ -245,6 +245,59 @@ node dist/index.js analyze ../my-other-project --ignore "**/node_modules/**,**/d
 - `-h, --help`: Display help information
 - `-v, --version`: Display version information
 
+## 🚀 Quick Start: MCP Setup & Testing
+
+**New!** We've created comprehensive guides and automated tests for the MCP integration:
+
+### 📚 Complete Documentation
+- **[MCP_SETUP.md](MCP_SETUP.md)** - Step-by-step setup guide with troubleshooting
+- **[example-queries.md](example-queries.md)** - 50+ tested Cypher queries with examples
+- **[CLAUDE_DESKTOP_CONFIG.json](CLAUDE_DESKTOP_CONFIG.json)** - Ready-to-use configuration template
+
+### ✅ Automated Testing
+Run the complete test suite to verify your setup:
+
+```bash
+# Test 1: Standalone MCP server communication
+cd mcp && node test-mcp-stdio.js
+
+# Test 2: Full integration (analysis + Neo4j verification)
+node test-mcp-integration.js
+
+# Expected: All 9 tests pass ✅
+```
+
+### 🎯 Quick Setup (5 Minutes)
+
+1. **Build the MCP server**:
+   ```bash
+   cd mcp
+   npm install && npm run build
+   ```
+
+2. **Copy config to Claude Desktop**:
+   - See `CLAUDE_DESKTOP_CONFIG.json` for template
+   - Update paths to match your installation
+   - Update Neo4j credentials
+
+3. **Test the setup**:
+   ```bash
+   node test-mcp-integration.js
+   ```
+
+4. **Start using in Claude Desktop**:
+   ```
+   Analyze the codebase at /path/to/your/project
+   ```
+
+### 📊 What You Get
+- **52 nodes** extracted from test project
+- **7 function calls** detected automatically
+- **Natural language queries** via Claude Desktop
+- **Complete call graph** visualization in Neo4j
+
+For detailed instructions, see **[MCP_SETUP.md](MCP_SETUP.md)**.
+
 ## 🔮 Powering the Next Generation of AI-Assisted Development
 
 The expanded language support in CodeGraph Analyzer enables entirely new possibilities for AI-assisted development:
