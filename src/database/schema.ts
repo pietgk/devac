@@ -9,6 +9,7 @@ const logger = createContextLogger("SchemaManager");
 export const NODE_LABELS = [
   "File",
   "Directory",
+  "Package",
   "Class",
   "Interface",
   "Function",

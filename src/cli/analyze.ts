@@ -110,13 +110,16 @@ export function registerAnalyzeCommand(program: Command): void {
         }
 
         // 3. Run Analysis
-        // Pass Neo4j config to AnalyzerService so it uses the same database
-        const analyzerService = new AnalyzerService({
-          uri: options.neo4jUrl,
-          username: options.neo4jUser,
-          password: options.neo4jPassword,
-          database: options.neo4jDatabase,
-        });
+        // Pass Neo4j config and workspace root to AnalyzerService
+        const analyzerService = new AnalyzerService(
+          {
+            uri: options.neo4jUrl,
+            username: options.neo4jUser,
+            password: options.neo4jPassword,
+            database: options.neo4jDatabase,
+          },
+          absoluteDirPath, // Pass as workspace root
+        );
         logger.info(`Starting analysis of directory: ${absoluteDirPath}`);
         // Use the simplified analyze method
         await analyzerService.analyze(absoluteDirPath);

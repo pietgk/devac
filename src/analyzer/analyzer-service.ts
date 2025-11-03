@@ -22,13 +22,16 @@ export class AnalyzerService {
   private storageManager: StorageManager;
   private neo4jClient: Neo4jClient;
 
-  constructor(neo4jConfigOverride?: {
-    uri?: string;
-    username?: string;
-    password?: string;
-    database?: string;
-  }) {
-    this.parser = new Parser();
+  constructor(
+    neo4jConfigOverride?: {
+      uri?: string;
+      username?: string;
+      password?: string;
+      database?: string;
+    },
+    workspaceRoot?: string,
+  ) {
+    this.parser = new Parser(workspaceRoot);
     // Instantiate Neo4jClient with optional overrides
     this.neo4jClient = new Neo4jClient(neo4jConfigOverride);
     // Pass the client instance to StorageManager
@@ -55,7 +58,11 @@ export class AnalyzerService {
         config.ignorePatterns,
       );
 
-      // 1. Scan Files
+      // 1. Initialize packages
+      logger.info("Initializing package detection...");
+      await this.parser.initializePackages();
+
+      // 2. Scan Files
       logger.info("Scanning files...");
       const files: FileInfo[] = await scanner.scan(); // No argument needed
       if (files.length === 0) {
@@ -64,7 +71,7 @@ export class AnalyzerService {
       }
       logger.info(`Found ${files.length} files.`);
 
-      // 2. Parse Files (Pass 1)
+      // 3. Parse Files (Pass 1)
       logger.info("Parsing files (Pass 1)...");
       await this.parser.parseFiles(files);
 
@@ -87,7 +94,11 @@ export class AnalyzerService {
       logger.info("Resolving relationships (Pass 2)...");
       const tsProject: Project = this.parser.getTsProject();
       const resolver = new RelationshipResolver(pass1Nodes, pass1Relationships);
-      const pass2Relationships = await resolver.resolveRelationships(tsProject);
+      const pass2Relationships = await resolver.resolveRelationships(
+        tsProject,
+        this.parser.getImportResolver(),
+        this.parser.getPackages(),
+      );
       logger.info(
         `Resolved ${pass2Relationships.length} relationships in Pass 2.`,
       );
