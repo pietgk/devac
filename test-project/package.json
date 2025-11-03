@@ -1,0 +1,12 @@
+{
+  "name": "test-calculator-project",
+  "version": "1.0.0",
+  "description": "Test project for CodeGraph MCP analysis",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "echo \"No tests configured\""
+  },
+  "keywords": ["calculator", "test", "codegraph"],
+  "author": "Test",
+  "license": "MIT"
+}
