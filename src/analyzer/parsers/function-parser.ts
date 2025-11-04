@@ -31,6 +31,7 @@ export function parseFunctions(context: ParserContext): void {
     sourceFile,
     fileNode,
     addNode,
+    addRelationship,
     generateId,
     generateEntityId,
     logger,
@@ -188,6 +189,21 @@ export function parseFunctions(context: ParserContext): void {
         createdAt: now,
       };
       addNode(functionNode);
+
+      // Create CONTAINS relationship: File CONTAINS Function
+      const containsRelEntityId = generateEntityId(
+        "contains",
+        `${fileNode.entityId}:${functionNode.entityId}`,
+      );
+      addRelationship({
+        id: generateId("contains", `${fileNode.id}:${functionNode.id}`),
+        entityId: containsRelEntityId,
+        type: "CONTAINS",
+        sourceId: fileNode.entityId,
+        targetId: functionNode.entityId,
+        properties: {},
+        createdAt: now,
+      });
 
       // Parse parameters for this function
       parseParameters(declaration, functionNode, context);
