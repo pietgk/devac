@@ -1,9 +1,24 @@
-import { InterfaceDeclaration, MethodSignature, PropertySignature, Node, ts } from 'ts-morph';
-import { AstNode, ParserContext } from '../types.js';
-import { getEndColumn, getVisibility, getJsDocText, getFunctionReturnType } from '../../utils/ts-helpers.js';
+import {
+  InterfaceDeclaration,
+  MethodSignature,
+  PropertySignature,
+  Node,
+  ts,
+} from "ts-morph";
+import { AstNode, ParserContext } from "../types.js";
+import {
+  getEndColumn,
+  getVisibility,
+  getJsDocText,
+  getFunctionReturnType,
+} from "../../utils/ts-helpers.js";
 // Assuming complexity calculation isn't typically done for interface methods
 // import { calculateCyclomaticComplexity } from '../analysis/complexity-analyzer.js';
-import { parseParameters } from './parameter-parser.js'; // For method parameters
+import { parseParameters } from "./parameter-parser.js"; // For method parameters
+import {
+  getParameterSignature,
+  getSignatureHint,
+} from "../../utils/signature-helpers.js";
 
 const { SyntaxKind } = ts;
 
@@ -13,106 +28,158 @@ const { SyntaxKind } = ts;
  * @param context - The parser context for the current file.
  */
 export function parseInterfaces(context: ParserContext): void {
-    const { sourceFile, fileNode, addNode, generateId, generateEntityId, logger, now } = context;
-    const interfaces = sourceFile.getInterfaces();
+  const {
+    sourceFile,
+    fileNode,
+    addNode,
+    generateId,
+    generateEntityId,
+    logger,
+    now,
+  } = context;
+  const interfaces = sourceFile.getInterfaces();
 
-    logger.debug(`Found ${interfaces.length} interfaces in ${fileNode.name}`);
+  logger.debug(`Found ${interfaces.length} interfaces in ${fileNode.name}`);
 
-    for (const declaration of interfaces) {
-        try {
-            const name = declaration.getName() || 'AnonymousInterface';
-            const qualifiedName = `${fileNode.filePath}:${name}`;
-            const entityId = generateEntityId('interface', qualifiedName);
-            const docs = getJsDocText(declaration);
+  for (const declaration of interfaces) {
+    try {
+      const name = declaration.getName() || "AnonymousInterface";
+      const startLine = declaration.getStartLineNumber();
+      const startColumn =
+        declaration.getStart() - declaration.getStartLinePos();
+      const entityId = generateEntityId(
+        "interface",
+        fileNode.filePath,
+        name,
+        startLine,
+        startColumn,
+      );
+      const docs = getJsDocText(declaration);
 
-            const interfaceNode: AstNode = {
-                id: generateId('interface', qualifiedName),
-                entityId,
-                kind: 'Interface',
-                name,
-                filePath: fileNode.filePath,
-                language: 'TypeScript', // Add language property
-                startLine: declaration.getStartLineNumber(),
-                endLine: declaration.getEndLineNumber(),
-                startColumn: declaration.getStart() - declaration.getStartLinePos(),
-                endColumn: getEndColumn(declaration),
-                loc: declaration.getEndLineNumber() - declaration.getStartLineNumber() + 1,
-                isExported: declaration.isExported(),
-                documentation: docs || undefined,
-                docComment: docs,
-                // memberProperties will be populated if parseInterfaceProperties is called
-                createdAt: now,
-            };
-            addNode(interfaceNode);
+      const interfaceNode: AstNode = {
+        id: generateId("interface", qualifiedName),
+        entityId,
+        kind: "Interface",
+        name,
+        filePath: fileNode.filePath,
+        language: "TypeScript", // Add language property
+        startLine: declaration.getStartLineNumber(),
+        endLine: declaration.getEndLineNumber(),
+        startColumn: declaration.getStart() - declaration.getStartLinePos(),
+        endColumn: getEndColumn(declaration),
+        loc:
+          declaration.getEndLineNumber() - declaration.getStartLineNumber() + 1,
+        isExported: declaration.isExported(),
+        documentation: docs || undefined,
+        docComment: docs,
+        // memberProperties will be populated if parseInterfaceProperties is called
+        createdAt: now,
+      };
+      addNode(interfaceNode);
 
-            // Parse members (method signatures, property signatures)
-            parseInterfaceMethods(declaration, interfaceNode, context);
-            // parseInterfaceProperties(declaration, interfaceNode, context); // Optional
+      // Parse members (method signatures, property signatures)
+      parseInterfaceMethods(declaration, interfaceNode, context);
+      // parseInterfaceProperties(declaration, interfaceNode, context); // Optional
 
-            // Note: Inheritance (EXTENDS) is handled in Pass 2
-
-        } catch (e: any) {
-            logger.warn(`Error parsing interface ${declaration.getName() ?? 'anonymous'} in ${fileNode.filePath}`, { message: e.message });
-        }
+      // Note: Inheritance (EXTENDS) is handled in Pass 2
+    } catch (e: any) {
+      logger.warn(
+        `Error parsing interface ${declaration.getName() ?? "anonymous"} in ${fileNode.filePath}`,
+        { message: e.message },
+      );
     }
+  }
 }
 
 /**
  * Parses MethodSignatures within an InterfaceDeclaration (Pass 1).
  * Creates Method nodes (representing the signature) and HAS_METHOD relationships.
  */
-function parseInterfaceMethods(interfaceDeclaration: InterfaceDeclaration, interfaceNode: AstNode, context: ParserContext): void {
-    const { addNode, addRelationship, generateId, generateEntityId, logger, now } = context;
-    const methods = interfaceDeclaration.getMethods(); // Gets MethodSignatures
+function parseInterfaceMethods(
+  interfaceDeclaration: InterfaceDeclaration,
+  interfaceNode: AstNode,
+  context: ParserContext,
+): void {
+  const {
+    addNode,
+    addRelationship,
+    generateId,
+    generateEntityId,
+    logger,
+    now,
+  } = context;
+  const methods = interfaceDeclaration.getMethods(); // Gets MethodSignatures
 
-    for (const signature of methods) { // signature is MethodSignature
-        try {
-            const name = signature.getName() || 'anonymousMethodSig';
-            // Qualified name includes interface name
-            const qualifiedName = `${interfaceNode.filePath}:${interfaceNode.name}.${name}`;
-            // Treat MethodSignature as a Method node for graph consistency
-            const entityId = generateEntityId('method', qualifiedName);
-            const docs = getJsDocText(signature);
-            const returnType = getFunctionReturnType(signature); // Use helper
+  for (const signature of methods) {
+    // signature is MethodSignature
+    try {
+      const name = signature.getName() || "anonymousMethodSig";
 
-            const methodNode: AstNode = {
-                id: generateId('method', qualifiedName), // Use 'method' prefix
-                entityId,
-                kind: 'Method',
-                name,
-                filePath: interfaceNode.filePath, // Belongs to the interface's file
-                language: 'TypeScript', // Add language property
-                startLine: signature.getStartLineNumber(), endLine: signature.getEndLineNumber(),
-                startColumn: signature.getStart() - signature.getStartLinePos(), endColumn: getEndColumn(signature),
-                loc: signature.getEndLineNumber() - signature.getStartLineNumber() + 1,
-                // Complexity doesn't apply to signatures
-                documentation: docs || undefined, docComment: docs,
-                // Visibility/Static/Async don't apply to interface methods
-                returnType: returnType,
-                properties: { parentId: interfaceNode.entityId, isSignature: true }, // Mark as signature, link parent
-                createdAt: now,
-            };
-            addNode(methodNode);
+      // Extract signature for method overloading support
+      const signatureHint = getSignatureHint(signature);
+      const fullSignature = getParameterSignature(signature);
 
-            // Add HAS_METHOD relationship (Interface -> Method)
-            const hasMethodRelEntityId = generateEntityId('has_method', `${interfaceNode.entityId}:${methodNode.entityId}`);
-            addRelationship({
-                id: generateId('has_method', `${interfaceNode.id}:${methodNode.id}`),
-                entityId: hasMethodRelEntityId,
-                type: 'HAS_METHOD',
-                sourceId: interfaceNode.entityId,
-                targetId: methodNode.entityId,
-                weight: 10,
-                createdAt: now,
-            });
+      // Generate entity ID with signature support
+      const startLine = signature.getStartLineNumber();
+      const startColumn = signature.getStart() - signature.getStartLinePos();
+      const entityId = generateEntityId(
+        "method",
+        interfaceNode.filePath,
+        `${interfaceNode.name}.${name}`,
+        startLine,
+        startColumn,
+        signatureHint,
+        fullSignature,
+      );
+      const docs = getJsDocText(signature);
+      const returnType = getFunctionReturnType(signature); // Use helper
 
-            // Parse parameters for this method signature
-            parseParameters(signature, methodNode, context);
+      const methodNode: AstNode = {
+        id: generateId("method", qualifiedName), // Use 'method' prefix
+        entityId,
+        kind: "Method",
+        name,
+        filePath: interfaceNode.filePath, // Belongs to the interface's file
+        language: "TypeScript", // Add language property
+        startLine: signature.getStartLineNumber(),
+        endLine: signature.getEndLineNumber(),
+        startColumn: signature.getStart() - signature.getStartLinePos(),
+        endColumn: getEndColumn(signature),
+        loc: signature.getEndLineNumber() - signature.getStartLineNumber() + 1,
+        // Complexity doesn't apply to signatures
+        documentation: docs || undefined,
+        docComment: docs,
+        // Visibility/Static/Async don't apply to interface methods
+        returnType: returnType,
+        properties: { parentId: interfaceNode.entityId, isSignature: true }, // Mark as signature, link parent
+        createdAt: now,
+      };
+      addNode(methodNode);
 
-        } catch (e: any) {
-            logger.warn(`Error parsing method signature ${signature.getName() ?? 'anonymous'} in interface ${interfaceNode.name} (${interfaceNode.filePath})`, { message: e.message });
-        }
+      // Add HAS_METHOD relationship (Interface -> Method)
+      const hasMethodRelEntityId = generateEntityId(
+        "has_method",
+        `${interfaceNode.entityId}:${methodNode.entityId}`,
+      );
+      addRelationship({
+        id: generateId("has_method", `${interfaceNode.id}:${methodNode.id}`),
+        entityId: hasMethodRelEntityId,
+        type: "HAS_METHOD",
+        sourceId: interfaceNode.entityId,
+        targetId: methodNode.entityId,
+        weight: 10,
+        createdAt: now,
+      });
+
+      // Parse parameters for this method signature
+      parseParameters(signature, methodNode, context);
+    } catch (e: any) {
+      logger.warn(
+        `Error parsing method signature ${signature.getName() ?? "anonymous"} in interface ${interfaceNode.name} (${interfaceNode.filePath})`,
+        { message: e.message },
+      );
     }
+  }
 }
 
 // Optional: Function to parse PropertySignatures if needed

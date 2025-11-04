@@ -1,8 +1,22 @@
-import { ClassDeclaration, MethodDeclaration, PropertyDeclaration, Node, ts } from 'ts-morph';
-import { AstNode, ParserContext } from '../types.js';
-import { getEndColumn, getVisibility, getJsDocText } from '../../utils/ts-helpers.js'; // Assuming ts-helpers.ts will be created
-import { calculateCyclomaticComplexity } from '../analysis/complexity-analyzer.js'; // Assuming complexity-analyzer.ts will be created
-import { parseParameters } from './parameter-parser.js'; // Assuming parameter-parser.ts will be created
+import {
+  ClassDeclaration,
+  MethodDeclaration,
+  PropertyDeclaration,
+  Node,
+  ts,
+} from "ts-morph";
+import { AstNode, ParserContext } from "../types.js";
+import {
+  getEndColumn,
+  getVisibility,
+  getJsDocText,
+} from "../../utils/ts-helpers.js"; // Assuming ts-helpers.ts will be created
+import { calculateCyclomaticComplexity } from "../analysis/complexity-analyzer.js"; // Assuming complexity-analyzer.ts will be created
+import { parseParameters } from "./parameter-parser.js"; // Assuming parameter-parser.ts will be created
+import {
+  getParameterSignature,
+  getSignatureHint,
+} from "../../utils/signature-helpers.js";
 
 const { SyntaxKind } = ts;
 
@@ -12,126 +26,184 @@ const { SyntaxKind } = ts;
  * @param context - The parser context for the current file.
  */
 export function parseClasses(context: ParserContext): void {
-    const { sourceFile, fileNode, addNode, generateId, generateEntityId, logger, now } = context;
-    const classes = sourceFile.getClasses();
+  const {
+    sourceFile,
+    fileNode,
+    addNode,
+    generateId,
+    generateEntityId,
+    logger,
+    now,
+  } = context;
+  const classes = sourceFile.getClasses();
 
-    logger.debug(`Found ${classes.length} classes in ${fileNode.name}`);
+  logger.debug(`Found ${classes.length} classes in ${fileNode.name}`);
 
-    for (const declaration of classes) {
-        try {
-            const name = declaration.getName() || 'AnonymousClass';
-            // Define a consistent qualified name for entity ID generation
-            const qualifiedName = `${fileNode.filePath}:${name}`;
-            const entityId = generateEntityId('class', qualifiedName);
-            const docs = getJsDocText(declaration);
- // Existing doc extraction
-             const isAbstract = declaration.isAbstract();
-             const implementsClauses = declaration.getImplements();
-             const implementsInterfaces = implementsClauses.map(impl => impl.getText());
-             const modifiers = declaration.getModifiers() ?? [];
-             const modifierFlags = modifiers.map(mod => mod.getText());
-             // Extract JSDoc tags
-             const jsDocs = declaration.getJsDocs();
-             let tags: string[] = [];
-             if (jsDocs.length > 0) {
-                 const lastJsDoc = jsDocs[jsDocs.length - 1];
-                 tags = lastJsDoc!.getTags().map(tag => tag.getTagName()); // Use non-null assertion
-             }
+  for (const declaration of classes) {
+    try {
+      const name = declaration.getName() || "AnonymousClass";
+      // Generate simple entity ID for class (no signature needed)
+      const startLine = declaration.getStartLineNumber();
+      const startColumn =
+        declaration.getStart() - declaration.getStartLinePos();
+      const entityId = generateEntityId(
+        "class",
+        fileNode.filePath,
+        name,
+        startLine,
+        startColumn,
+      );
+      const docs = getJsDocText(declaration);
+      // Existing doc extraction
+      const isAbstract = declaration.isAbstract();
+      const implementsClauses = declaration.getImplements();
+      const implementsInterfaces = implementsClauses.map((impl) =>
+        impl.getText(),
+      );
+      const modifiers = declaration.getModifiers() ?? [];
+      const modifierFlags = modifiers.map((mod) => mod.getText());
+      // Extract JSDoc tags
+      const jsDocs = declaration.getJsDocs();
+      let tags: string[] = [];
+      if (jsDocs.length > 0) {
+        const lastJsDoc = jsDocs[jsDocs.length - 1];
+        tags = lastJsDoc!.getTags().map((tag) => tag.getTagName()); // Use non-null assertion
+      }
 
-            const classNode: AstNode = {
-                id: generateId('class', qualifiedName),
-                entityId,
-                kind: 'Class',
-                name,
-                filePath: fileNode.filePath,
-                language: 'TypeScript', // Add language property
-                startLine: declaration.getStartLineNumber(),
-                endLine: declaration.getEndLineNumber(),
-                startColumn: declaration.getStart() - declaration.getStartLinePos(),
-                endColumn: getEndColumn(declaration),
-                loc: declaration.getEndLineNumber() - declaration.getStartLineNumber() + 1,
-                isExported: declaration.isExported(),
-                documentation: docs || undefined,
-                docComment: docs,
-                 isAbstract: isAbstract,
-                 implementsInterfaces: implementsInterfaces.length > 0 ? implementsInterfaces : undefined,
-                 tags: tags.length > 0 ? tags : undefined,
-                 modifierFlags: modifierFlags.length > 0 ? modifierFlags : undefined,
-                // memberProperties will be populated by parseClassProperties if called
-                createdAt: now,
-            };
-            addNode(classNode);
+      const classNode: AstNode = {
+        id: generateId("class", qualifiedName),
+        entityId,
+        kind: "Class",
+        name,
+        filePath: fileNode.filePath,
+        language: "TypeScript", // Add language property
+        startLine: declaration.getStartLineNumber(),
+        endLine: declaration.getEndLineNumber(),
+        startColumn: declaration.getStart() - declaration.getStartLinePos(),
+        endColumn: getEndColumn(declaration),
+        loc:
+          declaration.getEndLineNumber() - declaration.getStartLineNumber() + 1,
+        isExported: declaration.isExported(),
+        documentation: docs || undefined,
+        docComment: docs,
+        isAbstract: isAbstract,
+        implementsInterfaces:
+          implementsInterfaces.length > 0 ? implementsInterfaces : undefined,
+        tags: tags.length > 0 ? tags : undefined,
+        modifierFlags: modifierFlags.length > 0 ? modifierFlags : undefined,
+        // memberProperties will be populated by parseClassProperties if called
+        createdAt: now,
+      };
+      addNode(classNode);
 
-            // Parse members (methods, properties)
-            parseClassMethods(declaration, classNode, context);
-            // parseClassProperties(declaration, classNode, context); // Optionally parse properties
+      // Parse members (methods, properties)
+      parseClassMethods(declaration, classNode, context);
+      // parseClassProperties(declaration, classNode, context); // Optionally parse properties
 
-            // Note: Inheritance (EXTENDS, IMPLEMENTS) is handled in Pass 2
-
-        } catch (e: any) {
-            logger.warn(`Error parsing class ${declaration.getName() ?? 'anonymous'} in ${fileNode.filePath}`, { message: e.message });
-        }
+      // Note: Inheritance (EXTENDS, IMPLEMENTS) is handled in Pass 2
+    } catch (e: any) {
+      logger.warn(
+        `Error parsing class ${declaration.getName() ?? "anonymous"} in ${fileNode.filePath}`,
+        { message: e.message },
+      );
     }
+  }
 }
 
 /**
  * Parses MethodDeclarations within a ClassDeclaration (Pass 1).
  */
-function parseClassMethods(classDeclaration: ClassDeclaration, classNode: AstNode, context: ParserContext): void {
-    const { addNode, addRelationship, generateId, generateEntityId, logger, now } = context;
-    const methods = classDeclaration.getMethods();
+function parseClassMethods(
+  classDeclaration: ClassDeclaration,
+  classNode: AstNode,
+  context: ParserContext,
+): void {
+  const {
+    addNode,
+    addRelationship,
+    generateId,
+    generateEntityId,
+    logger,
+    now,
+  } = context;
+  const methods = classDeclaration.getMethods();
 
-    for (const declaration of methods) {
-        try {
-            const name = declaration.getName() || 'anonymousMethod';
-            // Qualified name includes class name for uniqueness
-            const qualifiedName = `${classNode.filePath}:${classNode.name}.${name}`;
-            const entityId = generateEntityId('method', qualifiedName);
-            const docs = getJsDocText(declaration);
-            const returnType = declaration.getReturnType().getText() || 'any';
-            const complexity = calculateCyclomaticComplexity(declaration); // Calculate complexity
+  for (const declaration of methods) {
+    try {
+      const name = declaration.getName() || "anonymousMethod";
 
-            const methodNode: AstNode = {
-                id: generateId('method', qualifiedName),
-                entityId,
-                kind: 'Method',
-                name,
-                filePath: classNode.filePath,
-                language: 'TypeScript', // Add language property
-                startLine: declaration.getStartLineNumber(), endLine: declaration.getEndLineNumber(),
-                startColumn: declaration.getStart() - declaration.getStartLinePos(), endColumn: getEndColumn(declaration),
-                loc: declaration.getEndLineNumber() - declaration.getStartLineNumber() + 1,
-                complexity: complexity,
-                documentation: docs || undefined, docComment: docs,
-                visibility: getVisibility(declaration),
-                isStatic: declaration.isStatic(), isAsync: declaration.isAsync(),
-                returnType: returnType,
-                properties: { parentId: classNode.entityId }, // Store parent ID
-                createdAt: now,
-            };
-            addNode(methodNode);
+      // Extract signature for method (handles overloading)
+      const signatureHint = getSignatureHint(declaration);
+      const fullSignature = getParameterSignature(declaration);
 
-            // Add HAS_METHOD relationship (Intra-file)
-            const hasMethodRelEntityId = generateEntityId('has_method', `${classNode.entityId}:${methodNode.entityId}`);
-            addRelationship({
-                id: generateId('has_method', `${classNode.id}:${methodNode.id}`),
-                entityId: hasMethodRelEntityId,
-                type: 'HAS_METHOD',
-                sourceId: classNode.entityId,
-                targetId: methodNode.entityId,
-                weight: 10, // High weight for structural containment
-                createdAt: now,
-            });
+      // Generate entity ID with signature support
+      const startLine = declaration.getStartLineNumber();
+      const startColumn =
+        declaration.getStart() - declaration.getStartLinePos();
+      const entityId = generateEntityId(
+        "method",
+        classNode.filePath,
+        `${classNode.name}.${name}`,
+        startLine,
+        startColumn,
+        signatureHint,
+        fullSignature,
+      );
+      const docs = getJsDocText(declaration);
+      const returnType = declaration.getReturnType().getText() || "any";
+      const complexity = calculateCyclomaticComplexity(declaration); // Calculate complexity
 
-            // Parse parameters for this method
-            parseParameters(declaration, methodNode, context);
+      const methodNode: AstNode = {
+        id: generateId("method", qualifiedName),
+        entityId,
+        kind: "Method",
+        name,
+        filePath: classNode.filePath,
+        language: "TypeScript", // Add language property
+        startLine: declaration.getStartLineNumber(),
+        endLine: declaration.getEndLineNumber(),
+        startColumn: declaration.getStart() - declaration.getStartLinePos(),
+        endColumn: getEndColumn(declaration),
+        loc:
+          declaration.getEndLineNumber() - declaration.getStartLineNumber() + 1,
+        complexity: complexity,
+        documentation: docs || undefined,
+        docComment: docs,
+        visibility: getVisibility(declaration),
+        isStatic: declaration.isStatic(),
+        isAsync: declaration.isAsync(),
+        returnType: returnType,
+        properties: { parentId: classNode.entityId }, // Store parent ID
+        createdAt: now,
+      };
+      addNode(methodNode);
 
-            // Note: Body analysis (CALLS, MUTATES_STATE, etc.) is done in AstParser after all nodes are created
+      // Add HAS_METHOD relationship (Intra-file)
+      const hasMethodRelEntityId = generateEntityId(
+        "has_method",
+        `${classNode.entityId}:${methodNode.entityId}`,
+      );
+      addRelationship({
+        id: generateId("has_method", `${classNode.id}:${methodNode.id}`),
+        entityId: hasMethodRelEntityId,
+        type: "HAS_METHOD",
+        sourceId: classNode.entityId,
+        targetId: methodNode.entityId,
+        weight: 10, // High weight for structural containment
+        createdAt: now,
+      });
 
-        } catch (e: any) {
-            logger.warn(`Error parsing method ${declaration.getName() ?? 'anonymous'} in class ${classNode.name} (${classNode.filePath})`, { message: e.message });
-        }
+      // Parse parameters for this method
+      parseParameters(declaration, methodNode, context);
+
+      // Note: Body analysis (CALLS, MUTATES_STATE, etc.) is done in AstParser after all nodes are created
+    } catch (e: any) {
+      logger.warn(
+        `Error parsing method ${declaration.getName() ?? "anonymous"} in class ${classNode.name} (${classNode.filePath})`,
+        { message: e.message },
+      );
     }
+  }
 }
 
 // Optional: Function to parse properties if needed in Pass 1

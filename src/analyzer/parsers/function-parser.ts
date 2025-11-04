@@ -17,6 +17,10 @@ import {
 import { calculateCyclomaticComplexity } from "../analysis/complexity-analyzer.js";
 import { parseParameters } from "./parameter-parser.js";
 import { ComponentAnalyzer } from "./component-analyzer.js";
+import {
+  getParameterSignature,
+  getSignatureHint,
+} from "../../utils/signature-helpers.js";
 
 const { SyntaxKind } = ts;
 const componentAnalyzer = new ComponentAnalyzer();
@@ -131,9 +135,20 @@ export function parseFunctions(context: ParserContext): void {
         continue; // Skip this node if name couldn't be determined
       }
 
-      // Define a consistent qualified name
-      const uniqueQualifiedName = `${fileNode.filePath}:${name}:${startLine}`;
-      const entityId = generateEntityId("function", uniqueQualifiedName);
+      // Extract signature for entity ID (handles overloading and uniqueness)
+      const signatureHint = getSignatureHint(declaration);
+      const fullSignature = getParameterSignature(declaration);
+
+      // Generate hybrid entity ID with signature support
+      const entityId = generateEntityId(
+        "function",
+        fileNode.filePath,
+        name,
+        startLine,
+        startColumn,
+        signatureHint,
+        fullSignature,
+      );
 
       const returnType = getFunctionReturnType(declaration);
       const complexity = calculateCyclomaticComplexity(nodeToParse); // Pass the node itself
