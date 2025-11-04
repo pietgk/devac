@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { Project } from "ts-morph";
+import { Project, ts } from "ts-morph";
 import { ComponentAnalyzer } from "./component-analyzer.js";
 
 describe("ComponentAnalyzer", () => {
@@ -17,8 +17,11 @@ describe("ComponentAnalyzer", () => {
       `,
       );
 
-      const func = sourceFile.getFunctions()[0];
-      const isComponent = analyzer.isReactComponent(func);
+      const varDecl = sourceFile.getVariableDeclarations()[0]!;
+      const arrowFunc = varDecl.getInitializerIfKindOrThrow(
+        ts.SyntaxKind.ArrowFunction,
+      );
+      const isComponent = analyzer.isReactComponent(arrowFunc);
 
       expect(isComponent).toBe(true);
     });
@@ -32,9 +35,11 @@ describe("ComponentAnalyzer", () => {
       `,
       );
 
-      const varDecl = sourceFile.getVariableDeclarations()[0];
-      const arrowFunc = varDecl.getInitializerIfKind(259); // ArrowFunction
-      const isComponent = analyzer.isReactComponent(arrowFunc!);
+      const varDecl = sourceFile.getVariableDeclarations()[0]!;
+      const arrowFunc = varDecl.getInitializerIfKindOrThrow(
+        ts.SyntaxKind.ArrowFunction,
+      );
+      const isComponent = analyzer.isReactComponent(arrowFunc);
 
       expect(isComponent).toBe(true);
     });
@@ -50,8 +55,11 @@ describe("ComponentAnalyzer", () => {
       `,
       );
 
-      const func = sourceFile.getFunctions()[0];
-      const isComponent = analyzer.isReactComponent(func);
+      const varDecl = sourceFile.getVariableDeclarations()[0]!;
+      const arrowFunc = varDecl.getInitializerIfKindOrThrow(
+        ts.SyntaxKind.ArrowFunction,
+      );
+      const isComponent = analyzer.isReactComponent(arrowFunc);
 
       expect(isComponent).toBe(false);
     });
@@ -67,8 +75,11 @@ describe("ComponentAnalyzer", () => {
       `,
       );
 
-      const func = sourceFile.getFunctions()[0];
-      const isComponent = analyzer.isReactComponent(func);
+      const varDecl = sourceFile.getVariableDeclarations()[0]!;
+      const arrowFunc = varDecl.getInitializerIfKindOrThrow(
+        ts.SyntaxKind.ArrowFunction,
+      );
+      const isComponent = analyzer.isReactComponent(arrowFunc);
 
       expect(isComponent).toBe(false);
     });
@@ -87,8 +98,11 @@ describe("ComponentAnalyzer", () => {
       `,
       );
 
-      const func = sourceFile.getFunctions()[0];
-      const isComponent = analyzer.isReactComponent(func);
+      const varDecl = sourceFile.getVariableDeclarations()[0]!;
+      const arrowFunc = varDecl.getInitializerIfKindOrThrow(
+        ts.SyntaxKind.ArrowFunction,
+      );
+      const isComponent = analyzer.isReactComponent(arrowFunc);
 
       expect(isComponent).toBe(true);
     });
@@ -107,8 +121,11 @@ describe("ComponentAnalyzer", () => {
       `,
       );
 
-      const func = sourceFile.getFunctions()[0];
-      const isHook = analyzer.isReactHook(func);
+      const varDecl = sourceFile.getVariableDeclarations()[0]!;
+      const arrowFunc = varDecl.getInitializerIfKindOrThrow(
+        ts.SyntaxKind.ArrowFunction,
+      );
+      const isHook = analyzer.isReactHook(arrowFunc);
 
       expect(isHook).toBe(true);
     });
@@ -124,8 +141,11 @@ describe("ComponentAnalyzer", () => {
       `,
       );
 
-      const func = sourceFile.getFunctions()[0];
-      const isHook = analyzer.isReactHook(func);
+      const varDecl = sourceFile.getVariableDeclarations()[0]!;
+      const arrowFunc = varDecl.getInitializerIfKindOrThrow(
+        ts.SyntaxKind.ArrowFunction,
+      );
+      const isHook = analyzer.isReactHook(arrowFunc);
 
       expect(isHook).toBe(false);
     });
@@ -151,8 +171,11 @@ describe("ComponentAnalyzer", () => {
       `,
       );
 
-      const func = sourceFile.getFunctions()[0];
-      const rendered = analyzer.findRenderedComponents(func);
+      const varDecl = sourceFile.getVariableDeclarations()[0]!;
+      const arrowFunc = varDecl.getInitializerIfKindOrThrow(
+        ts.SyntaxKind.ArrowFunction,
+      );
+      const rendered = analyzer.findRenderedComponents(arrowFunc);
 
       expect(rendered).toContain("Header");
       expect(rendered).toContain("Sidebar");
@@ -178,8 +201,11 @@ describe("ComponentAnalyzer", () => {
       `,
       );
 
-      const func = sourceFile.getFunctions()[0];
-      const rendered = analyzer.findRenderedComponents(func);
+      const varDecl = sourceFile.getVariableDeclarations()[0]!;
+      const arrowFunc = varDecl.getInitializerIfKindOrThrow(
+        ts.SyntaxKind.ArrowFunction,
+      );
+      const rendered = analyzer.findRenderedComponents(arrowFunc);
 
       expect(rendered).toEqual(["CustomButton"]);
       expect(rendered).not.toContain("div");
@@ -203,8 +229,11 @@ describe("ComponentAnalyzer", () => {
       `,
       );
 
-      const func = sourceFile.getFunctions()[0];
-      const rendered = analyzer.findRenderedComponents(func);
+      const varDecl = sourceFile.getVariableDeclarations()[0]!;
+      const arrowFunc = varDecl.getInitializerIfKindOrThrow(
+        ts.SyntaxKind.ArrowFunction,
+      );
+      const rendered = analyzer.findRenderedComponents(arrowFunc);
 
       expect(rendered).toContain("Container");
       expect(rendered).toContain("Logo");
@@ -230,8 +259,11 @@ describe("ComponentAnalyzer", () => {
       `,
       );
 
-      const func = sourceFile.getFunctions()[0];
-      const hooks = analyzer.findUsedHooks(func);
+      const varDecl = sourceFile.getVariableDeclarations()[0]!;
+      const arrowFunc = varDecl.getInitializerIfKindOrThrow(
+        ts.SyntaxKind.ArrowFunction,
+      );
+      const hooks = analyzer.findUsedHooks(arrowFunc);
 
       expect(hooks).toContain("useEffect");
       expect(hooks).toContain("useState");
@@ -251,8 +283,11 @@ describe("ComponentAnalyzer", () => {
       `,
       );
 
-      const func = sourceFile.getFunctions()[0];
-      const hooks = analyzer.findUsedHooks(func);
+      const varDecl = sourceFile.getVariableDeclarations()[0]!;
+      const arrowFunc = varDecl.getInitializerIfKindOrThrow(
+        ts.SyntaxKind.ArrowFunction,
+      );
+      const hooks = analyzer.findUsedHooks(arrowFunc);
 
       expect(hooks).toContain("useQuery");
       expect(hooks).toContain("useMutation");
@@ -272,8 +307,11 @@ describe("ComponentAnalyzer", () => {
       `,
       );
 
-      const func = sourceFile.getFunctions()[0];
-      const hooks = analyzer.findUsedHooks(func);
+      const varDecl = sourceFile.getVariableDeclarations()[0]!;
+      const arrowFunc = varDecl.getInitializerIfKindOrThrow(
+        ts.SyntaxKind.ArrowFunction,
+      );
+      const hooks = analyzer.findUsedHooks(arrowFunc);
 
       expect(hooks).toContain("useGetDataQuery");
       expect(hooks).toContain("useState");
@@ -298,8 +336,11 @@ describe("ComponentAnalyzer", () => {
       `,
       );
 
-      const func = sourceFile.getFunctions()[0];
-      const hooks = analyzer.findUsedHooks(func);
+      const varDecl = sourceFile.getVariableDeclarations()[0]!;
+      const arrowFunc = varDecl.getInitializerIfKindOrThrow(
+        ts.SyntaxKind.ArrowFunction,
+      );
+      const hooks = analyzer.findUsedHooks(arrowFunc);
 
       expect(hooks).toContain("useState");
       expect(hooks).toContain("useEffect");
@@ -320,8 +361,11 @@ describe("ComponentAnalyzer", () => {
       `,
       );
 
-      const func = sourceFile.getFunctions()[0];
-      const hooks = analyzer.findUsedHooks(func);
+      const varDecl = sourceFile.getVariableDeclarations()[0]!;
+      const arrowFunc = varDecl.getInitializerIfKindOrThrow(
+        ts.SyntaxKind.ArrowFunction,
+      );
+      const hooks = analyzer.findUsedHooks(arrowFunc);
 
       // Should only include useState once despite multiple uses
       expect(hooks.filter((h) => h === "useState").length).toBe(1);
@@ -341,8 +385,11 @@ describe("ComponentAnalyzer", () => {
       `,
       );
 
-      const func = sourceFile.getFunctions()[0];
-      const hooks = analyzer.findUsedHooks(func);
+      const varDecl = sourceFile.getVariableDeclarations()[0]!;
+      const arrowFunc = varDecl.getInitializerIfKindOrThrow(
+        ts.SyntaxKind.ArrowFunction,
+      );
+      const hooks = analyzer.findUsedHooks(arrowFunc);
 
       expect(hooks).toContain("useToggle");
       expect(hooks).toContain("useCustomData");

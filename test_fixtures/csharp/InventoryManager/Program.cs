@@ -1,48 +1,19 @@
-using System;
-using System.Collections.Generic;
+using InventoryManager.Models;
+using InventoryManager.Services;
+using InventoryManager.Interfaces;
 
-namespace Calculator
+namespace InventoryManager
 {
-    public class Calculator
+    // Empty lines to reach line 11 for class definition
+
+
+
+    public class Program
     {
-        private Dictionary<string, double> memory;
 
-        public Calculator()
+        public static void Main(string[] args)
         {
-            memory = new Dictionary<string, double>();
-        }
-
-        public double Add(double a, double b)
-        {
-            return a + b;
-        }
-
-        public double Subtract(double a, double b)
-        {
-            return a - b;
-        }
-
-        public void Store(string key, double value)
-        {
-            memory[key] = value;
-        }
-
-        public double Recall(string key)
-        {
-            return memory.ContainsKey(key) ? memory[key] : 0.0;
-        }
-    }
-
-    class Program
-    {
-        static void Main(string[] args)
-        {
-            var calc = new Calculator();
-            double result = calc.Add(5, 3);
-            Console.WriteLine($"5 + 3 = {result}");
-
-            calc.Store("last", result);
-            Console.WriteLine($"Stored: {calc.Recall("last")}");
+            Console.WriteLine("Inventory Manager Started");
         }
     }
 }
