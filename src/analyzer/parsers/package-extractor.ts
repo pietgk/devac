@@ -21,6 +21,7 @@ export interface PackageNode extends AstNode {
     type: "frontend" | "shared-library" | "tool";
     version: string;
     entryPoint: string | null;
+    path: string;
   };
 }
 
@@ -396,6 +397,7 @@ export class PackageExtractor {
           type: pkg.type,
           version: pkg.version,
           entryPoint: pkg.entryPoint,
+          path: pkg.path,
         },
         createdAt: now,
       };
