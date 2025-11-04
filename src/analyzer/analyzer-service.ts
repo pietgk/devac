@@ -56,19 +56,31 @@ export class AnalyzerService {
    * Runs the full analysis pipeline for a given directory.
    * Assumes database is cleared externally (e.g., via test setup).
    * @param directory - The root directory to analyze.
+   * @param configOverride - Optional config overrides (ignorePatterns, supportedExtensions)
    */
-  async analyze(directory: string): Promise<void> {
+  async analyze(
+    directory: string,
+    configOverride?: {
+      ignorePatterns?: string[];
+      supportedExtensions?: string[];
+    },
+  ): Promise<void> {
     logger.info(`Starting analysis for directory: ${directory}`);
     const absoluteDirectory = path.resolve(directory);
     let scanner: FileScanner;
 
+    // Use overrides if provided, otherwise use global config
+    const ignorePatterns =
+      configOverride?.ignorePatterns ?? config.ignorePatterns;
+    const supportedExtensions =
+      configOverride?.supportedExtensions ?? config.supportedExtensions;
+
     try {
       // Instantiate FileScanner here with directory and config
-      // Use config.supportedExtensions and config.ignorePatterns directly
       scanner = new FileScanner(
         absoluteDirectory,
-        config.supportedExtensions,
-        config.ignorePatterns,
+        supportedExtensions,
+        ignorePatterns,
       );
 
       // 1. Initialize packages
@@ -105,6 +117,16 @@ export class AnalyzerService {
 
       // 4. Resolve Relationships (Pass 2)
       logger.info("Resolving relationships (Pass 2)...");
+
+      // Re-add TS files to project if they were removed during batch processing
+      const processedTsFiles = this.parser.getProcessedTsFiles();
+      if (processedTsFiles.length > 0) {
+        logger.info(
+          `Repopulating ts-morph project with ${processedTsFiles.length} files for Pass 2...`,
+        );
+        await this.parser.repopulateProjectForPass2(processedTsFiles);
+      }
+
       const tsProject: Project = this.parser.getTsProject();
       const resolver = new RelationshipResolver(pass1Nodes, pass1Relationships);
       const pass2Relationships = await resolver.resolveRelationships(

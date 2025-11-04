@@ -45,9 +45,10 @@
     {
       "name": "monorepo-3.0",
       "path": "monorepo-3.0",
-      "enabled": true,
+      "enabled": false,
       "metadata": {
-        "type": "library"
+        "type": "library",
+        "description": "Disabled: ts-morph parser hangs on certain files during batch processing"
       }
     },
     {
@@ -74,7 +75,8 @@
       "**/build/**",
       "**/.git/**",
       "**/coverage/**",
-      "**/.next/**"
+      "**/.next/**",
+      "**/storybook-static/**"
     ],
     "extensions": [
       ".ts",

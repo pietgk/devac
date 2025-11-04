@@ -50,6 +50,7 @@ export class Parser {
   private importResolver: ImportResolver | null = null;
   private packages: PackageInfo[] = [];
   private workspaceRoot: string = "";
+  private processedTsFiles: string[] = []; // Track TS files for Pass 2 repopulation
 
   constructor(workspaceRoot?: string) {
     this.workspaceRoot = workspaceRoot
@@ -57,8 +58,10 @@ export class Parser {
       : process.cwd();
 
     // Initialize Project using the main tsconfig.json
+    // skipAddingFilesFromTsConfig: reduces memory by only loading files we explicitly add
     this.tsProject = new Project({
       tsConfigFilePath: "tsconfig.json",
+      skipAddingFilesFromTsConfig: true,
     });
     this.pythonParser = new PythonAstParser();
     this.cppParser = new CCppParser();
@@ -189,13 +192,52 @@ export class Parser {
     }
 
     if (tsFilesToAdd.length > 0) {
-      this.tsProject.addSourceFilesAtPaths(tsFilesToAdd);
+      // Process TS/JS files in batches to avoid memory exhaustion
+      const BATCH_SIZE = 100;
+      const batches = [];
+      for (let i = 0; i < tsFilesToAdd.length; i += BATCH_SIZE) {
+        batches.push(tsFilesToAdd.slice(i, i + BATCH_SIZE));
+      }
+
       logger.info(
-        `Added ${tsFilesToAdd.length} TS/JS files to the ts-morph project.`,
+        `Processing ${tsFilesToAdd.length} TS/JS files in ${batches.length} batches of ${BATCH_SIZE}`,
       );
-      // Now parse the added TS/JS files
-      // Pass the set of target file paths to filter which sourceFiles get fully parsed
-      await this._parseTsProjectFiles(targetFilePaths);
+
+      // Track all processed files for Pass 2 repopulation
+      this.processedTsFiles = [...tsFilesToAdd];
+
+      for (let i = 0; i < batches.length; i++) {
+        const batch = batches[i];
+        if (!batch || batch.length === 0) continue;
+
+        logger.info(
+          `Processing batch ${i + 1}/${batches.length} (${batch.length} files)`,
+        );
+
+        // Add batch to ts-morph project
+        this.tsProject.addSourceFilesAtPaths(batch);
+
+        // Parse the batch
+        const batchTargetPaths = new Set(
+          batch.map((f) => path.resolve(f).replace(/\\/g, "/")),
+        );
+        await this._parseTsProjectFiles(batchTargetPaths);
+
+        // Remove source files from memory to free up space
+        const sourceFiles = this.tsProject.getSourceFiles();
+        for (const sourceFile of sourceFiles) {
+          const filePath = sourceFile.getFilePath().replace(/\\/g, "/");
+          if (batchTargetPaths.has(filePath)) {
+            this.tsProject.removeSourceFile(sourceFile);
+          }
+        }
+
+        logger.info(`Completed batch ${i + 1}/${batches.length}, memory freed`);
+      }
+
+      logger.info(
+        `All ${tsFilesToAdd.length} TS/JS files processed in batches`,
+      );
     }
 
     await Promise.all(parsePromises);
@@ -407,6 +449,44 @@ export class Parser {
    */
   getTsProject(): Project {
     return this.tsProject;
+  }
+
+  /**
+   * Returns the list of TypeScript files that were processed in batches.
+   * Used to repopulate the project for Pass 2.
+   */
+  getProcessedTsFiles(): string[] {
+    return this.processedTsFiles;
+  }
+
+  /**
+   * Re-adds all TypeScript files to the project for Pass 2 relationship resolution.
+   * This is needed because batch processing removes files after parsing them.
+   * @param filePaths - Array of file paths to add back
+   */
+  async repopulateProjectForPass2(filePaths: string[]): Promise<void> {
+    if (filePaths.length === 0) {
+      return;
+    }
+
+    logger.info(
+      `Re-adding ${filePaths.length} TS/JS files for Pass 2 relationship resolution...`,
+    );
+
+    // Process in batches to avoid memory issues
+    const BATCH_SIZE = 200; // Larger batch size for Pass 2 since we're just loading, not parsing
+    for (let i = 0; i < filePaths.length; i += BATCH_SIZE) {
+      const batch = filePaths.slice(i, i + BATCH_SIZE);
+      this.tsProject.addSourceFilesAtPaths(batch);
+
+      if ((i + BATCH_SIZE) % 1000 === 0) {
+        logger.info(
+          `Re-added ${Math.min(i + BATCH_SIZE, filePaths.length)}/${filePaths.length} files...`,
+        );
+      }
+    }
+
+    logger.info(`All ${filePaths.length} TS/JS files re-added for Pass 2`);
   }
 
   /**

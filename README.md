@@ -298,6 +298,220 @@ node test-mcp-integration.js
 
 For detailed instructions, see **[MCP_SETUP.md](MCP_SETUP.md)**.
 
+## 🗂️ Multi-Repository Workspace Management
+
+**New!** CodeGraph now supports analyzing multiple repositories in a single workspace with automatic repository tagging and tracking.
+
+### 🎯 Quick Start: Workspace CLI
+
+Manage and analyze multiple codebases in your workspace:
+
+```bash
+# 1. Initialize workspace configuration (auto-discovers all repos)
+node dist/index.js workspace init --workspace-root ~/projects
+
+# 2. Review the generated configuration
+cat .codegraph/workspace.json
+
+# 3. Sync all repositories to Neo4j
+node dist/index.js workspace sync
+
+# 4. Check synchronization status
+node dist/index.js workspace status
+```
+
+### 📋 Workspace Commands
+
+#### `workspace init` - Initialize Workspace Configuration
+Auto-discovers repositories in your workspace and generates configuration:
+
+```bash
+node dist/index.js workspace init [options]
+
+Options:
+  -w, --workspace-root <path>  Workspace root directory (default: current directory)
+  -o, --output <path>          Output config file (default: .codegraph/workspace.json)
+```
+
+**What it does:**
+- Scans workspace directory for repositories (looks for package.json)
+- Detects repository type (monorepo, app, library)
+- Generates `.codegraph/workspace.json` with default ignore patterns
+- Shows discovered repositories for review
+
+#### `workspace sync` - Sync Repositories to Neo4j
+Analyzes and syncs repository code to the graph database:
+
+```bash
+node dist/index.js workspace sync [options]
+
+Options:
+  -c, --config <path>        Config file path (default: .codegraph/workspace.json)
+  -r, --repos <names...>     Specific repositories to sync
+  --clean                    Clean database before syncing
+```
+
+**What it does:**
+- Analyzes selected repositories
+- Tags all nodes with repository metadata (repository, repositoryPath, syncedAt)
+- Shows per-repository statistics (files, nodes, relationships, duration)
+- Enables repository-specific queries in Neo4j
+
+**Examples:**
+```bash
+# Sync all enabled repositories
+node dist/index.js workspace sync
+
+# Sync specific repository
+node dist/index.js workspace sync --repos frontend-monorepo
+
+# Clean and sync (removes old data first)
+node dist/index.js workspace sync --clean
+```
+
+#### `workspace status` - Show Synchronization Status
+Displays current workspace status from Neo4j database:
+
+```bash
+node dist/index.js workspace status [options]
+
+Options:
+  -c, --config <path>  Config file path (default: .codegraph/workspace.json)
+```
+
+**What it shows:**
+- Per-repository breakdown (files, nodes, relationships, last sync time)
+- Total database statistics
+- Repositories in config but not synced
+- Repositories in database but not in config
+- Orphaned nodes (nodes without repository tags)
+
+#### `workspace clean` - Remove Repository Data
+Removes all data for a specific repository from Neo4j:
+
+```bash
+node dist/index.js workspace clean [options]
+
+Options:
+  -r, --repo <name>  Repository name to clean (required)
+  --confirm          Confirm deletion without prompting
+```
+
+**Example:**
+```bash
+node dist/index.js workspace clean --repo old-project --confirm
+```
+
+### 📊 Repository Metadata Tagging
+
+Every node created during workspace sync is automatically tagged with:
+
+- **`repository`**: Repository name (e.g., "frontend-monorepo")
+- **`repositoryPath`**: Relative path from workspace root (e.g., "frontend-monorepo")
+- **`syncedAt`**: ISO timestamp of when the node was created (e.g., "2025-11-04T12:44:49.174Z")
+
+This enables powerful repository-specific queries:
+
+```cypher
+// Find all files in a specific repository
+MATCH (f:File)
+WHERE f.repository = "frontend-monorepo"
+RETURN f.name, f.filePath
+
+// Compare function counts across repositories
+MATCH (f:Function)
+RETURN f.repository, count(f) AS functionCount
+ORDER BY functionCount DESC
+
+// Find cross-repository dependencies (if analyzing multiple repos)
+MATCH (f1:File)-[:IMPORTS]->(f2:File)
+WHERE f1.repository <> f2.repository
+RETURN f1.repository AS from, f2.repository AS to, count(*) AS imports
+```
+
+### 📁 Workspace Configuration File
+
+The `.codegraph/workspace.json` file defines your workspace structure:
+
+```json
+{
+  "version": "1.0",
+  "workspaceRoot": "/Users/you/projects",
+  "repositories": [
+    {
+      "name": "frontend-monorepo",
+      "path": "frontend-monorepo",
+      "enabled": true,
+      "metadata": {
+        "type": "monorepo"
+      }
+    },
+    {
+      "name": "backend-api",
+      "path": "backend-api",
+      "enabled": true,
+      "metadata": {
+        "type": "app"
+      }
+    }
+  ],
+  "defaults": {
+    "ignorePatterns": [
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/.git/**"
+    ],
+    "extensions": [".ts", ".tsx", ".js", ".jsx", ".py", ".java"]
+  }
+}
+```
+
+**Configuration Options:**
+- **`enabled`**: Set to `false` to skip a repository during sync
+- **`ignorePatterns`**: Repository-specific patterns (merges with defaults)
+- **`metadata.type`**: Auto-detected as "monorepo", "app", or "library"
+- **`metadata.description`**: Optional description for documentation
+
+### 🎯 Use Cases
+
+**1. Microservices Architecture**
+Analyze all services in your ecosystem and track dependencies:
+```bash
+workspace init --workspace-root ~/microservices
+workspace sync
+```
+
+**2. Monorepo + Multiple Repos**
+Analyze both your main monorepo and supporting tools/libraries:
+```bash
+workspace init --workspace-root ~/company-projects
+workspace sync --repos main-monorepo,design-system,cli-tools
+```
+
+**3. Incremental Updates**
+Re-sync specific repositories after changes:
+```bash
+workspace sync --repos backend-api
+```
+
+**4. Repository Isolation**
+Remove old repository data without affecting others:
+```bash
+workspace clean --repo deprecated-service --confirm
+```
+
+### 📈 Example: Real-World Performance
+
+Tested workspace with 2 repositories:
+
+| Repository | Files | Nodes | Relationships | Sync Time |
+|------------|-------|-------|---------------|-----------|
+| CodeGraph | 76 | 1,537 | 4,856 | ~3s |
+| frontend-monorepo | 945 | 26,670 | 43,782 | ~57s |
+| **Total** | **1,021** | **28,207** | **48,638** | **~60s** |
+
+All nodes properly tagged with repository metadata for isolated querying and management.
+
 ## 🔮 Powering the Next Generation of AI-Assisted Development
 
 The expanded language support in CodeGraph Analyzer enables entirely new possibilities for AI-assisted development:

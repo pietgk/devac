@@ -231,8 +231,17 @@ export class WorkspaceManager {
         repoMetadata, // Pass metadata to tag all nodes
       );
 
-      // Run analysis
-      await analyzerService.analyze(repoPath);
+      // Merge default and repository-specific ignore patterns
+      const ignorePatterns = [
+        ...config.defaults.ignorePatterns,
+        ...(repo.ignorePatterns || []),
+      ];
+
+      // Run analysis with workspace config
+      await analyzerService.analyze(repoPath, {
+        ignorePatterns,
+        supportedExtensions: config.defaults.extensions,
+      });
 
       // Get stats from Neo4j
       const stats = await this.getRepositoryStats(repo.name);

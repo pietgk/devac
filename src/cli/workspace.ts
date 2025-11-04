@@ -64,6 +64,7 @@ export function createWorkspaceCommand(): Command {
               "**/.git/**",
               "**/coverage/**",
               "**/.next/**",
+              "**/storybook-static/**",
             ],
             extensions: [
               ".ts",
