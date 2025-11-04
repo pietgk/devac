@@ -46,6 +46,90 @@ The `mcp/` directory contains an MCP server (`mcp/src/index.ts`) that exposes th
 - **Workflow:** Returns command details as JSON; expects external execution
 - Integrates with `@alanse/mcp-neo4j-server` for natural language → Cypher query translation
 
+## Performance Considerations
+
+### Large Repository Handling
+
+CodeGraph uses several strategies to handle large codebases efficiently:
+
+#### 1. **Declaration File Filtering**
+- **Problem**: TypeScript declaration files (`.d.ts`) contribute massive file counts (e.g., 171K+ in node_modules)
+- **Solution**: Automatically skips `.d.ts` files during scanning - they don't need deep parsing
+- **Impact**: Reduces file count by 95%+ in typical repos (180K → 9K files for monorepo-3.0)
+- **Location**: `src/scanner/file-scanner.ts`
+
+#### 2. **Adaptive Batch Sizing**
+- **Problem**: Fixed batch sizes cause memory issues on large repos
+- **Solution**: Automatically adjusts batch size based on total file count:
+  - Small repos (< 10K files): 100 files/batch
+  - Medium repos (10K-50K files): 75 files/batch  
+  - Large repos (> 50K files): 50 files/batch
+- **Impact**: Prevents OOM errors while maintaining performance
+- **Location**: `src/analyzer/parser.ts` - `parseFiles()` method
+
+#### 3. **File-Level Timeout Protection**
+- **Problem**: Problematic files can hang indefinitely, blocking entire analysis
+- **Solution**: 30-second timeout per file with graceful fallback
+- **Impact**: Analysis continues even if individual files fail
+- **Location**: `src/analyzer/parser.ts` - `_parseTsProjectFiles()` method
+
+#### 4. **Batch Memory Management**
+- **Process**: After parsing each batch, source files are removed from ts-morph project
+- **Garbage Collection**: Forced GC every 20 batches (run with `--expose-gc` flag)
+- **Monitoring**: Real-time heap usage tracking in logs
+
+#### 5. **Enhanced Progress Logging**
+- **ETA Calculation**: Shows estimated time remaining based on rolling average
+- **Memory Tracking**: Displays heap usage (e.g., "Memory: 78/193MB")
+- **Batch Progress**: Logs every 10 batches with percentage completion
+- **Error Summary**: Final report shows success/timeout/error counts
+
+### Recommended Ignore Patterns
+
+The following patterns are automatically excluded (see `src/config/index.ts`):
+
+```
+**/node_modules/**      # npm dependencies
+**/dist/**             # Build output
+**/build/**            # Build output
+**/.next/**            # Next.js
+**/.turbo/**           # Turborepo cache
+**/.expo/**            # Expo build
+**/storybook-static/** # Storybook
+**/*.test.ts           # Test files
+**/*.spec.ts           # Spec files
+**/*.d.ts              # Declaration files (filtered at scan time)
+```
+
+### Troubleshooting Large Repos
+
+**Symptom**: Analysis hangs or runs very slowly
+- **Check**: Are `.d.ts` files being filtered? (Should see 95%+ reduction)
+- **Check**: Is `node_modules` properly ignored?
+- **Solution**: Verify ignore patterns in workspace config
+
+**Symptom**: Out of memory errors
+- **Check**: Current batch size in logs
+- **Solution**: Reduce batch size manually in `parser.ts` or add more RAM
+- **Prevention**: Run with `--expose-gc` flag: `node --expose-gc dist/index.js ...`
+
+**Symptom**: Individual files timing out
+- **Check**: Look for "⏱️ Timeout parsing file" warnings in logs
+- **Action**: These files are automatically skipped, analysis continues
+- **Investigation**: Check the specific files for syntax errors or complexity
+
+### Performance Benchmarks
+
+| Repository | Files | Batch Size | Analysis Time | Nodes Extracted |
+|------------|-------|------------|---------------|-----------------|
+| CodeGraph | 76 | 100 | ~3s | 1,537 |
+| frontend-monorepo | 945 | 100 | ~57s | 26,670 |
+| app | ~3K | 100 | ~2m | 140,563 |
+| monorepo-3.0 | 2,099* | 100 | ~5-10m** | TBD |
+
+\* After `.d.ts` filtering (was 180K+ total files)  
+** Estimated based on file count
+
 ## Development Commands
 
 ### Build & Run

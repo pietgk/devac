@@ -173,6 +173,22 @@ export class PythonAstParser {
 
       let stdoutData = "";
       let stderrData = "";
+      let timedOut = false;
+
+      // Add timeout protection (30 seconds per Python file)
+      const PYTHON_TIMEOUT_MS = 30000;
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        childProcess.kill("SIGTERM");
+        logger.warn(
+          `[PythonAstParser] ⏱️  Timeout (${PYTHON_TIMEOUT_MS}ms) killing Python process for: ${filePath}`,
+        );
+        reject(
+          new ParserError(
+            `Python parsing timeout after ${PYTHON_TIMEOUT_MS}ms for ${filePath}`,
+          ),
+        );
+      }, PYTHON_TIMEOUT_MS);
 
       childProcess.stdout.on("data", (data) => {
         // Use childProcess
@@ -185,6 +201,7 @@ export class PythonAstParser {
       });
 
       childProcess.on("error", (err) => {
+        clearTimeout(timeout);
         // Use childProcess
         logger.error(
           `[PythonAstParser] Failed to start python script: ${err.message}`,
@@ -199,6 +216,12 @@ export class PythonAstParser {
 
       childProcess.on("close", (code) => {
         // Use childProcess
+        clearTimeout(timeout);
+
+        if (timedOut) {
+          return; // Already rejected via timeout
+        }
+
         logger.debug(
           `[PythonAstParser] Python script finished for ${path.basename(filePath)} with code ${code}. Stderr: ${stderrData.trim()}`,
         );

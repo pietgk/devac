@@ -45,10 +45,10 @@
     {
       "name": "monorepo-3.0",
       "path": "monorepo-3.0",
-      "enabled": false,
+      "enabled": true,
       "metadata": {
-        "type": "library",
-        "description": "Disabled: ts-morph parser hangs on certain files during batch processing"
+        "type": "monorepo",
+        "description": "Re-enabled after fixes: .d.ts filtering, timeout protection, adaptive batching"
       }
     },
     {

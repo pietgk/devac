@@ -193,50 +193,107 @@ export class Parser {
 
     if (tsFilesToAdd.length > 0) {
       // Process TS/JS files in batches to avoid memory exhaustion
-      const BATCH_SIZE = 100;
+      // Adaptive batch sizing based on total file count
+      let BATCH_SIZE: number;
+      if (tsFilesToAdd.length < 10000) {
+        BATCH_SIZE = 100;
+      } else if (tsFilesToAdd.length < 50000) {
+        BATCH_SIZE = 75;
+      } else {
+        BATCH_SIZE = 50;
+      }
+
       const batches = [];
       for (let i = 0; i < tsFilesToAdd.length; i += BATCH_SIZE) {
         batches.push(tsFilesToAdd.slice(i, i + BATCH_SIZE));
       }
 
       logger.info(
-        `Processing ${tsFilesToAdd.length} TS/JS files in ${batches.length} batches of ${BATCH_SIZE}`,
+        `Processing ${tsFilesToAdd.length} TS/JS files in ${batches.length} batches of ${BATCH_SIZE} ` +
+          `(adaptive sizing: ${tsFilesToAdd.length < 10000 ? "small" : tsFilesToAdd.length < 50000 ? "medium" : "large"} repo)`,
       );
 
       // Track all processed files for Pass 2 repopulation
       this.processedTsFiles = [...tsFilesToAdd];
 
+      // Track timing for ETA calculation
+      const batchTimes: number[] = [];
+      const startTime = Date.now();
+
       for (let i = 0; i < batches.length; i++) {
         const batch = batches[i];
         if (!batch || batch.length === 0) continue;
 
-        logger.info(
-          `Processing batch ${i + 1}/${batches.length} (${batch.length} files)`,
-        );
+        const batchStartTime = Date.now();
 
-        // Add batch to ts-morph project
-        this.tsProject.addSourceFilesAtPaths(batch);
+        // Log progress more frequently for better visibility
+        const shouldLogProgress =
+          (i + 1) % 5 === 0 || i === 0 || i === batches.length - 1;
 
-        // Parse the batch
+        if (shouldLogProgress) {
+          // Calculate ETA based on average batch time
+          let eta = "calculating...";
+          if (batchTimes.length > 0) {
+            const avgBatchTime =
+              batchTimes.reduce((a, b) => a + b, 0) / batchTimes.length;
+            const remainingBatches = batches.length - (i + 1);
+            const etaMs = avgBatchTime * remainingBatches;
+            const etaMinutes = Math.ceil(etaMs / 60000);
+            eta =
+              etaMinutes > 0 ? `~${etaMinutes}m remaining` : "<1m remaining";
+          }
+
+          const memUsage = process.memoryUsage();
+          const heapUsedMB = Math.round(memUsage.heapUsed / 1024 / 1024);
+          const heapTotalMB = Math.round(memUsage.heapTotal / 1024 / 1024);
+
+          logger.info(
+            `📦 Batch ${i + 1}/${batches.length} (${Math.round(((i + 1) / batches.length) * 100)}%) - ` +
+              `${batch.length} files | Memory: ${heapUsedMB}/${heapTotalMB}MB | ${eta}`,
+          );
+        }
+
+        // Create a fresh Project instance for this batch to prevent memory accumulation
+        const batchProject = new Project({
+          tsConfigFilePath: "tsconfig.json",
+          skipAddingFilesFromTsConfig: true,
+        });
+
+        // Add only this batch's files to the fresh project
+        batchProject.addSourceFilesAtPaths(batch);
+
+        // Parse the batch using the batch-specific project
         const batchTargetPaths = new Set(
           batch.map((f) => path.resolve(f).replace(/\\/g, "/")),
         );
-        await this._parseTsProjectFiles(batchTargetPaths);
+        await this._parseTsProjectFilesBatch(batchProject, batchTargetPaths);
 
-        // Remove source files from memory to free up space
-        const sourceFiles = this.tsProject.getSourceFiles();
-        for (const sourceFile of sourceFiles) {
-          const filePath = sourceFile.getFilePath().replace(/\\/g, "/");
-          if (batchTargetPaths.has(filePath)) {
-            this.tsProject.removeSourceFile(sourceFile);
-          }
+        // Explicitly clear the batch project to release memory
+        // Note: ts-morph doesn't have a dispose() method, but clearing references helps GC
+        batchProject
+          .getSourceFiles()
+          .forEach((sf) => batchProject.removeSourceFile(sf));
+
+        // Force garbage collection after each batch if available (run with --expose-gc flag)
+        if (global.gc) {
+          global.gc();
         }
 
-        logger.info(`Completed batch ${i + 1}/${batches.length}, memory freed`);
+        // Track batch time for ETA
+        const batchTime = Date.now() - batchStartTime;
+        batchTimes.push(batchTime);
+
+        // Keep only last 10 batch times for rolling average
+        if (batchTimes.length > 10) {
+          batchTimes.shift();
+        }
       }
 
+      const totalTime = Date.now() - startTime;
+      const totalMinutes = Math.round(totalTime / 60000);
       logger.info(
-        `All ${tsFilesToAdd.length} TS/JS files processed in batches`,
+        `✅ All ${tsFilesToAdd.length} TS/JS files processed in ${batches.length} batches ` +
+          `(${totalMinutes}m ${Math.round((totalTime % 60000) / 1000)}s)`,
       );
     }
 
@@ -500,6 +557,10 @@ export class Parser {
     );
     const now = new Date().toISOString();
     const instanceCounter = { count: 0 }; // Simple counter for instance IDs per run
+    const FILE_PARSE_TIMEOUT_MS = 30000; // 30 seconds per file
+    const failedFiles: string[] = [];
+    const timeoutFiles: string[] = [];
+    let successCount = 0;
 
     for (const sourceFile of this.tsProject.getSourceFiles()) {
       const filePath = sourceFile.getFilePath().replace(/\\/g, "/"); // Normalize path
@@ -574,32 +635,217 @@ export class Parser {
       };
 
       try {
-        // 3. Call individual parsers
-        parseImports(context); // Add call to import parser
-        parseFunctions(context);
-        parseClasses(context);
-        parseVariables(context);
-        parseInterfaces(context);
-        parseTypeAliases(context);
-        // Check language from the fileNode within the context
-        if (context.fileNode.language === "TSX") {
-          // Only parse JSX if applicable
-          parseJsx(context);
-        }
-        // Call other parsers (e.g., parseExports)
+        // 3. Call individual parsers with timeout protection
+        await withTimeout(
+          (async () => {
+            parseImports(context); // Add call to import parser
+            parseFunctions(context);
+            parseClasses(context);
+            parseVariables(context);
+            parseInterfaces(context);
+            parseTypeAliases(context);
+            // Check language from the fileNode within the context
+            if (context.fileNode.language === "TSX") {
+              // Only parse JSX if applicable
+              parseJsx(context);
+            }
+            // Call other parsers (e.g., parseExports)
+          })(),
+          FILE_PARSE_TIMEOUT_MS,
+          `File parsing timeout after ${FILE_PARSE_TIMEOUT_MS}ms`,
+        );
 
         // Store the result for this file
         this.tsResults.set(filePath, result);
+        successCount++;
         logger.debug(
           `Finished parsing TS/JS file: ${filePath}. Nodes: ${result.nodes.length}, Rels: ${result.relationships.length}`,
         );
       } catch (error: any) {
-        logger.error(`Error parsing TS/JS file ${filePath}: ${error.message}`, {
-          stack: error.stack?.substring(0, 300),
-        });
+        if (error.message.includes("timeout")) {
+          logger.warn(
+            `⏱️  Timeout parsing file (${FILE_PARSE_TIMEOUT_MS}ms exceeded): ${filePath}`,
+          );
+          timeoutFiles.push(filePath);
+        } else {
+          logger.error(
+            `❌ Error parsing TS/JS file ${filePath}: ${error.message}`,
+            {
+              stack: error.stack?.substring(0, 300),
+            },
+          );
+          failedFiles.push(filePath);
+        }
+        // Continue processing other files despite the error
       }
     }
-    logger.info(`Finished parsing ${targetFiles.size} target TS/JS files.`);
+
+    // Log summary
+    logger.info(
+      `Finished parsing TS/JS files: ${successCount}/${targetFiles.size} successful, ` +
+        `${timeoutFiles.length} timeouts, ${failedFiles.length} errors`,
+    );
+
+    if (timeoutFiles.length > 0) {
+      logger.warn(`Files that timed out (${timeoutFiles.length}):`, {
+        files: timeoutFiles.slice(0, 10),
+      });
+    }
+    if (failedFiles.length > 0) {
+      logger.warn(`Files that failed (${failedFiles.length}):`, {
+        files: failedFiles.slice(0, 10),
+      });
+    }
+  }
+
+  /**
+   * Parse TypeScript/JavaScript files from a batch-specific Project instance.
+   * This method is called for each batch to prevent memory accumulation.
+   *
+   * @param project - The ts-morph Project instance for this batch
+   * @param targetFiles - A Set containing the normalized absolute paths of the files to be parsed.
+   */
+  private async _parseTsProjectFilesBatch(
+    project: Project,
+    targetFiles: Set<string>,
+  ): Promise<void> {
+    logger.info(
+      `Starting TS/JS parsing. Project has ${project.getSourceFiles().length} files. Filtering for ${targetFiles.size} target files.`,
+    );
+    const now = new Date().toISOString();
+    const instanceCounter = { count: 0 }; // Simple counter for instance IDs per run
+    const FILE_PARSE_TIMEOUT_MS = 30000; // 30 seconds per file
+    const failedFiles: string[] = [];
+    const timeoutFiles: string[] = [];
+    let successCount = 0;
+
+    for (const sourceFile of project.getSourceFiles()) {
+      const filePath = sourceFile.getFilePath().replace(/\\/g, "/"); // Normalize path
+      logger.debug(`Parsing TS/JS file: ${filePath}`);
+
+      // Only process files that were part of the initial target scan for this run
+      if (!targetFiles.has(filePath)) {
+        continue;
+      }
+
+      // 1. Create FileNode
+      const filename = path.basename(filePath);
+      const fileEntityId = generateEntityId("file", filePath, filename, 1, 0);
+
+      // Get package information if available
+      const pkg = this.packageExtractor?.getPackageForFile(filePath);
+
+      const fileNode: FileNode = {
+        id: generateInstanceId(instanceCounter, "file", filename),
+        entityId: fileEntityId,
+        kind: "File",
+        name: filename,
+        filePath: filePath,
+        language:
+          sourceFile.getLanguageVariant() === ts.LanguageVariant.JSX
+            ? "TSX"
+            : "TypeScript",
+        startLine: 1,
+        endLine: sourceFile.getEndLineNumber(),
+        startColumn: 0,
+        endColumn: 0,
+        loc: sourceFile.getEndLineNumber(),
+        properties: pkg ? { packageName: pkg.name } : undefined,
+        createdAt: now,
+      };
+
+      // 2. Prepare result and context for this file
+      const result: SingleFileParseResult = {
+        filePath: filePath,
+        nodes: [fileNode],
+        relationships: [],
+      };
+
+      const addNode = (node: AstNode) => {
+        result.nodes.push(node);
+      };
+      const addRelationship = (rel: RelationshipInfo) => {
+        result.relationships.push(rel);
+      };
+
+      const context = {
+        filePath: filePath,
+        sourceFile: sourceFile,
+        fileNode: fileNode,
+        result: result,
+        addNode: addNode,
+        addRelationship: addRelationship,
+        generateId: (
+          prefix: string,
+          identifier: string,
+          options?: { line?: number; column?: number },
+        ) => generateInstanceId(instanceCounter, prefix, identifier, options),
+        generateEntityId: generateEntityId,
+        logger: createContextLogger(`Parser-${path.basename(filePath)}`),
+        resolveImportPath: (source: string, imp: string) => {
+          return imp;
+        },
+        now: now,
+      };
+
+      try {
+        // 3. Call individual parsers with timeout protection
+        await withTimeout(
+          (async () => {
+            parseImports(context);
+            parseFunctions(context);
+            parseClasses(context);
+            parseVariables(context);
+            parseInterfaces(context);
+            parseTypeAliases(context);
+            if (context.fileNode.language === "TSX") {
+              parseJsx(context);
+            }
+          })(),
+          FILE_PARSE_TIMEOUT_MS,
+          `File parsing timeout after ${FILE_PARSE_TIMEOUT_MS}ms`,
+        );
+
+        // Store the result for this file
+        this.tsResults.set(filePath, result);
+        successCount++;
+        logger.debug(
+          `Finished parsing TS/JS file: ${filePath}. Nodes: ${result.nodes.length}, Rels: ${result.relationships.length}`,
+        );
+      } catch (error: any) {
+        if (error.message.includes("timeout")) {
+          logger.warn(
+            `⏱️  Timeout parsing file (${FILE_PARSE_TIMEOUT_MS}ms exceeded): ${filePath}`,
+          );
+          timeoutFiles.push(filePath);
+        } else {
+          logger.error(
+            `❌ Error parsing TS/JS file ${filePath}: ${error.message}`,
+            {
+              stack: error.stack?.substring(0, 300),
+            },
+          );
+          failedFiles.push(filePath);
+        }
+      }
+    }
+
+    // Log summary
+    logger.info(
+      `Finished parsing TS/JS files: ${successCount}/${targetFiles.size} successful, ` +
+        `${timeoutFiles.length} timeouts, ${failedFiles.length} errors`,
+    );
+
+    if (timeoutFiles.length > 0) {
+      logger.warn(`Files that timed out (${timeoutFiles.length}):`, {
+        files: timeoutFiles.slice(0, 10),
+      });
+    }
+    if (failedFiles.length > 0) {
+      logger.warn(`Files that failed (${failedFiles.length}):`, {
+        files: failedFiles.slice(0, 10),
+      });
+    }
   }
 }
 
@@ -609,5 +855,35 @@ function ensureTsConfig(project: Project): void {
   if (!currentSettings.jsx) {
     project.compilerOptions.set({ jsx: ts.JsxEmit.React });
     logger.info("Set default JSX compiler option for ts-morph project.");
+  }
+}
+
+/**
+ * Wraps an async function with a timeout to prevent indefinite hanging.
+ * @param promise - The promise to wrap
+ * @param timeoutMs - Timeout in milliseconds
+ * @param timeoutError - Error message if timeout occurs
+ * @returns The promise result or throws timeout error
+ */
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  timeoutError: string,
+): Promise<T> {
+  let timeoutHandle: NodeJS.Timeout;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error(timeoutError));
+    }, timeoutMs);
+  });
+
+  try {
+    const result = await Promise.race([promise, timeoutPromise]);
+    clearTimeout(timeoutHandle!);
+    return result;
+  } catch (error) {
+    clearTimeout(timeoutHandle!);
+    throw error;
   }
 }

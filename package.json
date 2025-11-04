@@ -14,7 +14,8 @@
     "test:unit": "vitest run src/**/*.spec.ts",
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write \"src/**/*.ts\"",
-    "analyze": "npm run build && node dist/index.js analyze --update-schema"
+    "analyze": "npm run build && node dist/index.js analyze --update-schema",
+    "sync:clean": "node dist/index.js workspace sync --clean"
   },
   "keywords": [
     "code-analysis",
