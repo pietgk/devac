@@ -21,6 +21,11 @@ export class AnalyzerService {
   private parser: Parser;
   private storageManager: StorageManager;
   private neo4jClient: Neo4jClient;
+  private repositoryMetadata?: {
+    repository: string;
+    repositoryPath: string;
+    syncedAt: string;
+  };
 
   constructor(
     neo4jConfigOverride?: {
@@ -30,13 +35,21 @@ export class AnalyzerService {
       database?: string;
     },
     workspaceRoot?: string,
+    repositoryMetadata?: {
+      repository: string;
+      repositoryPath: string;
+      syncedAt: string;
+    },
   ) {
     this.parser = new Parser(workspaceRoot);
     // Instantiate Neo4jClient with optional overrides
     this.neo4jClient = new Neo4jClient(neo4jConfigOverride);
     // Pass the client instance to StorageManager
     this.storageManager = new StorageManager(this.neo4jClient);
-    logger.info("AnalyzerService initialized.");
+    this.repositoryMetadata = repositoryMetadata;
+    logger.info(
+      `AnalyzerService initialized${repositoryMetadata ? ` for repository: ${repositoryMetadata.repository}` : ""}.`,
+    );
   }
 
   /**
@@ -112,14 +125,56 @@ export class AnalyzerService {
         `Total unique relationships after combining passes: ${uniqueRelationships.length}`,
       );
 
+      // 4.5. Add repository metadata to all nodes
+      if (this.repositoryMetadata) {
+        logger.info(
+          `Tagging ${finalNodes.length} nodes with repository metadata: ${this.repositoryMetadata.repository}`,
+        );
+        finalNodes.forEach((node) => {
+          node.properties = {
+            ...node.properties,
+            repository: this.repositoryMetadata!.repository,
+            repositoryPath: this.repositoryMetadata!.repositoryPath,
+            syncedAt: this.repositoryMetadata!.syncedAt,
+          };
+        });
+      }
+
       // 5. Store Results
       logger.info("Storing analysis results...");
+      logger.info(`[STORAGE] About to save ${finalNodes.length} nodes`);
+
       // Ensure driver is initialized before storing
-      await this.neo4jClient.initializeDriver("AnalyzerService-Store");
+      try {
+        await this.neo4jClient.initializeDriver("AnalyzerService-Store");
+        logger.info("[STORAGE] Neo4j driver initialized successfully");
+      } catch (error: any) {
+        logger.error("[STORAGE] Failed to initialize Neo4j driver", {
+          error: error.message,
+          stack: error.stack,
+        });
+        throw error;
+      }
 
       // --- Database clearing is now handled by beforeEach in tests ---
 
-      await this.storageManager.saveNodesBatch(finalNodes);
+      try {
+        logger.info(
+          `[STORAGE] Starting saveNodesBatch for ${finalNodes.length} nodes...`,
+        );
+        await this.storageManager.saveNodesBatch(finalNodes);
+        logger.info(
+          `[STORAGE] ✅ Successfully saved ${finalNodes.length} nodes`,
+        );
+      } catch (error: any) {
+        logger.error(`[STORAGE] ❌ Failed to save nodes batch`, {
+          error: error.message,
+          code: error.code,
+          stack: error.stack,
+          nodeCount: finalNodes.length,
+        });
+        throw error;
+      }
 
       // Group relationships by type before saving
       const relationshipsByType: { [type: string]: RelationshipInfo[] } = {};
@@ -132,24 +187,38 @@ export class AnalyzerService {
       }
 
       // Save relationships batch by type
+      logger.info(
+        `[STORAGE] Starting to save ${Object.keys(relationshipsByType).length} relationship types...`,
+      );
+      let totalRelsSaved = 0;
+
       for (const type in relationshipsByType) {
         const batch = relationshipsByType[type];
-        // --- TEMPORARY DEBUG LOG ---
-        logger.debug(
-          `[AnalyzerService] Processing relationship type: ${type}, Batch size: ${batch?.length ?? 0}`,
-        );
-        if (type === "HAS_METHOD") {
-          logger.debug(
-            `[AnalyzerService] Found HAS_METHOD batch. Calling saveRelationshipsBatch...`,
-          );
-        }
-        // --- END TEMPORARY DEBUG LOG ---
-        // Ensure batch is not undefined before passing (still good practice)
         if (batch) {
-          await this.storageManager.saveRelationshipsBatch(type, batch);
+          try {
+            logger.info(
+              `[STORAGE] Saving ${batch.length} relationships of type: ${type}`,
+            );
+            await this.storageManager.saveRelationshipsBatch(type, batch);
+            totalRelsSaved += batch.length;
+            logger.info(
+              `[STORAGE] ✅ Saved ${batch.length} ${type} relationships`,
+            );
+          } catch (error: any) {
+            logger.error(`[STORAGE] ❌ Failed to save ${type} relationships`, {
+              error: error.message,
+              code: error.code,
+              batchSize: batch.length,
+              stack: error.stack,
+            });
+            throw error;
+          }
         }
       }
 
+      logger.info(
+        `[STORAGE] ✅ Successfully saved ${totalRelsSaved} total relationships`,
+      );
       logger.info("Analysis results stored successfully.");
     } catch (error: any) {
       logger.error(`Analysis failed: ${error.message}`, { stack: error.stack });

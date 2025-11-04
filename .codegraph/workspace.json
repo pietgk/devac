@@ -1,0 +1,93 @@
+{
+  "version": "1.0",
+  "workspaceRoot": "/Users/grop/ws",
+  "repositories": [
+    {
+      "name": "CodeGraph",
+      "path": "CodeGraph",
+      "enabled": true,
+      "metadata": {
+        "type": "library"
+      }
+    },
+    {
+      "name": "app",
+      "path": "app",
+      "enabled": true,
+      "metadata": {
+        "type": "app"
+      }
+    },
+    {
+      "name": "contentful-monorepo",
+      "path": "contentful-monorepo",
+      "enabled": true,
+      "metadata": {
+        "type": "library"
+      }
+    },
+    {
+      "name": "frontend-monorepo",
+      "path": "frontend-monorepo",
+      "enabled": true,
+      "metadata": {
+        "type": "monorepo"
+      }
+    },
+    {
+      "name": "mindler",
+      "path": "mindler",
+      "enabled": true,
+      "metadata": {
+        "type": "monorepo"
+      }
+    },
+    {
+      "name": "monorepo-3.0",
+      "path": "monorepo-3.0",
+      "enabled": true,
+      "metadata": {
+        "type": "library"
+      }
+    },
+    {
+      "name": "npm-private-packages",
+      "path": "npm-private-packages",
+      "enabled": true,
+      "metadata": {
+        "type": "library"
+      }
+    },
+    {
+      "name": "public-website-3",
+      "path": "public-website-3",
+      "enabled": true,
+      "metadata": {
+        "type": "app"
+      }
+    }
+  ],
+  "defaults": {
+    "ignorePatterns": [
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/build/**",
+      "**/.git/**",
+      "**/coverage/**",
+      "**/.next/**"
+    ],
+    "extensions": [
+      ".ts",
+      ".tsx",
+      ".js",
+      ".jsx",
+      ".py",
+      ".java",
+      ".cs",
+      ".go",
+      ".c",
+      ".cpp",
+      ".h"
+    ]
+  }
+}
