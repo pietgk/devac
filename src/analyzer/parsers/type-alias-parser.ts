@@ -44,7 +44,7 @@ export function parseTypeAliases(context: ParserContext): void {
       const typeText = declaration.getTypeNode()?.getText() || "unknown"; // Get the actual type definition
 
       const typeAliasNode: AstNode = {
-        id: generateId("typealias", qualifiedName),
+        id: generateId("typealias", entityId),
         entityId,
         kind: "TypeAlias",
         name,

@@ -176,7 +176,7 @@ export function parseFunctions(context: ParserContext): void {
       const isHook = componentAnalyzer.isReactHook(declaration);
 
       const functionNode: AstNode = {
-        id: generateId("function", uniqueQualifiedName),
+        id: generateId("function", entityId),
         entityId,
         kind: "Function",
         name,

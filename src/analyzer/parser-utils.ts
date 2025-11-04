@@ -109,29 +109,38 @@ export function generateEntityIdLegacy(
   }
 
   // Parse qualified name to extract components for new format
-  // Expected formats: "filepath:name" or "filepath:name:line" or "filepath:Parent.method"
+  // Expected formats:
+  //   - "filepath:name" or "filepath:name:line" or "filepath:Parent.method"
+  //   - "filepath" (for file entities - extract name from path)
   const parts = qualifiedName.split(":");
 
   if (parts.length < 2) {
+    // Special case: for "file" prefix, allow just filepath and extract name
+    if (prefix === "file" && qualifiedName.includes("/")) {
+      const filepath = qualifiedName.replace(/\\/g, "/");
+      const name = qualifiedName.split("/").pop() || "unknown";
+      return generateEntityIdImpl(prefix, filepath, name, 1, 0);
+    }
+
     console.warn(`generateEntityIdLegacy: unexpected format: ${qualifiedName}`);
     return `${prefix}:${qualifiedName}#${Date.now()}`;
   }
 
-  const filepath = parts[0].replace(/\\/g, "/");
-  let name = parts[1];
+  const filepath = parts[0] ? parts[0].replace(/\\/g, "/") : "unknown";
+  let name = parts[1] || "unknown";
   let line = 1;
   let column = 0;
 
   // If third part exists and is a number, use it as line number
-  if (parts.length >= 3 && !isNaN(parseInt(parts[2]))) {
+  if (parts.length >= 3 && parts[2] && !isNaN(parseInt(parts[2]))) {
     line = parseInt(parts[2]);
   } else if (parts.length >= 3) {
     // Not a number, concatenate to name
     name = parts.slice(1).join(":");
   }
 
-  // Call new hybrid format
-  return generateEntityId(prefix, filepath, name, line, column);
+  // Call new hybrid format with explicit parameters
+  return generateEntityIdImpl(prefix, filepath, name, line, column);
 }
 
 /**
@@ -151,10 +160,23 @@ export function generateEntityIdLegacy(
  *   - Nested entities (same name, different parent contexts)
  */
 
-// Legacy signature for backward compatibility
+/**
+ * Generates entity ID using legacy format (2 parameters).
+ * @param prefix - Entity type prefix (e.g., "function", "class")
+ * @param qualifiedName - Qualified name in format "filepath:name" or "filepath:name:line"
+ */
 export function generateEntityId(prefix: string, qualifiedName: string): string;
 
-// New signature with full parameters
+/**
+ * Generates hybrid entity ID with full parameters (5-7 parameters).
+ * @param prefix - Entity type prefix (e.g., "function", "class")
+ * @param filepath - File path
+ * @param name - Entity name
+ * @param line - Start line number
+ * @param column - Start column number
+ * @param signatureHint - Abbreviated signature for readability (optional)
+ * @param fullSignature - Full parameter signature for uniqueness (optional)
+ */
 export function generateEntityId(
   prefix: string,
   filepath: string,
@@ -165,7 +187,9 @@ export function generateEntityId(
   fullSignature?: string,
 ): string;
 
-// Implementation
+/**
+ * Implementation of generateEntityId with function overloading.
+ */
 export function generateEntityId(
   prefix: string,
   filepathOrQualifiedName: string,
@@ -181,15 +205,33 @@ export function generateEntityId(
     return generateEntityIdLegacy(prefix, filepathOrQualifiedName);
   }
 
-  // New signature - validate required params
-  const filepath = filepathOrQualifiedName;
-  if (
-    !prefix ||
-    !filepath ||
-    !name ||
-    line === undefined ||
-    column === undefined
-  ) {
+  // New signature - delegate to implementation
+  return generateEntityIdImpl(
+    prefix,
+    filepathOrQualifiedName,
+    name!,
+    line!,
+    column!,
+    signatureHint,
+    fullSignature,
+  );
+}
+
+/**
+ * Internal implementation of hybrid entity ID generation.
+ * Do not call directly - use generateEntityId() instead.
+ */
+function generateEntityIdImpl(
+  prefix: string,
+  filepath: string,
+  name: string,
+  line: number,
+  column: number,
+  signatureHint?: string,
+  fullSignature?: string,
+): string {
+  // Validate required params
+  if (!prefix || !filepath || !name) {
     console.warn(`generateEntityId missing required params`, {
       prefix,
       filepath,
@@ -199,8 +241,6 @@ export function generateEntityId(
     });
     return `${prefix || "unknown"}:unknown:${Date.now()}`;
   }
-
-  // Continue with new implementation below
 
   // Normalize filepath (forward slashes only)
   const normalizedPath = filepath.replace(/\\/g, "/");

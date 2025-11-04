@@ -432,21 +432,18 @@ export class Parser {
       }
 
       // 1. Create FileNode
-      const fileEntityId = generateEntityId("file", filePath);
+      const filename = path.basename(filePath);
+      const fileEntityId = generateEntityId("file", filePath, filename, 1, 0);
 
       // Get package information if available
       const pkg = this.packageExtractor?.getPackageForFile(filePath);
 
       const fileNode: FileNode = {
         // Explicitly type as FileNode
-        id: generateInstanceId(
-          instanceCounter,
-          "file",
-          path.basename(filePath),
-        ),
+        id: generateInstanceId(instanceCounter, "file", filename),
         entityId: fileEntityId,
         kind: "File",
-        name: path.basename(filePath),
+        name: filename,
         filePath: filePath,
         language:
           sourceFile.getLanguageVariant() === ts.LanguageVariant.JSX

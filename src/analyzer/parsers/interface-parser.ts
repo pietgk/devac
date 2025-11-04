@@ -57,7 +57,7 @@ export function parseInterfaces(context: ParserContext): void {
       const docs = getJsDocText(declaration);
 
       const interfaceNode: AstNode = {
-        id: generateId("interface", qualifiedName),
+        id: generateId("interface", entityId),
         entityId,
         kind: "Interface",
         name,
@@ -135,7 +135,7 @@ function parseInterfaceMethods(
       const returnType = getFunctionReturnType(signature); // Use helper
 
       const methodNode: AstNode = {
-        id: generateId("method", qualifiedName), // Use 'method' prefix
+        id: generateId("method", entityId), // Use 'method' prefix
         entityId,
         kind: "Method",
         name,

@@ -85,7 +85,7 @@ export function parseVariables(context: ParserContext): void {
         else modifierFlags.push("var"); // Assume var if not const or let
 
         const variableNode: AstNode = {
-          id: generateId("variable", uniqueQualifiedName),
+          id: generateId("variable", entityId),
           entityId,
           kind: "Variable",
           name,

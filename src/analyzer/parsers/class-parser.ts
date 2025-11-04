@@ -71,7 +71,7 @@ export function parseClasses(context: ParserContext): void {
       }
 
       const classNode: AstNode = {
-        id: generateId("class", qualifiedName),
+        id: generateId("class", entityId),
         entityId,
         kind: "Class",
         name,
@@ -154,7 +154,7 @@ function parseClassMethods(
       const complexity = calculateCyclomaticComplexity(declaration); // Calculate complexity
 
       const methodNode: AstNode = {
-        id: generateId("method", qualifiedName),
+        id: generateId("method", entityId),
         entityId,
         kind: "Method",
         name,
