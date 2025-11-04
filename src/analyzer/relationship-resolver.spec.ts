@@ -211,15 +211,9 @@ describe("RelationshipResolver Unit Tests", () => {
   it("should resolve TS import relationships", async () => {
     const pass2Relationships = await resolver.resolveRelationships(project); // Pass the project
 
-    console.log(
-      `\n=== IMPORT TEST: Found ${pass2Relationships.length} relationships ===`,
-    );
     pass2Relationships.forEach((r) => {
       console.log(`  - ${r.type}: ${r.sourceId} -> ${r.targetId}`);
     });
-    console.log(`\n=== Looking for RESOLVES_IMPORT relationship ===`);
-    console.log(`Expected sourceId: ${importBEntityId}`);
-    console.log(`Expected targetId: ${funcBEntityId}`);
 
     const resolvedImportRel = pass2Relationships.find(
       (r) =>
@@ -228,18 +222,6 @@ describe("RelationshipResolver Unit Tests", () => {
         r.targetId === funcBEntityId, // Target should now be the actual function node
     );
 
-    console.log(`Found RESOLVES_IMPORT: ${resolvedImportRel ? "YES" : "NO"}`);
-    if (!resolvedImportRel) {
-      console.log("\n=== All RESOLVES_IMPORT relationships: ===");
-      pass2Relationships
-        .filter((r) => r.type === "RESOLVES_IMPORT")
-        .forEach((r) => {
-          console.log(`  sourceId: ${r.sourceId}`);
-          console.log(`  targetId: ${r.targetId}`);
-          console.log(`  sourceId matches: ${r.sourceId === importBEntityId}`);
-          console.log(`  targetId matches: ${r.targetId === funcBEntityId}`);
-        });
-    }
 
     expect(resolvedImportRel).toBeDefined();
     // expect(resolvedImportRel?.properties?.resolved).toBe(true); // RESOLVES_IMPORT doesn't have 'resolved' property
@@ -250,16 +232,9 @@ describe("RelationshipResolver Unit Tests", () => {
 
     // DEBUG: Log all relationships
     testLogger.debug(`Found ${pass2Relationships.length} relationships:`);
-    console.log(
-      `\n=== DEBUG: Found ${pass2Relationships.length} relationships ===`,
-    );
     pass2Relationships.forEach((r) => {
       testLogger.debug(`  - ${r.type}: ${r.sourceId} -> ${r.targetId}`);
-      console.log(`  - ${r.type}: ${r.sourceId} -> ${r.targetId}`);
     });
-    console.log(`\n=== Looking for CALLS relationship ===`);
-    console.log(`Expected sourceId: ${funcAEntityId}`);
-    console.log(`Expected targetId: ${funcBEntityId}`);
 
     const resolvedCallRel = pass2Relationships.find(
       (r) =>
@@ -267,19 +242,6 @@ describe("RelationshipResolver Unit Tests", () => {
         r.sourceId === funcAEntityId &&
         r.targetId === funcBEntityId, // Target should now be the actual function node
     );
-
-    console.log(`Found relationship: ${resolvedCallRel ? "YES" : "NO"}`);
-    if (!resolvedCallRel) {
-      console.log("\n=== All CALLS relationships: ===");
-      pass2Relationships
-        .filter((r) => r.type === "CALLS")
-        .forEach((r) => {
-          console.log(`  sourceId: ${r.sourceId}`);
-          console.log(`  targetId: ${r.targetId}`);
-          console.log(`  sourceId matches: ${r.sourceId === funcAEntityId}`);
-          console.log(`  targetId matches: ${r.targetId === funcBEntityId}`);
-        });
-    }
 
     expect(resolvedCallRel).toBeDefined();
     expect(resolvedCallRel?.properties?.isPlaceholder).toBe(false); // Check if placeholder is false
