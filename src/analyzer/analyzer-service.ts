@@ -96,24 +96,25 @@ export class AnalyzerService {
       }
       logger.info(`Found ${files.length} files.`);
 
-      // 3. Parse Files (Pass 1)
-      logger.info("Parsing files (Pass 1)...");
+      // 3. Parse Files (Pass 1) with streaming writes
+      logger.info("Parsing files (Pass 1) with streaming writes to Neo4j...");
+
+      // Enable streaming writes by setting storage manager
+      this.parser.setStorageManager(this.storageManager);
+
+      // Parse files - writes to Neo4j incrementally during batch processing
       await this.parser.parseFiles(files);
 
-      // 3. Collect Pass 1 Results
-      logger.info("Collecting Pass 1 results...");
+      // Collect Pass 1 Results (now returns empty since already written)
+      logger.info("Pass 1 complete - all nodes written to Neo4j via streaming");
       const { allNodes: pass1Nodes, allRelationships: pass1Relationships } =
         await this.parser.collectResults();
-      logger.info(
-        `Collected ${pass1Nodes.length} nodes and ${pass1Relationships.length} relationships from Pass 1.`,
-      );
 
-      if (pass1Nodes.length === 0) {
-        logger.warn(
-          "No nodes were generated during Pass 1. Aborting further analysis.",
-        );
-        return;
-      }
+      // Pass1 nodes/rels are already in Neo4j, but we need them for Pass 2
+      // So we keep an empty array - Pass 2 will work with Neo4j data
+      logger.info(
+        `Pass 1 streaming complete (nodes and relationships already in Neo4j)`,
+      );
 
       // 4. Resolve Relationships (Pass 2)
       logger.info("Resolving relationships (Pass 2)...");
@@ -138,33 +139,21 @@ export class AnalyzerService {
         `Resolved ${pass2Relationships.length} relationships in Pass 2.`,
       );
 
-      const finalNodes = pass1Nodes;
-      const finalRelationships = [...pass1Relationships, ...pass2Relationships];
+      // Combine Pass 2 relationships with Pass 1 (already in Neo4j)
+      const finalRelationships = pass2Relationships;
       const uniqueRelationships = Array.from(
         new Map(finalRelationships.map((r) => [r.entityId, r])).values(),
       );
       logger.info(
-        `Total unique relationships after combining passes: ${uniqueRelationships.length}`,
+        `Pass 2 relationships to write: ${uniqueRelationships.length}`,
       );
 
-      // 4.5. Add repository metadata to all nodes
-      if (this.repositoryMetadata) {
-        logger.info(
-          `Tagging ${finalNodes.length} nodes with repository metadata: ${this.repositoryMetadata.repository}`,
-        );
-        finalNodes.forEach((node) => {
-          node.properties = {
-            ...node.properties,
-            repository: this.repositoryMetadata!.repository,
-            repositoryPath: this.repositoryMetadata!.repositoryPath,
-            syncedAt: this.repositoryMetadata!.syncedAt,
-          };
-        });
-      }
+      // 4.5. Repository metadata already added during streaming writes
+      // Skip node tagging since nodes are already in Neo4j
 
-      // 5. Store Results
-      logger.info("Storing analysis results...");
-      logger.info(`[STORAGE] About to save ${finalNodes.length} nodes`);
+      // 5. Store Pass 2 Results (Pass 1 already stored via streaming)
+      logger.info("Storing Pass 2 relationships...");
+      logger.info(`[STORAGE] Pass 1 nodes already in Neo4j via streaming`);
 
       // Ensure driver is initialized before storing
       try {
@@ -180,23 +169,10 @@ export class AnalyzerService {
 
       // --- Database clearing is now handled by beforeEach in tests ---
 
-      try {
-        logger.info(
-          `[STORAGE] Starting saveNodesBatch for ${finalNodes.length} nodes...`,
-        );
-        await this.storageManager.saveNodesBatch(finalNodes);
-        logger.info(
-          `[STORAGE] ✅ Successfully saved ${finalNodes.length} nodes`,
-        );
-      } catch (error: any) {
-        logger.error(`[STORAGE] ❌ Failed to save nodes batch`, {
-          error: error.message,
-          code: error.code,
-          stack: error.stack,
-          nodeCount: finalNodes.length,
-        });
-        throw error;
-      }
+      // Skip node writes - all nodes are already in Neo4j from streaming batches (Pass 1)
+      logger.info(
+        `[STORAGE] Skipping node write - all nodes already in Neo4j from streaming`,
+      );
 
       // Group relationships by type before saving
       const relationshipsByType: { [type: string]: RelationshipInfo[] } = {};
@@ -208,9 +184,9 @@ export class AnalyzerService {
         relationshipsByType[rel.type]!.push(rel);
       }
 
-      // Save relationships batch by type
+      // Save Pass 2 relationships batch by type (Pass 1 relationships already in Neo4j from streaming)
       logger.info(
-        `[STORAGE] Starting to save ${Object.keys(relationshipsByType).length} relationship types...`,
+        `[STORAGE] Starting to save ${Object.keys(relationshipsByType).length} Pass 2 relationship types...`,
       );
       let totalRelsSaved = 0;
 

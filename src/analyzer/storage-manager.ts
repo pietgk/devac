@@ -23,6 +23,14 @@ export class StorageManager {
   }
 
   /**
+   * Gets the Neo4j client instance.
+   * Useful for querying nodes from Neo4j during Pass 2 relationship resolution.
+   */
+  getNeo4jClient(): Neo4jClient {
+    return this.neo4jClient;
+  }
+
+  /**
    * Saves an array of AstNode objects to Neo4j in batches using MERGE.
    * Assumes the input 'nodes' array has already been deduplicated by entityId by the caller.
    * Uses a simple UNWIND + MERGE + SET Cypher query.

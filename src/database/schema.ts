@@ -319,17 +319,48 @@ export class SchemaManager {
   /**
    * Deletes all nodes and relationships from the database.
    * WARNING: This is destructive and irreversible.
+   * Uses batch deletion to avoid Java heap space errors with large databases.
    */
   async resetDatabase(): Promise<void> {
     logger.warn("Deleting ALL nodes and relationships from the database...");
+
     try {
-      await this.neo4jClient.runTransaction(
-        "MATCH (n) DETACH DELETE n",
-        {},
-        "WRITE",
-        "SchemaManager",
+      let deletedCount = 0;
+      let batchCount = 0;
+      const BATCH_SIZE = 10000;
+
+      // Delete in batches to avoid memory issues
+      while (true) {
+        const result = await this.neo4jClient.runTransaction(
+          `MATCH (n)
+           WITH n LIMIT ${BATCH_SIZE}
+           DETACH DELETE n
+           RETURN count(*) as deleted`,
+          {},
+          "WRITE",
+          "SchemaManager",
+        );
+
+        const batchDeleted = (result as any)[0]?.deleted || 0;
+        deletedCount += batchDeleted;
+        batchCount++;
+
+        logger.debug(
+          `Batch ${batchCount}: Deleted ${batchDeleted} nodes (total: ${deletedCount})`,
+        );
+
+        // Stop when no more nodes to delete
+        if (batchDeleted === 0) {
+          break;
+        }
+
+        // Brief pause between batches to allow GC
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      logger.info(
+        `All nodes and relationships deleted (${deletedCount} total in ${batchCount} batches).`,
       );
-      logger.info("All nodes and relationships deleted.");
     } catch (error: any) {
       logger.error("Failed to delete all data from the database.", {
         message: error.message,

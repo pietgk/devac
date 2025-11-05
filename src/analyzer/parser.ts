@@ -11,6 +11,10 @@ import {
 } from "./types.js";
 // Import FileNode
 import { PythonAstParser } from "./python-parser.js";
+import {
+  findNearestTsConfig,
+  clearTsConfigCache,
+} from "./utils/tsconfig-finder.js";
 import { CCppParser } from "./parsers/c-cpp-parser.js";
 import { JavaParser } from "./parsers/java-parser.js";
 import { GoParser } from "./parsers/go-parser.js";
@@ -26,6 +30,7 @@ import { parseJsx } from "./parsers/jsx-parser.js";
 import { parseImports } from "./parsers/import-parser.js";
 import { PackageExtractor, PackageInfo } from "./parsers/package-extractor.js";
 import { ImportResolver } from "./parsers/import-resolver.js";
+import { StorageManager } from "./storage-manager.js";
 
 import { createContextLogger } from "../utils/logger.js";
 import { ParserError } from "../utils/errors.js";
@@ -51,6 +56,7 @@ export class Parser {
   private packages: PackageInfo[] = [];
   private workspaceRoot: string = "";
   private processedTsFiles: string[] = []; // Track TS files for Pass 2 repopulation
+  private storageManager: StorageManager | null = null; // For streaming writes
 
   constructor(workspaceRoot?: string) {
     this.workspaceRoot = workspaceRoot
@@ -106,6 +112,13 @@ export class Parser {
    */
   getPackages(): PackageInfo[] {
     return this.packages;
+  }
+
+  /**
+   * Sets the StorageManager for streaming writes during batch processing
+   */
+  setStorageManager(storage: StorageManager): void {
+    this.storageManager = storage;
   }
 
   /**
@@ -194,13 +207,14 @@ export class Parser {
     if (tsFilesToAdd.length > 0) {
       // Process TS/JS files in batches to avoid memory exhaustion
       // Adaptive batch sizing based on total file count
+      // Reduced from 100 to 50 for better memory management (see TS_MORPH_PERFORMANCE_ANALYSIS.md)
       let BATCH_SIZE: number;
       if (tsFilesToAdd.length < 10000) {
-        BATCH_SIZE = 100;
-      } else if (tsFilesToAdd.length < 50000) {
-        BATCH_SIZE = 75;
-      } else {
         BATCH_SIZE = 50;
+      } else if (tsFilesToAdd.length < 50000) {
+        BATCH_SIZE = 40;
+      } else {
+        BATCH_SIZE = 30;
       }
 
       const batches = [];
@@ -253,26 +267,17 @@ export class Parser {
           );
         }
 
-        // Create a fresh Project instance for this batch to prevent memory accumulation
-        const batchProject = new Project({
-          tsConfigFilePath: "tsconfig.json",
-          skipAddingFilesFromTsConfig: true,
-        });
+        // Parse files ONE AT A TIME with individual Projects and timeouts
+        // This prevents entire batch from hanging due to one slow file
+        await this._parseFilesOneByOne(batch);
 
-        // Add only this batch's files to the fresh project
-        batchProject.addSourceFilesAtPaths(batch);
+        // Write batch results to Neo4j immediately (streaming writes)
+        if (this.storageManager) {
+          await this.writeCurrentBatchToStorage();
+        }
 
-        // Parse the batch using the batch-specific project
-        const batchTargetPaths = new Set(
-          batch.map((f) => path.resolve(f).replace(/\\/g, "/")),
-        );
-        await this._parseTsProjectFilesBatch(batchProject, batchTargetPaths);
-
-        // Explicitly clear the batch project to release memory
-        // Note: ts-morph doesn't have a dispose() method, but clearing references helps GC
-        batchProject
-          .getSourceFiles()
-          .forEach((sf) => batchProject.removeSourceFile(sf));
+        // Clear tsconfig cache after each batch to prevent memory buildup
+        clearTsConfigCache();
 
         // Force garbage collection after each batch if available (run with --expose-gc flag)
         if (global.gc) {
@@ -699,6 +704,192 @@ export class Parser {
   }
 
   /**
+   * Parse TypeScript/JavaScript files ONE AT A TIME with individual Projects.
+   * Each file gets its own Project instance with a timeout wrapper to prevent hangs.
+   * This is slower due to Project instantiation overhead, but prevents one slow file from blocking the entire batch.
+   *
+   * @param filePaths - Array of file paths to parse
+   */
+  private async _parseFilesOneByOne(filePaths: string[]): Promise<void> {
+    const FILE_PARSE_TIMEOUT_MS = 30000; // 30 seconds per file
+    const PROJECT_CREATE_TIMEOUT_MS = 10000; // 10 seconds to create Project + add file
+    let successCount = 0;
+    let timeoutCount = 0;
+    let errorCount = 0;
+
+    logger.info(
+      `Parsing ${filePaths.length} files one-by-one with individual Projects...`,
+    );
+
+    for (let i = 0; i < filePaths.length; i++) {
+      const filePath = filePaths[i]!;
+      const filePathNormalized = path.resolve(filePath).replace(/\\/g, "/");
+
+      try {
+        // Wrap Project creation and file parsing in timeout
+        await withTimeout(
+          (async () => {
+            // Find the nearest tsconfig.json for this file
+            // This ensures we use per-package tsconfig for accurate path resolution
+            const nearestTsConfig = await findNearestTsConfig(
+              filePath,
+              this.workspaceRoot,
+            );
+
+            // Create individual Project for this one file
+            // Use per-package tsconfig if found, otherwise fall back to minimal compiler options
+            const fileProject = nearestTsConfig
+              ? new Project({
+                  tsConfigFilePath: nearestTsConfig,
+                  skipAddingFilesFromTsConfig: true, // Don't load other files from tsconfig
+                })
+              : new Project({
+                  compilerOptions: {
+                    allowJs: true,
+                    skipLibCheck: true,
+                  },
+                });
+
+            // Add only this one file
+            fileProject.addSourceFileAtPath(filePath);
+
+            // Parse the single file
+            const sourceFile = fileProject.getSourceFile(filePathNormalized);
+            if (!sourceFile) {
+              throw new Error(
+                `Source file not found after adding: ${filePath}`,
+              );
+            }
+
+            // Parse the file using existing logic
+            await this._parseSingleSourceFile(sourceFile, filePathNormalized);
+
+            // Clean up
+            fileProject.removeSourceFile(sourceFile);
+
+            successCount++;
+            if ((i + 1) % 10 === 0) {
+              logger.debug(
+                `Progress: ${i + 1}/${filePaths.length} files (${successCount} success, ${timeoutCount} timeout, ${errorCount} errors)`,
+              );
+            }
+          })(),
+          PROJECT_CREATE_TIMEOUT_MS + FILE_PARSE_TIMEOUT_MS,
+          `File processing timeout after ${PROJECT_CREATE_TIMEOUT_MS + FILE_PARSE_TIMEOUT_MS}ms: ${filePath}`,
+        );
+      } catch (error: any) {
+        if (error.message.includes("timeout")) {
+          logger.warn(
+            `⏱️ Timeout parsing file (${PROJECT_CREATE_TIMEOUT_MS + FILE_PARSE_TIMEOUT_MS}ms): ${filePath}`,
+          );
+          timeoutCount++;
+        } else {
+          logger.error(`❌ Error parsing file ${filePath}: ${error.message}`);
+          errorCount++;
+        }
+        // Continue to next file
+      }
+    }
+
+    logger.info(
+      `Completed one-by-one parsing: ${successCount}/${filePaths.length} successful, ` +
+        `${timeoutCount} timeouts, ${errorCount} errors`,
+    );
+  }
+
+  /**
+   * Parse a single TypeScript/JavaScript source file and extract AST nodes.
+   * This is the core parsing logic extracted for reuse in per-file parsing.
+   *
+   * @param sourceFile - The ts-morph SourceFile to parse
+   * @param filePath - The normalized file path
+   */
+  private async _parseSingleSourceFile(
+    sourceFile: any,
+    filePath: string,
+  ): Promise<void> {
+    const now = new Date().toISOString();
+    const instanceCounter = { count: 0 };
+    const filename = path.basename(filePath);
+    const fileEntityId = generateEntityId("file", filePath, filename, 1, 0);
+
+    // Get package information if available
+    const pkg = this.packageExtractor?.getPackageForFile(filePath);
+
+    const fileNode: FileNode = {
+      id: generateInstanceId(instanceCounter, "file", filename),
+      entityId: fileEntityId,
+      kind: "File",
+      name: filename,
+      filePath: filePath,
+      language:
+        sourceFile.getLanguageVariant() === ts.LanguageVariant.JSX
+          ? "TSX"
+          : "TypeScript",
+      startLine: 1,
+      endLine: sourceFile.getEndLineNumber(),
+      startColumn: 0,
+      endColumn: 0,
+      loc: sourceFile.getEndLineNumber(),
+      properties: pkg ? { packageName: pkg.name } : undefined,
+      createdAt: now,
+    };
+
+    const result: SingleFileParseResult = {
+      filePath: filePath,
+      nodes: [fileNode],
+      relationships: [],
+    };
+
+    const addNode = (node: AstNode) => {
+      result.nodes.push(node);
+    };
+    const addRelationship = (rel: RelationshipInfo) => {
+      result.relationships.push(rel);
+    };
+
+    const context = {
+      filePath: filePath,
+      sourceFile: sourceFile,
+      fileNode: fileNode,
+      result: result,
+      addNode: addNode,
+      addRelationship: addRelationship,
+      generateId: (
+        prefix: string,
+        identifier: string,
+        options?: { line?: number; column?: number },
+      ) => generateInstanceId(instanceCounter, prefix, identifier, options),
+      generateEntityId: generateEntityId,
+      logger: createContextLogger(`Parser-${path.basename(filePath)}`),
+      resolveImportPath: (source: string, imp: string) => {
+        return imp;
+      },
+      now: now,
+    };
+
+    // Parse with timeout
+    await withTimeout(
+      (async () => {
+        parseImports(context);
+        parseFunctions(context);
+        parseClasses(context);
+        parseVariables(context);
+        parseInterfaces(context);
+        parseTypeAliases(context);
+        if (context.fileNode.language === "TSX") {
+          parseJsx(context);
+        }
+      })(),
+      30000,
+      `File content parsing timeout: ${filePath}`,
+    );
+
+    // Store the result
+    this.tsResults.set(filePath, result);
+  }
+
+  /**
    * Parse TypeScript/JavaScript files from a batch-specific Project instance.
    * This method is called for each batch to prevent memory accumulation.
    *
@@ -846,6 +1037,67 @@ export class Parser {
         files: failedFiles.slice(0, 10),
       });
     }
+  }
+
+  /**
+   * Write current batch results to storage (streaming writes).
+   * Extracts nodes and relationships from tsResults and writes to Neo4j.
+   * Clears tsResults after writing to free memory.
+   */
+  private async writeCurrentBatchToStorage(): Promise<void> {
+    if (!this.storageManager) {
+      throw new Error("StorageManager not initialized for streaming writes");
+    }
+
+    // Extract nodes and relationships from current batch
+    const batchNodes: AstNode[] = [];
+    const batchRels: RelationshipInfo[] = [];
+
+    for (const result of this.tsResults.values()) {
+      batchNodes.push(...result.nodes);
+      batchRels.push(...result.relationships);
+    }
+
+    logger.info(
+      `📝 Writing batch to Neo4j: ${batchNodes.length} nodes, ${batchRels.length} relationships`,
+    );
+
+    // Write nodes
+    if (batchNodes.length > 0) {
+      await this.storageManager.saveNodesBatch(batchNodes);
+    }
+
+    // Group relationships by type and write
+    if (batchRels.length > 0) {
+      const relsByType = this.groupRelationshipsByType(batchRels);
+      for (const [type, rels] of Object.entries(relsByType)) {
+        if (rels.length > 0) {
+          await this.storageManager.saveRelationshipsBatch(type, rels);
+        }
+      }
+    }
+
+    // Clear memory immediately after writing
+    this.tsResults.clear();
+
+    logger.debug(`✅ Batch written and memory cleared`);
+  }
+
+  /**
+   * Group relationships by their type for batch writing.
+   * StorageManager requires relationships to be grouped by type.
+   */
+  private groupRelationshipsByType(
+    rels: RelationshipInfo[],
+  ): Record<string, RelationshipInfo[]> {
+    return rels.reduce(
+      (acc, rel) => {
+        if (!acc[rel.type]) acc[rel.type] = [];
+        acc[rel.type]!.push(rel);
+        return acc;
+      },
+      {} as Record<string, RelationshipInfo[]>,
+    );
   }
 }
 

@@ -13,6 +13,7 @@ interface AnalyzeOptions {
   ignore?: string; // Commander uses the long option name here
   updateSchema?: boolean;
   resetDb?: boolean; // Commander uses camelCase for flags
+  clean?: boolean; // Clean database before analysis (alias for resetDb)
   // Add Neo4j connection options
   neo4jUrl?: string;
   neo4jUser?: string;
@@ -42,6 +43,11 @@ export function registerAnalyzeCommand(program: Command): void {
     .option(
       "--reset-db",
       "WARNING: Deletes ALL nodes and relationships before analysis",
+      false,
+    )
+    .option(
+      "--clean",
+      "Clean database before analysis (same as --reset-db)",
       false,
     )
     // Define Neo4j connection options
@@ -88,16 +94,21 @@ export function registerAnalyzeCommand(program: Command): void {
         // 2. Handle Schema and Reset Options
         const schemaManager = new SchemaManager(neo4jClient);
 
-        if (finalOptions.resetDb) {
+        // Handle --clean or --reset-db flags (they do the same thing)
+        if (finalOptions.clean || finalOptions.resetDb) {
           logger.warn(
-            "Resetting database: Deleting ALL nodes and relationships...",
+            "Cleaning database: Deleting ALL nodes and relationships...",
           );
           await schemaManager.resetDatabase();
-          logger.info("Database reset complete.");
+          logger.info("Database cleanup complete.");
           // Schema will be applied next anyway
         }
 
-        if (finalOptions.updateSchema || finalOptions.resetDb) {
+        if (
+          finalOptions.updateSchema ||
+          finalOptions.resetDb ||
+          finalOptions.clean
+        ) {
           logger.info("Applying Neo4j schema (constraints and indexes)...");
           await schemaManager.applySchema(true); // Force update if requested or after reset
           logger.info("Schema application complete.");
