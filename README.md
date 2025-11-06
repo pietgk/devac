@@ -19,6 +19,13 @@
 
 **CodeGraph Analyzer** is a powerful static analysis engine that transforms your codebase into a rich, queryable Neo4j graph database. It now supports **multiple programming languages and frameworks**, creating a comprehensive "digital twin" of your entire software ecosystem. This enables unprecedented code comprehension, visualization, and AI-driven development workflows across complex, multi-language projects.
 
+## 📚 Documentation
+
+- **[Quick Start Guide](docs/QUICK_START.md)** - Get up and running in minutes with installation, basic usage, and C4 diagram queries
+- **[Architecture Documentation](docs/architecture/ARCHITECTURE.md)** - Complete technical architecture, entity ID system, parsing pipeline, and validation
+- **[MCP Setup Guide](MCP_SETUP.md)** - Step-by-step setup for Model Context Protocol integration
+- **[Example Queries](example-queries.md)** - 50+ tested Cypher queries for exploring your codebase
+
 ## 🌟 What's New: Multi-Language Support
 
 CodeGraph Analyzer now provides robust support for a wide spectrum of programming languages and frameworks:

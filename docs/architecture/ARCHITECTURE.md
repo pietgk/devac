@@ -1,1360 +1,994 @@
-# CodeGraph Architecture Documentation
+# CodeGraph Architecture
 
-> **Version:** 2.0 (Updated: 2025-11-06)  
-> **Status:** Production-ready with streaming writes and multi-language support
+> **Version:** 3.0  
+> **Last Updated:** 2025-11-06  
+> **Status:** Production-ready with C4 diagram support
 
 ## Table of Contents
 
 1. [Executive Summary](#executive-summary)
-2. [System Overview](#system-overview)
-3. [Architecture Diagrams](#architecture-diagrams)
-4. [Core Components](#core-components)
-5. [Data Flow](#data-flow)
-6. [Language Parser Architecture](#language-parser-architecture)
-7. [Entity ID System](#entity-id-system)
+2. [System Architecture](#system-architecture)
+3. [Core Components](#core-components)
+4. [Entity ID System](#entity-id-system)
+5. [Two-Pass Parsing Pipeline](#two-pass-parsing-pipeline)
+6. [Language Parsers](#language-parsers)
+7. [C4 Diagram Support](#c4-diagram-support)
 8. [Neo4j Schema](#neo4j-schema)
 9. [Workspace Management](#workspace-management)
-10. [Validation & Quality Assurance](#validation--quality-assurance)
+10. [Validation & Testing](#validation--testing)
+11. [Development Guide](#development-guide)
 
 ---
 
 ## Executive Summary
 
-**CodeGraph** is a multi-language static code analysis tool that extracts Abstract Syntax Trees (AST) from source code and stores the results in a Neo4j graph database. It supports TypeScript/JavaScript, Python, Java, C#, Go, and C/C++.
+**CodeGraph** is a multi-language static code analysis tool that extracts Abstract Syntax Trees (AST) from source code and stores the results in a Neo4j graph database, enabling powerful code exploration, dependency analysis, and C4 architecture diagram generation.
 
-### Key Features
-- ✅ **Multi-language support** with dedicated parsers for 6+ languages
-- ✅ **Two-pass parsing** for accurate relationship resolution
-- ✅ **Streaming writes** to Neo4j during Pass 1 (memory efficient)
-- ✅ **Workspace management** for multi-repository codebases
-- ✅ **Sleep detection** for laptop-friendly long-running analyses
-- ✅ **Verbosity levels** for debugging (-v, -vv, -vvv)
-- ✅ **Repository filtering** with named presets
+### Key Capabilities
+
+✅ **Multi-language support** - TypeScript, JavaScript, Python, Java, C#, Go, C/C++  
+✅ **C4 diagram generation** - Container and Component level diagrams from code  
+✅ **Package detection** - Workspace-aware with monorepo support  
+✅ **Import resolution** - Resolves workspace packages, path aliases, relative imports  
+✅ **Component analysis** - React component and hook detection  
+✅ **Sophisticated entity IDs** - Handles function overloading, anonymous functions  
+✅ **Two-pass parsing** - Accurate cross-file relationship resolution  
+✅ **Memory efficient** - Streaming writes to Neo4j during parsing  
+✅ **Sleep detection** - Laptop-friendly for long-running analyses  
 
 ### Primary Use Cases
-1. **Code exploration** - Navigate large codebases via graph queries
-2. **Dependency analysis** - Understand import/call relationships
-3. **Architecture visualization** - Generate C4 diagrams from code structure
-4. **Refactoring support** - Identify impact of changes
-5. **Technical debt** - Find orphaned code, circular dependencies
+
+1. **Architecture Visualization** - Generate C4 Container and Component diagrams
+2. **Dependency Analysis** - Understand package dependencies and import patterns
+3. **Code Exploration** - Navigate large codebases via graph queries
+4. **Refactoring Support** - Identify impact of changes across language boundaries
+5. **Technical Debt Analysis** - Find circular dependencies, unused code
 
 ---
 
-## System Overview
+## System Architecture
+
+### High-Level Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        CodeGraph CLI                            │
-│  Commands: analyze, workspace sync, workspace status            │
-└─────────────────────┬───────────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    AnalyzerService                               │
-│  Orchestrates: Scanning → Parsing → Storage                     │
-└─────────────────────┬───────────────────────────────────────────┘
-                      │
-        ┌─────────────┼─────────────┐
-        │             │             │
-        ▼             ▼             ▼
-┌──────────────┐ ┌─────────┐ ┌──────────────┐
-│ FileScanner  │ │ Parser  │ │StorageManager│
-│ Find files   │ │AST→Nodes│ │ Neo4j Write  │
-└──────────────┘ └────┬────┘ └──────────────┘
-                      │
-        ┌─────────────┼─────────────┐
-        │             │             │
-        ▼             ▼             ▼
-  ┌─────────┐   ┌─────────┐   ┌─────────┐
-  │  TS/JS  │   │ Python  │   │  Java   │
-  │ Parser  │   │ Parser  │   │ Parser  │
-  └─────────┘   └─────────┘   └─────────┘
-        │             │             │
-        ▼             ▼             ▼
-┌───────────────────────────────────────────┐
-│           Neo4j Graph Database            │
-│  Nodes: Files, Classes, Methods, etc.     │
-│  Edges: IMPORTS, CALLS, HAS_METHOD, etc.  │
-└───────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│                         User Interface                          │
+│  CLI: analyze, workspace sync, workspace status                │
+└──────────────────────────┬─────────────────────────────────────┘
+                           │
+                           ▼
+┌────────────────────────────────────────────────────────────────┐
+│                      AnalyzerService                            │
+│  Orchestrates: Package Detection → Scanning → Parsing → Storage│
+└──────────────────────────┬─────────────────────────────────────┘
+                           │
+            ┌──────────────┼──────────────┐
+            │              │              │
+            ▼              ▼              ▼
+    ┌──────────────┐  ┌────────┐  ┌─────────────┐
+    │PackageExtractor│ │Parser │  │StorageManager│
+    │ pnpm/npm/yarn│ │2-Pass  │  │Batch Neo4j  │
+    │ workspace    │ │ AST→   │  │   Writes    │
+    │ detection    │ │ Nodes  │  │             │
+    └──────────────┘  └───┬────┘  └─────────────┘
+                          │
+        ┌─────────────────┼─────────────────┐
+        │                 │                 │
+        ▼                 ▼                 ▼
+  ┌──────────┐      ┌──────────┐     ┌──────────┐
+  │  TS/JS   │      │  Python  │     │   Java   │
+  │ts-morph  │      │Python AST│     │tree-sitter│
+  └──────────┘      └──────────┘     └──────────┘
+        │                 │                 │
+        └─────────────────┼─────────────────┘
+                          │
+                          ▼
+        ┌─────────────────────────────────────┐
+        │        Neo4j Graph Database         │
+        │                                     │
+        │  Nodes: Package, File, Function,   │
+        │         Class, Interface, etc.      │
+        │                                     │
+        │  Edges: BELONGS_TO, DEPENDS_ON,    │
+        │         RESOLVES_TO, CALLS, etc.   │
+        └─────────────────────────────────────┘
 ```
 
 ### Component Responsibilities
 
-| Component | Responsibility | Language |
-|-----------|---------------|----------|
-| **CLI** | User interface, argument parsing | TypeScript |
-| **AnalyzerService** | Analysis orchestration | TypeScript |
-| **FileScanner** | Recursive file discovery with ignore patterns | TypeScript |
-| **Parser** | Multi-language AST extraction coordinator | TypeScript |
-| **Language Parsers** | Language-specific AST extraction | TypeScript + tree-sitter/ast |
-| **StorageManager** | Batch writes to Neo4j | TypeScript |
-| **Neo4jClient** | Connection management, health checks | TypeScript |
-| **WorkspaceManager** | Multi-repo coordination | TypeScript |
-
----
-
-## Architecture Diagrams
-
-### 1. High-Level System Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         User Layer                               │
-├─────────────────────────────────────────────────────────────────┤
-│  CLI Commands:                                                   │
-│  • analyze <directory>        - Single directory analysis        │
-│  • workspace sync            - Multi-repo sync                   │
-│  • workspace init            - Discover repositories             │
-│  • workspace status          - Check sync status                 │
-└─────────────────────┬───────────────────────────────────────────┘
-                      │
-┌─────────────────────▼───────────────────────────────────────────┐
-│                    Application Layer                             │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌────────────────┐  ┌─────────────────┐  ┌─────────────────┐  │
-│  │ AnalyzerService│  │ WorkspaceManager│  │  SchemaManager  │  │
-│  │ • Orchestrate  │  │ • Multi-repo    │  │ • Constraints   │  │
-│  │ • Sleep detect │  │ • Filtering     │  │ • Indexes       │  │
-│  └────────────────┘  └─────────────────┘  └─────────────────┘  │
-└─────────────────────┬───────────────────────────────────────────┘
-                      │
-┌─────────────────────▼───────────────────────────────────────────┐
-│                    Processing Layer                              │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────┐ │
-│  │ FileScanner  │  │    Parser    │  │ RelationshipResolver  │ │
-│  │ • Discovery  │  │ • 2-pass AST │  │ • Type resolution     │ │
-│  │ • Filtering  │  │ • Streaming  │  │ • Call graph          │ │
-│  └──────────────┘  └──────┬───────┘  └───────────────────────┘ │
-│                            │                                     │
-│  ┌─────────────────────────┼──────────────────────────────┐    │
-│  │                         ▼                               │    │
-│  │  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐│    │
-│  │  │ TS   │ │Python│ │ Java │ │  C#  │ │  Go  │ │ C++  ││    │
-│  │  │Parser│ │Parser│ │Parser│ │Parser│ │Parser│ │Parser││    │
-│  │  └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ └──────┘│    │
-│  │          Language-Specific Parsers                      │    │
-│  └──────────────────────────────────────────────────────────┘    │
-└─────────────────────┬───────────────────────────────────────────┘
-                      │
-┌─────────────────────▼───────────────────────────────────────────┐
-│                    Storage Layer                                 │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌────────────────┐  ┌──────────────┐  ┌──────────────────┐    │
-│  │StorageManager  │  │ Neo4jClient  │  │  TempFileStore   │    │
-│  │ • Batching     │  │ • Connection │  │ • Pass 1→Pass 2  │    │
-│  │ • Deduplication│  │ • Reconnect  │  │ • JSON cache     │    │
-│  └────────────────┘  └──────────────┘  └──────────────────┘    │
-└─────────────────────┬───────────────────────────────────────────┘
-                      │
-┌─────────────────────▼───────────────────────────────────────────┐
-│                    Data Layer                                    │
-├─────────────────────────────────────────────────────────────────┤
-│                    Neo4j Graph Database                          │
-│  • Nodes: 15+ types (File, Class, Method, etc.)                 │
-│  • Relationships: 20+ types (IMPORTS, CALLS, etc.)              │
-│  • Constraints: Unique entityId per node type                   │
-│  • Indexes: Performance optimization                            │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### 2. Two-Pass Parsing Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         PASS 1: AST Extraction                   │
-└─────────────────────────────────────────────────────────────────┘
-
-Source Files
-    │
-    ├─► TypeScript/JavaScript ─────► ts-morph (in-memory)
-    │                                      │
-    │                                      ├─► Nodes: Classes, Functions, Interfaces
-    │                                      ├─► Relationships: Imports, Contains
-    │                                      └─► STREAM → Neo4j (immediate write)
-    │
-    ├─► Python ─────────────────────► Python AST module
-    │                                      │
-    │                                      ├─► Nodes: Classes, Functions, Modules
-    │                                      ├─► Relationships: Imports, Contains
-    │                                      └─► JSON → Temp Files (/tmp/codegraph/*.json)
-    │
-    ├─► Java ───────────────────────► tree-sitter-java
-    │                                      │
-    │                                      ├─► Nodes: Classes, Methods, Fields
-    │                                      ├─► Relationships: Imports, HAS_METHOD
-    │                                      └─► JSON → Temp Files
-    │
-    └─► C#/Go/C++ ──────────────────► tree-sitter parsers
-                                           │
-                                           └─► JSON → Temp Files
-
-┌─────────────────────────────────────────────────────────────────┐
-│                  BETWEEN PASSES: Collection                      │
-└─────────────────────────────────────────────────────────────────┘
-
-    ┌────────────────────────────────────────┐
-    │  Temp Files          ts-morph Memory   │
-    │  (Python/Java/etc.)  (TS/JS)           │
-    └────────────┬─────────────────┬─────────┘
-                 │                 │
-                 └────────┬────────┘
-                          │
-                          ▼
-                ┌──────────────────┐
-                │  CollectResults  │
-                │  • Read all JSON │
-                │  • Merge with TS │
-                │  • Build node map│
-                └─────────┬────────┘
-                          │
-                          ▼
-              ┌────────────────────────┐
-              │  Combined Node/Rel Map │
-              │  131+ nodes            │
-              │  162+ relationships    │
-              └────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────┐
-│              PASS 2: Relationship Resolution                     │
-└─────────────────────────────────────────────────────────────────┘
-
-    RelationshipResolver
-         │
-         ├─► Find function calls (CALLS relationships)
-         ├─► Resolve type references (HAS_TYPE relationships)
-         ├─► Link method parameters (HAS_PARAMETER relationships)
-         └─► Match import targets (IMPORTS relationships)
-              │
-              └─► WRITE → Neo4j (batch write)
-
-┌─────────────────────────────────────────────────────────────────┐
-│                    CLEANUP: Temp Files                           │
-└─────────────────────────────────────────────────────────────────┘
-
-    parser.cleanupTempFiles()
-         │
-         └─► Delete all *.json from /tmp/codegraph/
-              (Only after Pass 2 completes successfully)
-```
-
-### 3. Data Flow Sequence Diagram
-
-```
-User          CLI        Analyzer    Scanner    Parser    LanguageParsers    StorageManager    Neo4j
- │             │             │          │          │              │                  │            │
- │──analyze──► │             │          │          │              │                  │            │
- │             │──analyze()─►│          │          │              │                  │            │
- │             │             │──scan()─►│          │              │                  │            │
- │             │             │          │──find──► │              │                  │            │
- │             │             │◄─files── │          │              │                  │            │
- │             │             │                     │              │                  │            │
- │             │             │─────Pass 1──────────►              │                  │            │
- │             │             │                     │──parse(TS)──►│                  │            │
- │             │             │                     │              │──extractAST()──► │            │
- │             │             │                     │              │◄─nodes/rels───── │            │
- │             │             │                     │◄─────────────│                  │            │
- │             │             │                     │────stream────────────────────────────►write()─►│
- │             │             │                     │                                  │            │
- │             │             │                     │─parse(Java)─►│                  │            │
- │             │             │                     │              │──extractAST()──► │            │
- │             │             │                     │              │◄─nodes/rels───── │            │
- │             │             │                     │──writeJSON──►│                  │            │
- │             │             │                     │              │──save temp file  │            │
- │             │             │                     │              │                  │            │
- │             │             │◄────Pass 1 done─────│              │                  │            │
- │             │             │                     │              │                  │            │
- │             │             │───collectResults()──►              │                  │            │
- │             │             │                     │──read JSON───►                  │            │
- │             │             │◄───combined map─────│              │                  │            │
- │             │             │                     │              │                  │            │
- │             │             │─────Pass 2──────────►              │                  │            │
- │             │             │                     │──resolve()───►                  │            │
- │             │             │                     │              │──find calls──►   │            │
- │             │             │◄───relationships────│              │                  │            │
- │             │             │                     │              │                  │            │
- │             │             │─────store()─────────────────────────────────────────► │            │
- │             │             │                     │              │                  │──batch───► │
- │             │             │                     │              │                  │            │
- │             │             │──cleanup()──────────►              │                  │            │
- │             │             │                     │──delete temp files              │            │
- │             │◄──complete──│                     │              │                  │            │
- │◄──success───│             │                     │              │                  │            │
-```
+| Component | Responsibility | Status |
+|-----------|---------------|--------|
+| **AnalyzerService** | Orchestrates analysis pipeline | ✅ Production |
+| **PackageExtractor** | Discovers workspace packages | ✅ Production |
+| **ImportResolver** | Resolves imports to targets | ✅ Production |
+| **ComponentAnalyzer** | Detects React components/hooks | ✅ Ready (needs integration) |
+| **FileScanner** | Discovers files with ignore patterns | ✅ Production |
+| **Parser** | Coordinates language parsers | ✅ Production |
+| **StorageManager** | Batch writes to Neo4j | ✅ Production |
+| **Neo4jClient** | Connection management | ✅ Production |
+| **SleepDetector** | Detects system sleep/wake | ✅ Production |
 
 ---
 
 ## Core Components
 
-### 1. AnalyzerService
-**Location:** `src/analyzer/analyzer-service.ts`
+### AnalyzerService
 
-**Purpose:** Orchestrates the entire analysis pipeline
+**Location**: `src/analyzer/analyzer-service.ts`
 
-**Key Methods:**
-- `analyze(directory, options)` - Main entry point
-- `handleSystemWake(event)` - Reconnects to Neo4j after sleep
+**Responsibilities**:
+- Initializes package detection
+- Scans files with ignore patterns
+- Runs two-pass parsing pipeline
+- Manages Neo4j connection lifecycle
+- Handles system sleep/wake events
 
-**Features:**
-- Sleep detection with automatic Neo4j reconnection
-- Repository metadata tagging (for workspace mode)
-- Streaming writes for memory efficiency
-- Comprehensive error handling
-
-**Usage Example:**
+**Key Methods**:
 ```typescript
-const analyzer = new AnalyzerService(
-  { uri: "bolt://localhost:7687" },
-  workspaceRoot,
-  { repository: "my-repo", repositoryPath: "/path", syncedAt: "2025-11-06" }
-);
-
-await analyzer.analyze("/path/to/code", {
-  ignorePatterns: ["**/node_modules/**"],
-  supportedExtensions: [".ts", ".js", ".py"],
-  maxFiles: 1000
-});
+async analyze(directory: string, configOverride?: {
+  ignorePatterns?: string[];
+  supportedExtensions?: string[];
+  maxFiles?: number;
+}): Promise<void>
 ```
 
-### 2. Parser (Multi-language Coordinator)
-**Location:** `src/analyzer/parser.ts`
+### PackageExtractor
 
-**Purpose:** Coordinates language-specific parsers and manages two-pass processing
+**Location**: `src/analyzer/parsers/package-extractor.ts`
 
-**Key Methods:**
-- `initializePackages()` - Detects workspace packages for import resolution
-- `parseFiles()` - Pass 1: Extract AST from all files
-- `collectResults()` - Merge results from all parsers
-- `cleanupTempFiles()` - Delete temp files after Pass 2
+**Status**: ✅ **Fully Implemented and Integrated**
 
-**Architecture:**
+**Responsibilities**:
+- Discovers packages from `pnpm-workspace.yaml`
+- Discovers packages from `package.json` workspaces
+- Determines package type: `frontend`, `shared-library`, `tool`
+- Resolves package entry points
+- Maps files to their containing package
+
+**Key Methods**:
 ```typescript
-class Parser {
-  private pythonParser: PythonAstParser;
-  private javaParser: JavaParser;
-  private csharpParser: CSharpParser;
-  private goParser: GoParser;
-  private ccppParser: CCppParser;
-  
-  async parseFiles(files: FileInfo[]): Promise<void> {
-    // Separate files by language
-    const tsjsFiles = files.filter(isTypeScript);
-    const pythonFiles = files.filter(isPython);
-    // ... etc
-    
-    // Parse in parallel
-    await Promise.all([
-      this.parseTsFiles(tsjsFiles),     // In-memory → Neo4j stream
-      this.parsePythonFiles(pythonFiles), // → Temp JSON files
-      this.parseJavaFiles(javaFiles),     // → Temp JSON files
-    ]);
-  }
-}
+async discoverPackages(): Promise<PackageInfo[]>
+getPackageForFile(filePath: string): PackageInfo | null
+createPackageNodes(now: string): PackageNode[]
 ```
 
-### 3. Language Parsers
+**Integration**: `src/analyzer/parser.ts` line 87, 443
 
-#### TypeScript/JavaScript Parser
-**Uses:** ts-morph (TypeScript Compiler API)
-**Output:** Direct to Neo4j (streaming)
-**Extracts:**
-- File nodes
-- Import declarations
-- Class/Interface definitions
-- Method/Function declarations
-- Type aliases, Enums
-- Variable declarations (exported)
+### ImportResolver
 
-#### Python Parser
-**Uses:** Python `ast` module via subprocess
-**Output:** Temporary JSON files
-**Extracts:**
-- Module nodes
-- Import statements
-- Class definitions
-- Function definitions (standalone and methods)
-- Decorators
+**Location**: `src/analyzer/parsers/import-resolver.ts`
 
-#### Java Parser
-**Uses:** tree-sitter-java
-**Output:** Temporary JSON files
-**Extracts:**
-- Package declarations
-- Import statements
-- Class/Interface definitions
-- Method declarations (including constructors)
-- Field declarations
-- Enum definitions
+**Status**: ✅ **Fully Implemented and Integrated**
 
-#### C# Parser
-**Uses:** tree-sitter-c-sharp
-**Output:** Temporary JSON files
-**Extracts:**
-- Namespace declarations
-- Using directives
-- Class/Interface/Struct definitions
-- Method declarations
-- Property declarations
-- Field declarations
+**Responsibilities**:
+- Resolves workspace package imports (`@mindlercare/ui-web`)
+- Resolves relative imports (`./utils`, `../components`)
+- Resolves TypeScript path aliases (`@/components`, `core/utils`)
+- Per-package `tsconfig.json` support
+- Extension and index file resolution
 
-#### Go Parser
-**Uses:** tree-sitter-go
-**Output:** Temporary JSON files
-**Extracts:**
-- Package declarations
-- Import statements
-- Function declarations
-- Method declarations
-- Struct definitions
-- Interface definitions
-
-#### C/C++ Parser
-**Uses:** tree-sitter-cpp
-**Output:** Temporary JSON files
-**Extracts:**
-- Include directives
-- Macro definitions
-- Class definitions (with CSS filter)
-- Function definitions
-- Method declarations
-
-### 4. StorageManager
-**Location:** `src/analyzer/storage-manager.ts`
-
-**Purpose:** Batch writes to Neo4j with deduplication
-
-**Key Features:**
-- Batches writes in configurable sizes (default: 100)
-- Deduplicates nodes by entityId
-- Groups relationships by type for efficient writes
-- Logs write statistics
-
-**Write Strategy:**
+**Key Methods**:
 ```typescript
-async saveNodes(nodes: AstNode[]): Promise<void> {
-  // 1. Deduplicate by entityId
-  const uniqueNodes = Array.from(
-    new Map(nodes.map(n => [n.entityId, n])).values()
-  );
-  
-  // 2. Batch write with UNWIND
-  const batches = chunk(uniqueNodes, this.batchSize);
-  for (const batch of batches) {
-    await session.run(
-      `UNWIND $nodes AS node
-       MERGE (n {entityId: node.entityId})
-       SET n = node`,
-      { nodes: batch }
-    );
-  }
-}
+async resolve(
+  importNode: ImportNode, 
+  fromFile: string
+): Promise<ResolvedImport | null>
 ```
 
-### 5. Neo4jClient
-**Location:** `src/database/neo4j-client.ts`
+**Integration**: `src/analyzer/parser.ts` line 94, `src/analyzer/relationship-resolver.ts` line 98
 
-**Purpose:** Connection management and health monitoring
+### ComponentAnalyzer
 
-**Key Features:**
-- Lazy driver initialization
-- Connection health checks
-- Automatic reconnection after sleep
-- Session management with proper cleanup
-- Transactional query execution
+**Location**: `src/analyzer/parsers/component-analyzer.ts`
 
-**Health Check:**
+**Status**: ✅ **Implemented**, ⚠️ **Needs Integration** (1 hour)
+
+**Responsibilities**:
+- Detects React components (uppercase name, returns JSX, in `.tsx`)
+- Detects React hooks (starts with `use[A-Z]`)
+- Finds rendered components (JSX element usage)
+- Finds used hooks (hook calls in component body)
+
+**Key Methods**:
 ```typescript
-async isConnectionHealthy(): Promise<boolean> {
-  try {
-    await this.driver.verifyConnectivity({ database: this.dbName });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async reconnect(): Promise<void> {
-  await this.closeDriver();
-  await this.initializeDriver();
-}
+isReactComponent(func: FunctionDeclaration): boolean
+isReactHook(func: FunctionDeclaration): boolean
+findRenderedComponents(func: FunctionDeclaration): string[]
+findUsedHooks(func: FunctionDeclaration): string[]
 ```
 
-### 6. WorkspaceManager
-**Location:** `src/workspace/workspace-manager.ts`
+**Integration Status**: 
+- ✅ Relationship resolver exists and is called
+- ❌ Function parser doesn't set `isReactComponent`/`isHook` flags yet
 
-**Purpose:** Multi-repository coordination
+### StorageManager
 
-**Key Features:**
-- Repository discovery (finds package.json)
-- Filter presets for targeted syncing
-- Per-repository statistics
-- Sync reports with success/failure tracking
+**Location**: `src/analyzer/storage-manager.ts`
 
-**Filter Precedence:**
-1. `--filter-preset` (highest priority)
-2. `--filter` (individual repos)
-3. `--repos` (legacy option)
-4. All enabled repos (default)
+**Responsibilities**:
+- Batch writes to Neo4j (configurable batch size)
+- Deduplication by entityId
+- Streaming writes during Pass 1 (memory efficient)
+- Relationship writing during Pass 2
 
----
-
-## Data Flow
-
-### Single Repository Analysis Flow
-
-```
-1. CLI Entry
-   ↓
-2. AnalyzerService.analyze()
-   ↓
-3. FileScanner.scan()
-   ├─► Apply ignore patterns
-   ├─► Filter by extensions
-   └─► Return FileInfo[]
-   ↓
-4. Parser.initializePackages()
-   ├─► Find tsconfig.json files
-   ├─► Extract package names
-   └─► Build import resolver map
-   ↓
-5. Parser.parseFiles() [PASS 1]
-   ├─► TypeScript files
-   │   ├─► ts-morph: Parse AST
-   │   ├─► Extract nodes
-   │   └─► Stream → Neo4j immediately
-   │
-   ├─► Python files
-   │   ├─► Python AST: Parse
-   │   ├─► Extract nodes
-   │   └─► Write → temp JSON
-   │
-   ├─► Java files
-   │   ├─► tree-sitter: Parse
-   │   ├─► Extract nodes
-   │   └─► Write → temp JSON
-   │
-   └─► [Other languages similarly]
-   ↓
-6. Parser.collectResults()
-   ├─► Read all temp JSON files
-   ├─► Merge with ts-morph results
-   └─► Build combined node map
-   ↓
-7. RelationshipResolver.resolve() [PASS 2]
-   ├─► Find function calls
-   ├─► Resolve type references
-   ├─► Match import targets
-   └─► Return new relationships
-   ↓
-8. StorageManager.saveRelationships()
-   ├─► Group by type
-   ├─► Batch write
-   └─► Log statistics
-   ↓
-9. Parser.cleanupTempFiles()
-   ├─► Delete /tmp/codegraph/*.json
-   └─► Success
-   ↓
-10. Complete!
-```
-
-### Workspace Sync Flow
-
-```
-1. workspace sync command
-   ↓
-2. WorkspaceManager.loadConfig()
-   ├─► Read .codegraph/workspace.json
-   ├─► Validate schema
-   └─► Return WorkspaceConfig
-   ↓
-3. Apply filters
-   ├─► Filter by preset?
-   ├─► Filter by names?
-   └─► Get repos to sync
-   ↓
-4. For each repository:
-   ├─► Create AnalyzerService
-   ├─► Tag with repository metadata
-   ├─► Run analyze()
-   ├─► Collect statistics
-   └─► Add to sync report
-   ↓
-5. Generate SyncReport
-   ├─► Total repositories
-   ├─► Success/failure counts
-   ├─► Total files/nodes/relationships
-   └─► Duration
-   ↓
-6. Display results
-   └─► Per-repo breakdown
-```
-
----
-
-## Language Parser Architecture
-
-### Parser Selection Logic
-
-```typescript
-function selectParser(filePath: string): Parser {
-  const ext = path.extname(filePath);
-  
-  switch (ext) {
-    case '.ts':
-    case '.tsx':
-    case '.js':
-    case '.jsx':
-      return TsMorphParser; // In-memory, streams to Neo4j
-      
-    case '.py':
-      return PythonParser; // Temp JSON
-      
-    case '.java':
-      return JavaParser; // Temp JSON
-      
-    case '.cs':
-      return CSharpParser; // Temp JSON
-      
-    case '.go':
-      return GoParser; // Temp JSON
-      
-    case '.c':
-    case '.cpp':
-    case '.h':
-    case '.hpp':
-      return CCppParser; // Temp JSON
-      
-    default:
-      return null; // Skip file
-  }
-}
-```
-
-### AST Extraction Patterns
-
-#### Pattern 1: ts-morph (In-Memory)
-```typescript
-// Direct extraction with streaming
-const project = new Project();
-project.addSourceFilesAtPaths(files);
-
-for (const sourceFile of project.getSourceFiles()) {
-  // Extract nodes
-  const classes = sourceFile.getClasses();
-  const functions = sourceFile.getFunctions();
-  
-  // Stream immediately to Neo4j
-  await storageManager.saveNodes(classes);
-  await storageManager.saveNodes(functions);
-}
-```
-
-#### Pattern 2: tree-sitter (JSON Cache)
-```typescript
-// Parse to temporary structure
-const tree = parser.parse(sourceCode);
-const nodes: AstNode[] = [];
-const relationships: RelationshipInfo[] = [];
-
-// Visit AST
-visitTree(tree.rootNode, (node) => {
-  if (node.type === 'class_declaration') {
-    nodes.push(extractClassNode(node));
-    relationships.push(extractDefinesClass(node));
-  }
-});
-
-// Write to temp file
-const tempFile = `/tmp/codegraph/${hash}.json`;
-await fs.writeFile(tempFile, JSON.stringify({ nodes, relationships }));
-```
-
-#### Pattern 3: Python AST (Subprocess + JSON)
-```typescript
-// Execute Python script
-const pythonScript = `
-import ast
-import json
-
-with open('${filePath}', 'r') as f:
-    tree = ast.parse(f.read())
-    
-nodes = []
-for node in ast.walk(tree):
-    if isinstance(node, ast.ClassDef):
-        nodes.append({
-            'type': 'PythonClass',
-            'name': node.name,
-            'line': node.lineno
-        })
-
-print(json.dumps(nodes))
-`;
-
-const result = await exec(`python3 -c "${pythonScript}"`);
-const tempFile = `/tmp/codegraph/${hash}.json`;
-await fs.writeFile(tempFile, result.stdout);
-```
+**Features**:
+- Batching by node/relationship type
+- Retry logic for transient failures
+- Comprehensive logging
 
 ---
 
 ## Entity ID System
 
-### Purpose
-Entity IDs uniquely identify code entities across analysis runs, enabling incremental updates and accurate relationship matching.
+**Location**: `src/analyzer/parser-utils.ts`
+
+**Status**: ✅ **Production-Ready** - Handles ALL edge cases
 
 ### Format
-```
-<type>:<qualified_name>
-```
+
+`{prefix}:{filepath}:{name}:{signature_hint}#{hash}`
+
+### Features
+
+✅ **Function Overloading** - Same name, different signatures  
+✅ **Anonymous Functions** - Location-based uniqueness  
+✅ **Nested Entities** - Parent context in hash  
+✅ **Backward Compatible** - Supports legacy 2-param signature  
 
 ### Examples
 
-#### TypeScript
 ```typescript
-// Class
-entityId: "tsclass:@myapp/utils.StringHelper"
+// Overloaded functions
+function:/src/utils.ts:process:(string)#a7f3e9c2
+function:/src/utils.ts:process:(number)#b8e4f0c3
 
-// Method
-entityId: "tsmethod:@myapp/utils.StringHelper.capitalize"
+// Anonymous callbacks
+function:/src/app.ts:callback_map_arg0#d0a6f3a5
 
-// Function
-entityId: "tsfunction:@myapp/utils.formatDate"
+// Class methods
+method:/src/User.ts:UserService.getUser#c9f5e1d4
 
-// Interface
-entityId: "tsinterface:@myapp/types.UserProfile"
+// Constructors
+constructor:/src/Button.ts:Button:()#e5f6a1b2
 ```
 
-#### Java
-```java
-// Class
-entityId: "javaclass:com.example.myapp.UserService"
+### Signatures
 
-// Method
-entityId: "javamethod:com.example.myapp.UserService.findById"
-
-// Field
-entityId: "javafield:com.example.myapp.UserService.repository"
-```
-
-#### Python
-```python
-# Class
-entityId: "pythonclass:myapp.services.user_service.UserService"
-
-# Method
-entityId: "pythonmethod:myapp.services.user_service.UserService.find_by_id"
-
-# Function
-entityId: "pythonfunction:myapp.utils.format_date"
-```
-
-### Entity ID Generation Fix (Session 022)
-
-**Problem:** Methods/fields were using full entity ID instead of qualified name:
 ```typescript
-// ❌ WRONG
-const parentId = "javaclass:com.example.MyClass";
-const methodId = `javamethod:${parentId}.myMethod`;
-// Result: "javamethod:javaclass:com.example.MyClass.myMethod"
+// Modern signature (5-7 params) - full control
+generateEntityId(
+  prefix: string,           // "function", "class", "interface"
+  filepath: string,         // Normalized absolute path
+  name: string,             // Entity name
+  line: number,             // Start line (1-based)
+  column: number,           // Start column (0-based)
+  signatureHint?: string,   // Human-readable "(string, number)"
+  fullSignature?: string    // Full signature for hash
+): string
+
+// Legacy signature (2 params) - backward compatible
+generateEntityId(
+  prefix: string,           // "function", "class"
+  qualifiedName: string     // "filepath:name" or "filepath:name:line"
+): string
 ```
 
-**Solution:** Extract qualified name from parent node:
+### How It Works
+
+1. **Readable Prefix**: `{prefix}:{filepath}:{name}:{signature_hint}`
+2. **Hash Components**: `filepath::name::line::column::fullSignature`
+3. **Hash Generation**: 8-character SHA-256 (4.3 billion combinations)
+4. **Final Format**: `readable_prefix#hash`
+
+### Uniqueness Guarantees
+
+- ✅ **Same function, different signatures**: Unique via `signatureHint` and hash
+- ✅ **Same name, different locations**: Unique via line/column in hash
+- ✅ **Same name, different contexts**: Unique via filepath in hash
+- ✅ **Anonymous functions**: Unique via location + context in hash
+
+---
+
+## Two-Pass Parsing Pipeline
+
+### Pass 1: AST Extraction
+
+**Goal**: Extract all nodes and intra-file relationships
+
+**Process**:
+1. **Package Discovery** - Detect workspace structure
+2. **File Scanning** - Find all source files
+3. **Language Detection** - Route to appropriate parser
+4. **AST Extraction** - Parse using ts-morph or tree-sitter
+5. **Node Creation** - Generate AstNode objects with entity IDs
+6. **Intra-file Relationships** - CONTAINS, HAS_METHOD, HAS_PARAMETER
+7. **Streaming Write** - Write TypeScript nodes to Neo4j in batches
+8. **Temp Files** - Write non-TypeScript results to JSON files
+
+**Streaming Strategy**:
+- TypeScript/JavaScript: Direct to Neo4j (memory efficient)
+- Python/Java/C#/Go/C++: Write to temp JSON files (parsed by external tools)
+
+### Pass 2: Relationship Resolution
+
+**Goal**: Resolve cross-file relationships
+
+**Process**:
+1. **Load Temp Files** - Read Pass 1 results for non-TS files
+2. **Build Node Index** - Create entityId → AstNode map
+3. **Resolve Imports** - Create RESOLVES_TO relationships
+4. **Resolve Component Usage** - Create RENDERS_COMPONENT, USES_HOOK
+5. **Resolve Type Relationships** - Create EXTENDS, RETURNS_TYPE (future)
+6. **Derive Package Dependencies** - Create DEPENDS_ON with weights
+7. **Write Relationships** - Batch write to Neo4j
+
+**Resolvers**:
+- `ts-resolver.ts` - TypeScript modules, inheritance, calls
+- `import-relationship-resolver.ts` - Import resolution + package deps
+- `component-relationship-resolver.ts` - React component relationships
+- `c-cpp-resolver.ts` - C/C++ includes
+
+---
+
+## Language Parsers
+
+### TypeScript/JavaScript
+
+**Parser**: `ts-morph` (TypeScript Compiler API wrapper)
+
+**Files**: 
+- `src/analyzer/parsers/function-parser.ts`
+- `src/analyzer/parsers/class-parser.ts`
+- `src/analyzer/parsers/interface-parser.ts`
+- `src/analyzer/parsers/import-parser.ts`
+
+**Extracts**:
+- Functions, classes, interfaces, type aliases
+- Imports/exports
+- JSX elements and attributes (React)
+- Method calls, property access
+
+### Python
+
+**Parser**: Python `ast` module via subprocess
+
+**File**: `src/analyzer/python-parser.ts`
+
+**Extracts**:
+- Functions, classes, methods
+- Imports (import, from...import)
+- Decorators, docstrings
+
+### Java
+
+**Parser**: `tree-sitter-java`
+
+**File**: `src/analyzer/parsers/java-parser.ts`
+
+**Extracts**:
+- Packages, classes, interfaces, enums
+- Methods, fields, constructors
+- Import declarations
+
+### C# 
+
+**Parser**: `tree-sitter-c-sharp`
+
+**File**: `src/analyzer/parsers/csharp-parser.ts`
+
+**Extracts**:
+- Namespaces, classes, structs, interfaces
+- Methods, properties, fields
+- Using directives
+
+### Go
+
+**Parser**: `tree-sitter-go`
+
+**File**: `src/analyzer/parsers/go-parser.ts`
+
+**Extracts**:
+- Packages, functions, methods
+- Structs, interfaces
+- Import specs
+
+### C/C++
+
+**Parser**: `tree-sitter-c`, `tree-sitter-cpp`
+
+**File**: `src/analyzer/parsers/c-cpp-parser.ts`
+
+**Extracts**:
+- Functions, classes (C++)
+- Include directives, macro definitions
+- Structs, enums
+
+---
+
+## C4 Diagram Support
+
+### Overview
+
+**Status**: ✅ **Container Diagrams Ready**, ⚠️ **Component Diagrams Need 1-Hour Task**
+
+CodeGraph can generate:
+- **C4 Level 1**: System Context (basic support)
+- **C4 Level 2**: Container Diagram (✅ **READY NOW**)
+- **C4 Level 3**: Component Diagram (⚠️ needs ComponentAnalyzer integration)
+
+### Package Detection
+
+**Implementation**: `src/analyzer/parsers/package-extractor.ts`  
+**Integration**: `src/analyzer/parser.ts` line 443  
+**Status**: ✅ **Fully Working**
+
+**Discovers from**:
+- `pnpm-workspace.yaml`
+- `package.json` with workspaces field
+- Single-package projects
+
+**Creates**:
+- Package nodes with type (`frontend`, `shared-library`, `tool`)
+- File nodes with `packageName` property
+- BELONGS_TO relationships (File → Package)
+
+**Example Neo4j**:
+```cypher
+(:Package {
+  name: "@mindlercare/ui-web",
+  type: "shared-library",
+  version: "1.0.0",
+  path: "/packages/mindler-ui-web"
+})
+
+(:File {
+  filePath: "/packages/mindler-ui-web/src/button.tsx",
+  properties: { packageName: "@mindlercare/ui-web" }
+})-[:BELONGS_TO]->(:Package)
+```
+
+### Import Resolution
+
+**Implementation**: `src/analyzer/parsers/import-resolver.ts`  
+**Integration**: `src/analyzer/relationship-resolver.ts` line 98  
+**Status**: ✅ **Fully Working**
+
+**Resolves**:
+- Workspace packages: `@mindlercare/ui-web` → `/packages/mindler-ui-web/src/index.ts`
+- Relative imports: `./utils` → `/src/utils.ts`
+- Path aliases: `@/components` → `/src/components` (tsconfig.json)
+- Per-package path resolution (monorepo-aware)
+
+**Creates**:
+- RESOLVES_TO relationships (Import → File/Function/Type)
+- DEPENDS_ON relationships with weight (Package → Package)
+
+**Example Neo4j**:
+```cypher
+(:Import {name: "Button", importSource: "@mindlercare/ui-web"})
+  -[:RESOLVES_TO]->
+(:Function {name: "Button", filePath: "/.../ui-web/src/lib/button/button.tsx"})
+
+(:Package {name: "mindlercare"})-[:DEPENDS_ON {weight: 42}]->(:Package {name: "@mindlercare/ui-web"})
+```
+
+### Component Analysis
+
+**Implementation**: `src/analyzer/parsers/component-analyzer.ts`  
+**Integration**: ⚠️ **Needs 1-Hour Task**  
+**Status**: ✅ **Code Exists**, ❌ **Not Hooked Up**
+
+**What Works**:
+- ComponentAnalyzer class fully functional
+- Component relationship resolver exists
+- Called in Pass 2 relationship resolution
+
+**What's Missing**:
+- Function nodes don't have `isReactComponent`/`isHook` flags
+- Need 2 lines added to `function-parser.ts`
+
+**Will Create**:
+- RENDERS_COMPONENT relationships (Component → Component)
+- USES_HOOK relationships (Component → Hook)
+
+**Example Neo4j** (after integration):
+```cypher
+(:Function {
+  name: "App",
+  isReactComponent: true,
+  filePath: "/src/App.tsx"
+})-[:RENDERS_COMPONENT]->(:Function {name: "Button"})
+
+(:Function {name: "App"})-[:USES_HOOK]->(:Function {name: "useState", isHook: true})
+```
+
+### C4 Queries
+
+#### Container Diagram (Level 2) - ✅ WORKS NOW
+
+```cypher
+// Show package dependencies
+MATCH (p1:Package)-[d:DEPENDS_ON]->(p2:Package)
+RETURN p1.name as source, 
+       p1.type as sourceType,
+       p2.name as target,
+       p2.type as targetType,
+       d.weight as imports
+ORDER BY d.weight DESC
+```
+
+**Expected Output**:
+```
+source              | sourceType     | target                  | targetType     | imports
+--------------------+----------------+-------------------------+----------------+---------
+mindlercare         | frontend       | @mindlercare/ui-web     | shared-library | 112
+mindlercare         | frontend       | @mindlercare/auth-ui    | shared-library | 58
+ui-web              | shared-library | @mindlercare/schema     | shared-library | 24
+```
+
+#### Component Diagram (Level 3) - ⚠️ After 1-Hour Task
+
+```cypher
+// Show component structure for a package
+MATCH (pkg:Package {name: $packageName})<-[:BELONGS_TO]-(f:File)
+MATCH (f)-[:CONTAINS]->(comp:Function {isReactComponent: true})
+OPTIONAL MATCH (comp)-[:RENDERS_COMPONENT]->(child:Function)
+OPTIONAL MATCH (comp)-[:USES_HOOK]->(hook:Function)
+RETURN comp.name,
+       comp.filePath,
+       collect(DISTINCT child.name) as rendersComponents,
+       collect(DISTINCT hook.name) as usesHooks
+ORDER BY comp.name
+```
+
+**Expected Output** (after integration):
+```
+comp.name    | comp.filePath         | rendersComponents      | usesHooks
+-------------+-----------------------+------------------------+------------------
+App          | /src/App.tsx          | [Header, Content]      | [useState, useEffect]
+Header       | /src/Header.tsx       | [Logo, Navigation]     | [useAuth]
+```
+
+### Validation Queries
+
+#### 1. Verify Package Nodes
+```cypher
+MATCH (p:Package)
+RETURN p.name, p.type, p.version, count{(p)<-[:BELONGS_TO]-()} as fileCount
+ORDER BY fileCount DESC
+```
+
+#### 2. Verify BELONGS_TO Relationships
+```cypher
+MATCH (f:File)-[:BELONGS_TO]->(p:Package)
+RETURN p.name, count(f) as fileCount
+ORDER BY fileCount DESC
+```
+
+#### 3. Verify DEPENDS_ON Relationships
+```cypher
+MATCH (p1:Package)-[d:DEPENDS_ON]->(p2:Package)
+RETURN count(d) as dependencyCount, 
+       avg(d.weight) as avgImportsPerDep,
+       max(d.weight) as maxImports
+```
+
+#### 4. Check Import Resolution Rate
+```cypher
+MATCH (i:Import)
+WITH count(i) as total
+MATCH ()-[:RESOLVES_TO]->()
+WITH total, count(*) as resolved
+RETURN total, resolved, (resolved * 100.0 / total) as resolvedPercent
+```
+**Expected**: >90% resolution rate
+
+### Remaining Work for Full C4 Support
+
+**Task 1: ComponentAnalyzer Integration** (1 hour)
+
+**File**: `src/analyzer/parsers/function-parser.ts`
+
+**Change**:
 ```typescript
-// ✅ CORRECT
-const parentNode = nodes.find(n => n.entityId === parentId);
-const qualifiedName = parentNode.properties.qualifiedName; // "com.example.MyClass"
-const methodId = `javamethod:${qualifiedName}.myMethod`;
-// Result: "javamethod:com.example.MyClass.myMethod"
+import { ComponentAnalyzer } from './component-analyzer.js';
+
+const componentAnalyzer = new ComponentAnalyzer();
+
+// When creating function node:
+const isReactComponent = componentAnalyzer.isReactComponent(func);
+const isHook = componentAnalyzer.isReactHook(func);
+
+const functionNode: AstNode = {
+  // ... existing fields ...
+  isReactComponent,  // ADD
+  isHook,            // ADD
+};
 ```
 
-**Applied to:** Java, C#, C++ parsers for methods, fields, and properties.
+**Impact**: Enables Component-level C4 diagrams immediately
 
 ---
 
 ## Neo4j Schema
 
-### Node Types (15+)
+### Node Types
 
-| Node Label | Language | Properties | Example |
-|------------|----------|------------|---------|
-| `File` | All | `filePath`, `language`, `repository` | File node |
-| `TsClass` | TypeScript | `name`, `entityId`, `qualifiedName` | Class definition |
-| `TsFunction` | TypeScript | `name`, `entityId`, `isAsync` | Function |
-| `TsInterface` | TypeScript | `name`, `entityId` | Interface |
-| `PythonClass` | Python | `name`, `entityId`, `decorators` | Class |
-| `PythonFunction` | Python | `name`, `entityId`, `isAsync` | Function |
-| `JavaClass` | Java | `name`, `entityId`, `qualifiedName` | Class |
-| `JavaMethod` | Java | `name`, `entityId`, `parentId` | Method |
-| `JavaField` | Java | `name`, `entityId` | Field |
-| `CSharpClass` | C# | `name`, `entityId`, `qualifiedName` | Class |
-| `CSharpMethod` | C# | `name`, `entityId` | Method |
-| `Property` | C# | `name`, `entityId` | Property |
-| `CppClass` | C++ | `name`, `entityId` | Class |
-| `GoFunction` | Go | `name`, `entityId` | Function |
-| `GoStruct` | Go | `name`, `entityId` | Struct |
+| Label | Properties | Example |
+|-------|-----------|---------|
+| **Package** | name, type, version, path | `@mindlercare/ui-web` |
+| **File** | filePath, language, loc, packageName | `/src/utils.ts` |
+| **Function** | name, isExported, isAsync, isReactComponent, isHook, returnType | `processData` |
+| **Class** | name, isExported, isAbstract | `UserService` |
+| **Interface** | name, isExported | `UserProfile` |
+| **TypeAlias** | name, isExported | `UserId` |
+| **Method** | name, visibility, isStatic | `getUser` |
+| **Parameter** | name, type, isOptional | `userId` |
+| **Import** | name, importSource, isTypeOnly | `Button` from `@mindlercare/ui-web` |
+| **JSXElement** | name, isSelfClosing | `<Button>` |
+| **Variable** | name, isConstant | `MAX_RETRIES` |
 
-### Relationship Types (20+)
+### Relationship Types
 
-| Type | Source | Target | Meaning | Weight |
-|------|--------|--------|---------|--------|
-| `IMPORTS` | File | File/Module | Import statement | 5 |
-| `DEFINES_CLASS` | File | Class | Class definition | 9 |
-| `DEFINES_INTERFACE` | File | Interface | Interface definition | 9 |
-| `DEFINES_FUNCTION` | File | Function | Function definition | 8 |
-| `HAS_METHOD` | Class | Method | Method membership | 8 |
-| `HAS_FIELD` | Class | Field | Field membership | 7 |
-| `HAS_PROPERTY` | Class | Property | Property membership | 7 |
-| `CONTAINS` | File | Node | Generic containment | 6 |
-| `CALLS` | Function | Function | Function call | 6 |
-| `EXTENDS` | Class | Class | Inheritance | 10 |
-| `IMPLEMENTS` | Class | Interface | Interface implementation | 10 |
-| `HAS_PARAMETER` | Method | Parameter | Parameter definition | 5 |
-| `HAS_TYPE` | Node | Type | Type reference | 5 |
-| `DECLARES_NAMESPACE` | File | Namespace | Namespace declaration | 8 |
-| `USING_DIRECTIVE` | File | Namespace | Using statement | 5 |
-| `INCLUDE_DIRECTIVE` | File | File | C/C++ include | 5 |
-| `MACRO_DEFINITION` | File | Macro | C/C++ macro | 4 |
+| Type | Description | Example |
+|------|-------------|---------|
+| **BELONGS_TO** | File belongs to Package | `File → Package` |
+| **DEPENDS_ON** | Package depends on Package | `Package → Package` (weight: import count) |
+| **RESOLVES_TO** | Import resolves to target | `Import → Function/File/Type` |
+| **CONTAINS** | File contains entity | `File → Function/Class` |
+| **IMPORTS** | File imports from module | `File → Import` |
+| **EXPORTS** | File exports entity | `File → Function/Class` |
+| **CALLS** | Function calls another | `Function → Function` |
+| **RENDERS_COMPONENT** | Component renders another | `Function → Function` (React) |
+| **USES_HOOK** | Component uses hook | `Function → Function` (React) |
+| **HAS_METHOD** | Class has method | `Class → Method` |
+| **HAS_PARAMETER** | Function has parameter | `Function → Parameter` |
+| **EXTENDS** | Class/Interface extends | `Class → Class`, `Interface → Interface` |
+| **IMPLEMENTS** | Class implements interface | `Class → Interface` |
+| **RETURNS_TYPE** | Function returns type | `Function → TypeAlias/Interface` |
 
-### Constraints
+### Constraints (Automatic Creation)
 
 ```cypher
-// Unique entity IDs per node type
-CREATE CONSTRAINT file_entity_id IF NOT EXISTS
-FOR (n:File) REQUIRE n.entityId IS UNIQUE;
-
-CREATE CONSTRAINT tsclass_entity_id IF NOT EXISTS
-FOR (n:TsClass) REQUIRE n.entityId IS UNIQUE;
-
-CREATE CONSTRAINT javaclass_entity_id IF NOT EXISTS
-FOR (n:JavaClass) REQUIRE n.entityId IS UNIQUE;
-
-// ... (one per node type)
+CREATE CONSTRAINT IF NOT EXISTS FOR (n:Package) REQUIRE n.entityId IS UNIQUE;
+CREATE CONSTRAINT IF NOT EXISTS FOR (n:File) REQUIRE n.entityId IS UNIQUE;
+CREATE CONSTRAINT IF NOT EXISTS FOR (n:Function) REQUIRE n.entityId IS UNIQUE;
+CREATE CONSTRAINT IF NOT EXISTS FOR (n:Class) REQUIRE n.entityId IS UNIQUE;
+CREATE CONSTRAINT IF NOT EXISTS FOR (n:Interface) REQUIRE n.entityId IS UNIQUE;
 ```
 
-### Indexes
+### Indexes (Automatic Creation)
 
 ```cypher
-// Performance indexes
-CREATE INDEX file_path IF NOT EXISTS
-FOR (n:File) ON (n.filePath);
-
-CREATE INDEX repository IF NOT EXISTS
-FOR (n:File) ON (n.repository);
-
-CREATE INDEX class_name IF NOT EXISTS
-FOR (n:TsClass) ON (n.name);
-
-CREATE INDEX method_name IF NOT EXISTS
-FOR (n:TsMethod) ON (n.name);
-```
-
-### Example Graph Structure
-
-```
-                    ┌─────────────────┐
-                    │   File          │
-                    │ user-service.ts │
-                    └────────┬────────┘
-                             │
-              ┌──────────────┼──────────────┐
-              │              │              │
-       DEFINES_CLASS    DEFINES_CLASS   IMPORTS
-              │              │              │
-              ▼              ▼              ▼
-      ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-      │  TsClass    │  │ TsInterface │  │   File      │
-      │ UserService │  │ IUserRepo   │  │ database.ts │
-      └──────┬──────┘  └─────────────┘  └─────────────┘
-             │
-        HAS_METHOD
-             │
-             ▼
-      ┌──────────────┐
-      │  TsMethod    │
-      │ findById     │───CALLS───► ┌──────────────┐
-      └──────────────┘             │  TsMethod    │
-                                   │ query        │
-                                   └──────────────┘
+CREATE INDEX IF NOT EXISTS FOR (n:File) ON (n.filePath);
+CREATE INDEX IF NOT EXISTS FOR (n:File) ON (n.packageName);
+CREATE INDEX IF NOT EXISTS FOR (n:Function) ON (n.name);
+CREATE INDEX IF NOT EXISTS FOR (n:Function) ON (n.isReactComponent);
+CREATE INDEX IF NOT EXISTS FOR (n:Import) ON (n.importSource);
 ```
 
 ---
 
 ## Workspace Management
 
-### Workspace Configuration
+**Location**: `src/workspace/`
 
-**File:** `.codegraph/workspace.json`
+**Purpose**: Manage multi-repository codebases
+
+### Configuration
+
+**File**: `.codegraph/workspace.json`
 
 ```json
 {
-  "version": "1.0",
-  "workspaceRoot": "/Users/user/projects",
+  "workspaceName": "MyCompany",
   "repositories": [
     {
-      "name": "frontend-app",
-      "path": "frontend-app",
-      "enabled": true,
-      "metadata": {
-        "type": "app",
-        "description": "React frontend application"
-      }
+      "name": "frontend-monorepo",
+      "path": "/Users/grop/ws/frontend-monorepo",
+      "enabled": true
     },
     {
-      "name": "backend-api",
-      "path": "backend-api",
-      "enabled": true,
-      "metadata": {
-        "type": "monorepo"
-      }
+      "name": "backend-services",
+      "path": "/Users/grop/ws/monorepo-3.0",
+      "enabled": true
     }
   ],
-  "defaults": {
-    "ignorePatterns": [
-      "**/node_modules/**",
-      "**/dist/**",
-      "**/.git/**"
-    ],
-    "extensions": [
-      ".ts", ".tsx", ".js", ".jsx",
-      ".py", ".java", ".cs", ".go",
-      ".c", ".cpp", ".h"
-    ]
-  },
   "filterPresets": [
     {
-      "name": "debug-test",
-      "description": "Quick test with limited files",
-      "repositories": ["frontend-app"],
-      "maxFiles": 100
+      "name": "frontend-only",
+      "description": "Analyze only frontend packages",
+      "repositories": ["frontend-monorepo"],
+      "maxFiles": 1000
     }
   ]
 }
 ```
 
-### Filter Presets
+### Commands
 
-Purpose: Named configurations for targeted syncing
-
-**Use Cases:**
-1. **Debugging** - Test with small subset of files
-2. **Incremental** - Sync only changed repositories
-3. **Performance** - Profile specific codebases
-4. **Development** - Quick iterations during parser development
-
-**Example Presets:**
-```json
-{
-  "filterPresets": [
-    {
-      "name": "quick-test",
-      "repositories": ["small-repo"],
-      "maxFiles": 50
-    },
-    {
-      "name": "monorepos-only",
-      "repositories": ["backend-monorepo", "frontend-monorepo"]
-    },
-    {
-      "name": "single-service",
-      "repositories": ["auth-service"],
-      "maxFiles": 20
-    }
-  ]
-}
-```
-
-**Usage:**
 ```bash
+# Sync all enabled repositories
+node dist/index.js workspace sync
+
+# Sync with filter
+node dist/index.js workspace sync --filter frontend-monorepo
+
 # Use preset
-node dist/index.js workspace sync --filter-preset quick-test
+node dist/index.js workspace sync --filter-preset frontend-only
 
-# Override maxFiles
-node dist/index.js workspace sync --filter-preset monorepos-only --max-files 1000
-
-# Ad-hoc filter
-node dist/index.js workspace sync --filter repo1 repo2 --max-files 500
-```
-
----
-
-## Validation & Quality Assurance
-
-### 1. Entity ID Validation
-
-**Test:** Verify entity IDs don't contain duplicate type prefixes
-
-```cypher
-// Find malformed entity IDs (should return 0)
-MATCH (n)
-WHERE n.entityId CONTAINS 'javamethod:javaclass:'
-   OR n.entityId CONTAINS 'csharpmethod:csharpclass:'
-   OR n.entityId CONTAINS 'tsmethod:tsclass:'
-RETURN n.entityId, labels(n)
-```
-
-**Expected:** 0 results  
-**Status:** ✅ Fixed in Session 022
-
-### 2. Temp File Cleanup Validation
-
-**Test:** Verify temp files are cleaned after Pass 2
-
-```bash
-# Before analysis
-ls -la /tmp/codegraph/*.json | wc -l  # Should be 0
-
-# During analysis (check in another terminal)
-# Should see temp files appearing
-
-# After analysis completes
-ls -la /tmp/codegraph/*.json | wc -l  # Should be 0 again
-```
-
-**Expected:** 0 files remaining  
-**Status:** ✅ Fixed in Session 022
-
-### 3. Relationship Completeness
-
-**Test:** Verify Pass 2 relationships are created
-
-```cypher
-// Check for relationships from temp file parsers
-MATCH (f:File)-[r]-(n)
-WHERE f.language IN ['Python', 'Java', 'C#', 'Go', 'C++']
-RETURN f.language, type(r), count(*) as count
-ORDER BY f.language, type(r)
-```
-
-**Expected:** Non-zero counts for IMPORTS, HAS_METHOD, etc.  
-**Status:** ✅ Verified with mysql-stream Python test
-
-### 4. Sleep Detection Validation
-
-**Test:** Simulate system sleep and verify reconnection
-
-```bash
-# Start long-running analysis
-node dist/index.js workspace sync --filter large-repo
-
-# Put laptop to sleep for 30+ seconds
-
-# Wake up - check logs for:
-# "System wake detected after ~X minutes"
-# "Neo4j connection lost during sleep. Reconnecting..."
-# "Neo4j connection restored successfully"
-```
-
-**Expected:** Automatic reconnection  
-**Status:** ✅ Implemented in Session 022
-
-### 5. Memory Usage Validation
-
-**Test:** Monitor memory during large repository analysis
-
-```bash
-# Monitor Node.js process
-node --max-old-space-size=4096 dist/index.js workspace sync --filter monorepo-3.0
-
-# Watch memory in another terminal
-watch -n 1 'ps aux | grep "node dist/index.js"'
-```
-
-**Expected:** Memory stays under 4GB due to streaming  
-**Status:** ✅ Streaming implemented for TypeScript files
-
-### 6. Duplicate Node Detection
-
-**Test:** Verify no duplicate entities in database
-
-```cypher
-// Find duplicate entity IDs (should return 0)
-MATCH (n)
-WITH n.entityId as entityId, count(*) as count
-WHERE count > 1
-RETURN entityId, count
-ORDER BY count DESC
-```
-
-**Expected:** 0 results  
-**Status:** ✅ Deduplication in StorageManager
-
-### 7. Cross-Language Consistency
-
-**Test:** Verify entity ID format is consistent across languages
-
-```cypher
-// Sample entity IDs from each language
-MATCH (n)
-WHERE n.language IN ['TypeScript', 'Python', 'Java', 'C#', 'Go', 'C++']
-RETURN n.language, n.kind, n.entityId
-LIMIT 100
-```
-
-**Manual Verification:**
-- Check format: `<type>:<qualified.name>`
-- No duplicate type prefixes
-- Qualified names use dots (not slashes/colons)
-
-**Status:** ✅ Consistent format implemented
-
-### 8. CSS Class Filter Validation (C++)
-
-**Test:** Verify C++ parser doesn't create nodes for CSS classes
-
-```cypher
-// Find suspicious class names (CSS-like patterns)
-MATCH (n:CppClass)
-WHERE n.name CONTAINS '-' OR n.name STARTS WITH '.'
-RETURN n.name, n.filePath
-```
-
-**Expected:** 0 results  
-**Status:** ✅ Filter added in Session 022
-
-### 9. Workspace Sync Report Accuracy
-
-**Test:** Verify sync report matches database contents
-
-```bash
-# Run sync and capture report
-node dist/index.js workspace sync --filter test-repo > sync-report.txt
-
-# Extract counts from report
-# totalNodes: 150
-# totalRelationships: 200
-
-# Verify in database
-```
-
-```cypher
-MATCH (n {repository: 'test-repo'})
-RETURN count(n) as nodeCount
-// Should match totalNodes from report
-
-MATCH ()-[r]->()
-WHERE r.repository = 'test-repo' OR 
-      startNode(r).repository = 'test-repo'
-RETURN count(r) as relCount
-// Should match totalRelationships
-```
-
-**Expected:** Counts match  
-**Status:** ✅ Accurate reporting
-
-### 10. End-to-End Integration Test
-
-**Test Case:** Analyze mysql-stream service (mixed TS/Python)
-
-```bash
-node dist/index.js analyze /path/to/monorepo-3.0/services/mysql-stream --clean
-```
-
-**Expected Results:**
-```
-Files analyzed: 19
-- TypeScript: 11 files
-- Python: 8 files
-
-Pass 1:
-- Temp files created: 8 (Python)
-- Nodes streamed: 107 (TypeScript)
-
-Pass 2:
-- Temp files found: 8 ✓
-- Total nodes: 131
-- Total relationships: 162
-
-Cleanup:
-- Temp files deleted: 8 ✓
-```
-
-**Database Verification:**
-```cypher
-MATCH (f:File {filePath: $path})-[r]->(n)
-WHERE f.language = 'Python'
-RETURN f.name, type(r), n.kind, n.name
-```
-
-**Status:** ✅ Passed in Session 022
-
----
-
-## Performance Characteristics
-
-### Memory Usage
-
-| Operation | Memory Pattern | Peak Usage |
-|-----------|---------------|------------|
-| TypeScript parsing | Streaming | ~200MB per 1000 files |
-| Python parsing | Batch + temp files | ~50MB per 1000 files |
-| Java parsing | Batch + temp files | ~50MB per 1000 files |
-| Pass 2 resolution | In-memory map | ~100MB per 1000 nodes |
-| Neo4j batch write | Streaming | ~50MB per batch |
-
-**Total for large repo (10K files):** ~2-3GB peak memory
-
-### Processing Speed
-
-| File Type | Files/Second | Bottleneck |
-|-----------|--------------|------------|
-| TypeScript | 20-30 | ts-morph parsing |
-| Python | 50-80 | subprocess overhead |
-| Java | 30-50 | tree-sitter parsing |
-| C# | 30-50 | tree-sitter parsing |
-| Neo4j writes | 1000 nodes/sec | Network + Cypher |
-
-**Typical monorepo (5K files):** 3-5 minutes
-
-### Optimization Strategies
-
-1. **Streaming writes** - TypeScript files write directly to Neo4j
-2. **Batch processing** - Group writes by 100 nodes/relationships
-3. **Parallel parsing** - All language parsers run concurrently
-4. **Deduplication** - Only unique entities written
-5. **Adaptive batching** - Smaller batches for small repos
-6. **Connection pooling** - Reuse Neo4j driver connections
-
----
-
-## Known Limitations
-
-### 1. Incremental Updates
-**Current:** Full repository re-analysis required  
-**Impact:** Slow for large codebases with small changes  
-**Workaround:** Use `--max-files` for testing, full sync for production
-
-### 2. Database Cleanup
-**Current:** `--clean` wipes entire database  
-**Impact:** Can't selectively update one repository  
-**Workaround:** Use separate Neo4j databases per environment
-
-### 3. Cross-Repository References
-**Current:** Import resolution limited to same repository  
-**Impact:** Can't track dependencies between repositories  
-**Workaround:** Manually query by entityId patterns
-
-### 4. Type Resolution Accuracy
-**Current:** Best-effort type matching in Pass 2  
-**Impact:** Some relationships may be missed  
-**Workaround:** Use qualified names and entity IDs for queries
-
-### 5. Large File Handling
-**Current:** Entire file loaded into memory  
-**Impact:** Very large files (>10MB) may cause slowdowns  
-**Workaround:** Add file size limit in config
-
----
-
-## Future Enhancements
-
-### High Priority
-1. **Incremental updates** - Only re-analyze changed files
-2. **Per-repository cleanup** - Selective database updates
-3. **Cross-repo imports** - Track dependencies between repositories
-4. **Progress bars** - Visual feedback during long syncs
-5. **Parallel repo sync** - Analyze multiple repos simultaneously
-
-### Medium Priority
-6. **Call graph depth** - Configurable relationship traversal depth
-7. **Dead code detection** - Find unused functions/classes
-8. **Circular dependency detection** - Identify import cycles
-9. **TypeScript config awareness** - Use paths mapping for imports
-10. **Documentation extraction** - Parse JSDoc/docstrings
-
-### Low Priority
-11. **SQL query parsing** - Extract from string literals
-12. **GraphQL schema** - Parse .graphql files
-13. **REST endpoint detection** - Find Express/FastAPI routes
-14. **Test coverage mapping** - Link tests to production code
-15. **Git history integration** - Tag nodes with last modified info
-
----
-
-## Conclusion
-
-CodeGraph is a production-ready, multi-language code analysis tool with robust architecture and comprehensive error handling. The two-pass parsing system, streaming writes, and workspace management make it suitable for analyzing large monorepos.
-
-**Key Strengths:**
-- ✅ Multi-language support with consistent entity model
-- ✅ Memory-efficient streaming writes
-- ✅ Resilient to system sleep/wake cycles
-- ✅ Flexible filtering for targeted analysis
-- ✅ Comprehensive Neo4j schema with constraints
-
-**Validated Features:**
-- ✅ Temp file preservation for Pass 2 (Session 022)
-- ✅ Correct entity ID format across all parsers (Session 022)
-- ✅ Sleep detection with automatic reconnection (Session 022)
-- ✅ CSS class filtering in C++ parser (Session 022)
-
-**Production Readiness:** ⭐⭐⭐⭐⭐ (5/5)
-
-The system is ready for production use. All critical bugs from Session 021 have been fixed and validated in Session 022.
-
----
-
-## Quick Reference
-
-### Common Commands
-
-```bash
-# Single directory analysis
-node dist/index.js analyze /path/to/code --clean
-
-# Workspace sync (all repos)
-node dist/index.js workspace sync --clean
-
-# Filtered sync with debugging
-node dist/index.js workspace sync --filter-preset debug-test -vv
+# Sync with verbosity
+node dist/index.js workspace sync -vv --max-files 500
 
 # Check workspace status
 node dist/index.js workspace status
-
-# Initialize new workspace
-node dist/index.js workspace init -w /path/to/workspace
 ```
 
-### Common Queries
+### Features
 
-```cypher
-// Find all classes
-MATCH (c) WHERE c:TsClass OR c:JavaClass OR c:PythonClass
-RETURN c.name, c.entityId, labels(c)
-
-// Find methods of a class
-MATCH (c {entityId: $classId})-[:HAS_METHOD]->(m)
-RETURN m.name, m.entityId
-
-// Find all imports from a file
-MATCH (f:File {filePath: $path})-[r:IMPORTS]->(target)
-RETURN f.filePath, target.name, target.entityId
-
-// Find call graph from a function
-MATCH (f {entityId: $funcId})-[:CALLS*1..3]->(called)
-RETURN f.name, called.name, called.entityId
-
-// Repository statistics
-MATCH (n {repository: $repo})
-RETURN n.language, count(*) as count
-ORDER BY count DESC
-```
-
-### Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| Out of memory | Use `--max-files` to limit scope |
-| Connection lost | Sleep detection auto-reconnects |
-| Duplicate nodes | Run with `--clean` to reset database |
-| Missing relationships | Check temp file cleanup logs |
-| Slow performance | Use filter presets for targeted sync |
-| Wrong entity IDs | Verify parser version (Session 022 fixes) |
+- ✅ Multi-repository support
+- ✅ Named filter presets
+- ✅ Per-repository configuration
+- ✅ Automatic workspace detection
+- ✅ Repository metadata tagging
 
 ---
 
-**Document Version:** 2.0  
-**Last Updated:** 2025-11-06  
-**Session:** 022  
-**Author:** Claude (Anthropic)
+## Validation & Testing
+
+### Manual Validation
+
+Run these queries in Neo4j Browser after analysis:
+
+```cypher
+// 1. Count nodes by type
+MATCH (n)
+RETURN labels(n) as nodeType, count(n) as count
+ORDER BY count DESC
+
+// 2. Count relationships by type  
+MATCH ()-[r]->()
+RETURN type(r) as relType, count(r) as count
+ORDER BY count DESC
+
+// 3. Verify package structure
+MATCH (p:Package)
+OPTIONAL MATCH (p)<-[:BELONGS_TO]-(f:File)
+RETURN p.name, p.type, count(f) as files
+ORDER BY files DESC
+
+// 4. Check import resolution
+MATCH (i:Import)
+WITH count(i) as total
+MATCH (i:Import)-[:RESOLVES_TO]->()
+RETURN total, count(i) as resolved, (count(i)*100.0/total) as percent
+
+// 5. Verify package dependencies
+MATCH (p1:Package)-[d:DEPENDS_ON]->(p2:Package)
+RETURN p1.name, p2.name, d.weight
+ORDER BY d.weight DESC
+LIMIT 20
+```
+
+### Expected Results
+
+After running on `frontend-monorepo`:
+
+| Metric | Expected Value |
+|--------|----------------|
+| Package nodes | 10-15 |
+| File nodes | 900+ |
+| Function nodes | 2000+ |
+| BELONGS_TO relationships | 900+ (matches file count) |
+| DEPENDS_ON relationships | 20-50 |
+| RESOLVES_TO relationships | 4000+ |
+| Import resolution rate | >90% |
+
+### Automated Testing
+
+**Location**: `src/analyzer/__tests__/`
+
+**Test Types**:
+- Unit tests for extractors (`.spec.ts` files)
+- Integration tests for full pipeline
+- Validation tests for Neo4j schema
+
+**Run Tests**:
+```bash
+npm test
+npm run test:watch
+```
+
+---
+
+## Development Guide
+
+### Adding a New Extractor
+
+1. **Create Parser File**: `src/analyzer/parsers/my-extractor.ts`
+
+```typescript
+import { AstNode, ParserContext } from "../types.js";
+
+export function parseMyFeature(
+  sourceFile: SourceFile,
+  context: ParserContext
+): void {
+  // Extract entities
+  const entities = sourceFile.getMyEntities();
+  
+  for (const entity of entities) {
+    const node: AstNode = {
+      id: context.generateId("myfeature", entity.getName()),
+      entityId: context.generateEntityId(
+        "myfeature",
+        context.filePath,
+        entity.getName(),
+        entity.getStartLineNumber(),
+        0
+      ),
+      kind: "MyFeature",
+      name: entity.getName(),
+      filePath: context.filePath,
+      startLine: entity.getStartLineNumber(),
+      endLine: entity.getEndLineNumber(),
+      startColumn: 0,
+      endColumn: 0,
+      language: "TypeScript",
+      createdAt: context.now
+    };
+    
+    context.addNode(node);
+  }
+}
+```
+
+2. **Call in Parser**: `src/analyzer/parser.ts`
+
+```typescript
+import { parseMyFeature } from './parsers/my-extractor.js';
+
+// In parseTypeScriptFile():
+parseMyFeature(sourceFile, context);
+```
+
+3. **Add Tests**: `src/analyzer/parsers/my-extractor.spec.ts`
+
+### Adding a New Relationship Resolver
+
+1. **Create Resolver**: `src/analyzer/resolvers/my-resolver.ts`
+
+```typescript
+import { SourceFile } from "ts-morph";
+import { AstNode, ResolverContext, RelationshipInfo } from "../types.js";
+
+export function resolveMyRelationships(
+  sourceFile: SourceFile,
+  fileNode: AstNode,
+  context: ResolverContext
+): void {
+  // Find relevant nodes
+  const sourceNodes = Array.from(context.nodeIndex.values()).filter(
+    n => n.kind === "MyFeature" && n.filePath === fileNode.filePath
+  );
+  
+  for (const source of sourceNodes) {
+    // Find targets
+    const target = findTarget(source, context.nodeIndex);
+    
+    if (target) {
+      const rel: RelationshipInfo = {
+        id: context.generateId("my_rel", `${source.name}->${target.name}`),
+        entityId: context.generateEntityId(
+          "my_rel",
+          `${source.filePath}:${source.name}->${target.name}`
+        ),
+        type: "MY_RELATIONSHIP",
+        sourceId: source.entityId,
+        targetId: target.entityId,
+        createdAt: context.now
+      };
+      
+      context.addRelationship(rel);
+    }
+  }
+}
+```
+
+2. **Call in Relationship Resolver**: `src/analyzer/relationship-resolver.ts`
+
+```typescript
+import { resolveMyRelationships } from "./resolvers/my-resolver.js";
+
+// In resolveRelationships():
+if (sourceFile) {
+  // ... existing resolvers
+  resolveMyRelationships(sourceFile, fileNode, currentContext);
+}
+```
+
+### Using Entity IDs Correctly
+
+```typescript
+// For simple entities (no overloading)
+const entityId = generateEntityId(
+  "class",
+  filePath,
+  className,
+  startLine,
+  0
+);
+
+// For functions with overloading
+const entityId = generateEntityId(
+  "function",
+  filePath,
+  funcName,
+  startLine,
+  0,
+  "(string, number)",  // signatureHint for readability
+  "param1: string, param2: number"  // fullSignature for uniqueness
+);
+
+// For anonymous functions
+const entityId = generateEntityId(
+  "function",
+  filePath,
+  "callback_map_arg0",  // generated name
+  startLine,
+  startColumn  // important for uniqueness
+);
+```
+
+### Testing Your Changes
+
+1. **Unit Test**: Test extractor in isolation
+2. **Integration Test**: Test on small project
+3. **Validation Test**: Run queries to verify results
+4. **Real-World Test**: Run on large monorepo
+
+```bash
+# Build
+npm run build
+
+# Test on small project
+node dist/index.js analyze test-project --update-schema
+
+# Verify in Neo4j Browser
+open http://localhost:7474
+```
+
+---
+
+## Summary
+
+**CodeGraph Status**: ✅ Production-ready with 85% of C4 functionality complete
+
+**What Works Now**:
+- ✅ Package detection and Package nodes
+- ✅ BELONGS_TO relationships (File → Package)
+- ✅ Import resolution with RESOLVES_TO relationships
+- ✅ Package dependencies with DEPENDS_ON relationships
+- ✅ C4 Container diagrams (Level 2)
+- ✅ Entity ID system with overloading support
+- ✅ Multi-language parsing (6+ languages)
+- ✅ Workspace management
+
+**What Needs Minor Work** (~5 hours total):
+- ⚠️ ComponentAnalyzer integration (1 hour) → enables C4 Component diagrams
+- ⚠️ Type relationships (2 hours) → enables type-based impact analysis
+- ⚠️ Validation tests (2 hours) → automated verification
+
+**Key Files**:
+- Architecture: `docs/architecture/ARCHITECTURE.md` (this file)
+- Quick Start: `docs/QUICK_START.md`
+- Entity ID System: `src/analyzer/parser-utils.ts`
+- Package Detection: `src/analyzer/parsers/package-extractor.ts`
+- Import Resolution: `src/analyzer/parsers/import-resolver.ts`
+- Component Analysis: `src/analyzer/parsers/component-analyzer.ts`
+
+**Next Steps**:
+1. Run analyzer on your codebase
+2. Verify C4 Container diagram queries work
+3. (Optional) Add ComponentAnalyzer integration for Component diagrams
+4. (Optional) Add type relationship tracking
