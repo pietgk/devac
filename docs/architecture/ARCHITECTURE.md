@@ -1,7 +1,7 @@
 # CodeGraph Architecture
 
-> **Version:** 3.0  
-> **Last Updated:** 2025-11-06  
+> **Version:** 3.0
+> **Last Updated:** 2025-11-06
 > **Status:** Production-ready with C4 diagram support
 
 ## Table of Contents
@@ -26,15 +26,15 @@
 
 ### Key Capabilities
 
-✅ **Multi-language support** - TypeScript, JavaScript, Python, Java, C#, Go, C/C++  
-✅ **C4 diagram generation** - Container and Component level diagrams from code  
-✅ **Package detection** - Workspace-aware with monorepo support  
-✅ **Import resolution** - Resolves workspace packages, path aliases, relative imports  
-✅ **Component analysis** - React component and hook detection  
-✅ **Sophisticated entity IDs** - Handles function overloading, anonymous functions  
-✅ **Two-pass parsing** - Accurate cross-file relationship resolution  
-✅ **Memory efficient** - Streaming writes to Neo4j during parsing  
-✅ **Sleep detection** - Laptop-friendly for long-running analyses  
+✅ **Multi-language support** - TypeScript, JavaScript, Python, Java, C#, Go, C/C++
+✅ **C4 diagram generation** - Container and Component level diagrams from code
+✅ **Package detection** - Workspace-aware with monorepo support
+✅ **Import resolution** - Resolves workspace packages, path aliases, relative imports
+✅ **Component analysis** - React component and hook detection
+✅ **Sophisticated entity IDs** - Handles function overloading, anonymous functions
+✅ **Two-pass parsing** - Accurate cross-file relationship resolution
+✅ **Memory efficient** - Streaming writes to Neo4j during parsing
+✅ **Sleep detection** - Laptop-friendly for long-running analyses
 
 ### Primary Use Cases
 
@@ -52,7 +52,7 @@
 
 **System Flow:**
 
-```
+```text
 User Interface (CLI)
   ↓
   • analyze
@@ -84,22 +84,22 @@ Neo4j Graph Database
 ```mermaid
 graph TB
     CLI[User Interface<br/>CLI: analyze, workspace sync, workspace status]
-    
+
     CLI --> AS[AnalyzerService<br/>Orchestrates: Package Detection → Scanning → Parsing → Storage]
-    
+
     AS --> PE[PackageExtractor<br/>pnpm/npm/yarn workspace detection]
     AS --> P[Parser<br/>2-Pass AST → Nodes]
     AS --> SM[StorageManager<br/>Batch Neo4j Writes]
-    
+
     P --> TS[TS/JS<br/>ts-morph]
     P --> PY[Python<br/>Python AST]
     P --> JV[Java<br/>tree-sitter]
-    
+
     TS --> NEO4J[(Neo4j Graph Database<br/>Nodes: Package, File, Function,<br/>Class, Interface, etc.<br/><br/>Edges: BELONGS_TO, DEPENDS_ON,<br/>RESOLVES_TO, CALLS, etc.)]
     PY --> NEO4J
     JV --> NEO4J
     SM --> NEO4J
-    
+
     style CLI fill:#e1f5ff
     style AS fill:#fff4e1
     style NEO4J fill:#e8f5e9
@@ -181,7 +181,7 @@ createPackageNodes(now: string): PackageNode[]
 **Key Methods**:
 ```typescript
 async resolve(
-  importNode: ImportNode, 
+  importNode: ImportNode,
   fromFile: string
 ): Promise<ResolvedImport | null>
 ```
@@ -208,7 +208,7 @@ findRenderedComponents(func: FunctionDeclaration): string[]
 findUsedHooks(func: FunctionDeclaration): string[]
 ```
 
-**Integration Status**: 
+**Integration Status**:
 - ✅ Relationship resolver exists and is called
 - ❌ Function parser doesn't set `isReactComponent`/`isHook` flags yet
 
@@ -241,10 +241,10 @@ findUsedHooks(func: FunctionDeclaration): string[]
 
 ### Features
 
-✅ **Function Overloading** - Same name, different signatures  
-✅ **Anonymous Functions** - Location-based uniqueness  
-✅ **Nested Entities** - Parent context in hash  
-✅ **Backward Compatible** - Supports legacy 2-param signature  
+✅ **Function Overloading** - Same name, different signatures
+✅ **Anonymous Functions** - Location-based uniqueness
+✅ **Nested Entities** - Parent context in hash
+✅ **Backward Compatible** - Supports legacy 2-param signature
 
 ### Examples
 
@@ -347,7 +347,7 @@ generateEntityId(
 
 **Parser**: `ts-morph` (TypeScript Compiler API wrapper)
 
-**Files**: 
+**Files**:
 - `src/analyzer/parsers/function-parser.ts`
 - `src/analyzer/parsers/class-parser.ts`
 - `src/analyzer/parsers/interface-parser.ts`
@@ -381,7 +381,7 @@ generateEntityId(
 - Methods, fields, constructors
 - Import declarations
 
-### C# 
+### C#
 
 **Parser**: `tree-sitter-c-sharp`
 
@@ -429,8 +429,8 @@ CodeGraph can generate:
 
 ### Package Detection
 
-**Implementation**: `src/analyzer/parsers/package-extractor.ts`  
-**Integration**: `src/analyzer/parser.ts` line 443  
+**Implementation**: `src/analyzer/parsers/package-extractor.ts`
+**Integration**: `src/analyzer/parser.ts` line 443
 **Status**: ✅ **Fully Working**
 
 **Discovers from**:
@@ -460,8 +460,8 @@ CodeGraph can generate:
 
 ### Import Resolution
 
-**Implementation**: `src/analyzer/parsers/import-resolver.ts`  
-**Integration**: `src/analyzer/relationship-resolver.ts` line 98  
+**Implementation**: `src/analyzer/parsers/import-resolver.ts`
+**Integration**: `src/analyzer/relationship-resolver.ts` line 98
 **Status**: ✅ **Fully Working**
 
 **Resolves**:
@@ -485,8 +485,8 @@ CodeGraph can generate:
 
 ### Component Analysis
 
-**Implementation**: `src/analyzer/parsers/component-analyzer.ts`  
-**Integration**: ⚠️ **Needs 1-Hour Task**  
+**Implementation**: `src/analyzer/parsers/component-analyzer.ts`
+**Integration**: ⚠️ **Needs 1-Hour Task**
 **Status**: ✅ **Code Exists**, ❌ **Not Hooked Up**
 
 **What Works**:
@@ -520,7 +520,7 @@ CodeGraph can generate:
 ```cypher
 // Show package dependencies
 MATCH (p1:Package)-[d:DEPENDS_ON]->(p2:Package)
-RETURN p1.name as source, 
+RETURN p1.name as source,
        p1.type as sourceType,
        p2.name as target,
        p2.type as targetType,
@@ -579,7 +579,7 @@ ORDER BY fileCount DESC
 #### 3. Verify DEPENDS_ON Relationships
 ```cypher
 MATCH (p1:Package)-[d:DEPENDS_ON]->(p2:Package)
-RETURN count(d) as dependencyCount, 
+RETURN count(d) as dependencyCount,
        avg(d.weight) as avgImportsPerDep,
        max(d.weight) as maxImports
 ```
@@ -757,7 +757,7 @@ MATCH (n)
 RETURN labels(n) as nodeType, count(n) as count
 ORDER BY count DESC
 
-// 2. Count relationships by type  
+// 2. Count relationships by type
 MATCH ()-[r]->()
 RETURN type(r) as relType, count(r) as count
 ORDER BY count DESC
@@ -827,7 +827,7 @@ export function parseMyFeature(
 ): void {
   // Extract entities
   const entities = sourceFile.getMyEntities();
-  
+
   for (const entity of entities) {
     const node: AstNode = {
       id: context.generateId("myfeature", entity.getName()),
@@ -848,7 +848,7 @@ export function parseMyFeature(
       language: "TypeScript",
       createdAt: context.now
     };
-    
+
     context.addNode(node);
   }
 }
@@ -882,11 +882,11 @@ export function resolveMyRelationships(
   const sourceNodes = Array.from(context.nodeIndex.values()).filter(
     n => n.kind === "MyFeature" && n.filePath === fileNode.filePath
   );
-  
+
   for (const source of sourceNodes) {
     // Find targets
     const target = findTarget(source, context.nodeIndex);
-    
+
     if (target) {
       const rel: RelationshipInfo = {
         id: context.generateId("my_rel", `${source.name}->${target.name}`),
@@ -899,7 +899,7 @@ export function resolveMyRelationships(
         targetId: target.entityId,
         createdAt: context.now
       };
-      
+
       context.addRelationship(rel);
     }
   }
