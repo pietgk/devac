@@ -76,7 +76,16 @@
       "**/.git/**",
       "**/coverage/**",
       "**/.next/**",
-      "**/storybook-static/**"
+      "**/storybook-static/**",
+      "**/ios/Pods/**",
+      "**/ios/build/**",
+      "**/android/build/**",
+      "**/android/app/build/**",
+      "**/android/gradle/**",
+      "**/vendor/bundle/**",
+      "**/vendor/cache/**",
+      "**/.yalc/**",
+      "**/cypress/support/**"
     ],
     "extensions": [
       ".ts",

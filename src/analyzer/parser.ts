@@ -713,6 +713,8 @@ export class Parser {
   private async _parseFilesOneByOne(filePaths: string[]): Promise<void> {
     const FILE_PARSE_TIMEOUT_MS = 30000; // 30 seconds per file
     const PROJECT_CREATE_TIMEOUT_MS = 10000; // 10 seconds to create Project + add file
+    const PROGRESS_LOG_INTERVAL = 10; // Log progress every 10 files
+    const SLOW_FILE_THRESHOLD_MS = 5000; // Warn if file takes >5 seconds
     let successCount = 0;
     let timeoutCount = 0;
     let errorCount = 0;
@@ -724,6 +726,7 @@ export class Parser {
     for (let i = 0; i < filePaths.length; i++) {
       const filePath = filePaths[i]!;
       const filePathNormalized = path.resolve(filePath).replace(/\\/g, "/");
+      const startTime = Date.now();
 
       try {
         // Wrap Project creation and file parsing in timeout
@@ -768,15 +771,32 @@ export class Parser {
             fileProject.removeSourceFile(sourceFile);
 
             successCount++;
-            if ((i + 1) % 10 === 0) {
-              logger.debug(
-                `Progress: ${i + 1}/${filePaths.length} files (${successCount} success, ${timeoutCount} timeout, ${errorCount} errors)`,
-              );
-            }
           })(),
           PROJECT_CREATE_TIMEOUT_MS + FILE_PARSE_TIMEOUT_MS,
           `File processing timeout after ${PROJECT_CREATE_TIMEOUT_MS + FILE_PARSE_TIMEOUT_MS}ms: ${filePath}`,
         );
+
+        // Log timing for slow files
+        const duration = Date.now() - startTime;
+        if (duration > SLOW_FILE_THRESHOLD_MS) {
+          logger.warn(
+            `⏱️ Slow file: ${path.basename(filePath)} took ${Math.round(duration / 1000)}s`,
+          );
+        }
+
+        // Log progress at regular intervals
+        if (
+          (i + 1) % PROGRESS_LOG_INTERVAL === 0 ||
+          i + 1 === filePaths.length
+        ) {
+          const percentComplete = Math.round(
+            ((i + 1) / filePaths.length) * 100,
+          );
+          logger.info(
+            `Progress: ${i + 1}/${filePaths.length} (${percentComplete}%) - ` +
+              `Success: ${successCount}, Timeouts: ${timeoutCount}, Errors: ${errorCount}`,
+          );
+        }
       } catch (error: any) {
         if (error.message.includes("timeout")) {
           logger.warn(
