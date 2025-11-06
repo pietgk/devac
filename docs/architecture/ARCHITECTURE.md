@@ -50,48 +50,59 @@
 
 ### High-Level Overview
 
+**System Flow:**
+
 ```
-┌────────────────────────────────────────────────────────────────┐
-│                         User Interface                          │
-│  CLI: analyze, workspace sync, workspace status                │
-└──────────────────────────┬─────────────────────────────────────┘
-                           │
-                           ▼
-┌────────────────────────────────────────────────────────────────┐
-│                      AnalyzerService                            │
-│  Orchestrates: Package Detection → Scanning → Parsing → Storage│
-└──────────────────────────┬─────────────────────────────────────┘
-                           │
-            ┌──────────────┼──────────────┐
-            │              │              │
-            ▼              ▼              ▼
-    ┌──────────────┐  ┌────────┐  ┌─────────────┐
-    │PackageExtractor│ │Parser │  │StorageManager│
-    │ pnpm/npm/yarn│ │2-Pass  │  │Batch Neo4j  │
-    │ workspace    │ │ AST→   │  │   Writes    │
-    │ detection    │ │ Nodes  │  │             │
-    └──────────────┘  └───┬────┘  └─────────────┘
-                          │
-        ┌─────────────────┼─────────────────┐
-        │                 │                 │
-        ▼                 ▼                 ▼
-  ┌──────────┐      ┌──────────┐     ┌──────────┐
-  │  TS/JS   │      │  Python  │     │   Java   │
-  │ts-morph  │      │Python AST│     │tree-sitter│
-  └──────────┘      └──────────┘     └──────────┘
-        │                 │                 │
-        └─────────────────┼─────────────────┘
-                          │
-                          ▼
-        ┌─────────────────────────────────────┐
-        │        Neo4j Graph Database         │
-        │                                     │
-        │  Nodes: Package, File, Function,   │
-        │         Class, Interface, etc.      │
-        │                                     │
-        │  Edges: BELONGS_TO, DEPENDS_ON,    │
-        │         RESOLVES_TO, CALLS, etc.   │
-        └─────────────────────────────────────┘
+User Interface (CLI)
+  ↓
+  • analyze
+  • workspace sync
+  • workspace status
+  ↓
+AnalyzerService (Orchestrator)
+  ↓
+  Orchestrates: Package Detection → Scanning → Parsing → Storage
+  ↓
+  ├─→ PackageExtractor (pnpm/npm/yarn workspace detection)
+  ├─→ Parser (2-Pass AST → Nodes)
+  └─→ StorageManager (Batch Neo4j Writes)
+      ↓
+      Parser delegates to language-specific parsers:
+      ├─→ TypeScript/JavaScript (ts-morph)
+      ├─→ Python (Python AST)
+      └─→ Java/C#/Go/C++ (tree-sitter)
+      ↓
+      All results flow to:
+      ↓
+Neo4j Graph Database
+  • Nodes: Package, File, Function, Class, Interface, etc.
+  • Edges: BELONGS_TO, DEPENDS_ON, RESOLVES_TO, CALLS, etc.
+```
+
+**Alternative: Mermaid Diagram** (if your viewer supports mermaid):
+
+```mermaid
+graph TB
+    CLI[User Interface<br/>CLI: analyze, workspace sync, workspace status]
+    
+    CLI --> AS[AnalyzerService<br/>Orchestrates: Package Detection → Scanning → Parsing → Storage]
+    
+    AS --> PE[PackageExtractor<br/>pnpm/npm/yarn workspace detection]
+    AS --> P[Parser<br/>2-Pass AST → Nodes]
+    AS --> SM[StorageManager<br/>Batch Neo4j Writes]
+    
+    P --> TS[TS/JS<br/>ts-morph]
+    P --> PY[Python<br/>Python AST]
+    P --> JV[Java<br/>tree-sitter]
+    
+    TS --> NEO4J[(Neo4j Graph Database<br/>Nodes: Package, File, Function,<br/>Class, Interface, etc.<br/><br/>Edges: BELONGS_TO, DEPENDS_ON,<br/>RESOLVES_TO, CALLS, etc.)]
+    PY --> NEO4J
+    JV --> NEO4J
+    SM --> NEO4J
+    
+    style CLI fill:#e1f5ff
+    style AS fill:#fff4e1
+    style NEO4J fill:#e8f5e9
 ```
 
 ### Component Responsibilities
