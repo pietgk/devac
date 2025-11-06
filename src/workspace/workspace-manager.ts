@@ -148,11 +148,43 @@ export class WorkspaceManager {
 
     // Filter repositories based on options
     let reposToSync = config.repositories.filter((r) => r.enabled);
-    if (options.repo) {
+
+    // Handle filter preset first (takes precedence over individual filters)
+    if (options.filterPreset) {
+      const preset = config.filterPresets?.find(
+        (p) => p.name === options.filterPreset,
+      );
+      if (!preset) {
+        throw new Error(
+          `Filter preset "${options.filterPreset}" not found in config`,
+        );
+      }
+      logger.verbose(
+        `Applying filter preset: ${preset.name} (${preset.description || "no description"})`,
+      );
+      reposToSync = reposToSync.filter((r) =>
+        preset.repositories.includes(r.name),
+      );
+      // Apply maxFiles from preset if not overridden
+      if (preset.maxFiles && !options.maxFiles) {
+        options.maxFiles = preset.maxFiles;
+      }
+    }
+    // Handle individual filter option
+    else if (options.filter && options.filter.length > 0) {
+      reposToSync = reposToSync.filter((r) => options.filter!.includes(r.name));
+      logger.verbose(`Filtering repositories: ${options.filter.join(", ")}`);
+    }
+    // Handle legacy --repos option
+    else if (options.repo) {
       reposToSync = reposToSync.filter((r) => r.name === options.repo);
       if (reposToSync.length === 0) {
         throw new Error(`Repository "${options.repo}" not found in config`);
       }
+    }
+
+    if (reposToSync.length === 0) {
+      throw new Error("No repositories match the specified filters");
     }
 
     logger.info(`Syncing ${reposToSync.length} repositories...`);
@@ -241,6 +273,7 @@ export class WorkspaceManager {
       await analyzerService.analyze(repoPath, {
         ignorePatterns,
         supportedExtensions: config.defaults.extensions,
+        maxFiles: options.maxFiles,
       });
 
       // Get stats from Neo4j

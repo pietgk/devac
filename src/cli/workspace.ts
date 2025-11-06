@@ -6,7 +6,8 @@ import {
   WorkspaceConfig,
   RepositoryConfig,
 } from "../workspace/workspace-config.js";
-import { createContextLogger } from "../utils/logger.js";
+import { createContextLogger, updateLogLevel } from "../utils/logger.js";
+import { setVerbosity } from "../config/index.js";
 import path from "path";
 import fs from "fs/promises";
 
@@ -114,7 +115,29 @@ export function createWorkspaceCommand(): Command {
       "Specific repositories to sync (comma-separated)",
     )
     .option("--clean", "Clean database before syncing", false)
+    .option("-v, --verbose", "Enable verbose logging")
+    .option("-vv, --very-verbose", "Enable debug logging")
+    .option("-vvv, --trace", "Enable trace logging (most detailed)")
+    .option("--debug", "Enable debug logging (same as -vvv)")
+    .option("-f, --filter <repos...>", "Filter specific repositories to sync")
+    .option("--filter-preset <name>", "Use a named filter preset from config")
+    .option(
+      "--max-files <number>",
+      "Maximum files to process per repository",
+      parseInt,
+    )
     .action(async (options) => {
+      // Calculate verbosity level from flags
+      let verbosity = 0;
+      if (options.trace || options.debug) verbosity = 3;
+      else if (options.veryVerbose) verbosity = 2;
+      else if (options.verbose) verbosity = 1;
+
+      // Set verbosity and update logger
+      if (verbosity > 0) {
+        setVerbosity(verbosity);
+        updateLogLevel();
+      }
       try {
         logger.info(`Starting workspace sync...`);
 
@@ -125,11 +148,33 @@ export function createWorkspaceCommand(): Command {
         const manager = new WorkspaceManager(neo4jClient);
         const config = await manager.loadConfig(configPath);
 
-        // Sync repositories
-        const syncOptions: { repo?: string; reset?: boolean } = {
+        // Build sync options
+        const syncOptions: {
+          repo?: string;
+          reset?: boolean;
+          filter?: string[];
+          filterPreset?: string;
+          maxFiles?: number;
+        } = {
           repo: options.repos?.[0], // Take first repo if specified
           reset: options.clean,
+          filter: options.filter,
+          filterPreset: options.filterPreset,
+          maxFiles: options.maxFiles,
         };
+
+        // Log active filters
+        if (syncOptions.filter) {
+          logger.info(
+            `Filtering repositories: ${syncOptions.filter.join(", ")}`,
+          );
+        }
+        if (syncOptions.filterPreset) {
+          logger.info(`Using filter preset: ${syncOptions.filterPreset}`);
+        }
+        if (syncOptions.maxFiles) {
+          logger.info(`Maximum files per repository: ${syncOptions.maxFiles}`);
+        }
 
         logger.info(`Syncing repositories...`);
         const report = await manager.syncRepositories(config, syncOptions);

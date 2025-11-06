@@ -63,6 +63,7 @@ export class AnalyzerService {
     configOverride?: {
       ignorePatterns?: string[];
       supportedExtensions?: string[];
+      maxFiles?: number;
     },
   ): Promise<void> {
     logger.info(`Starting analysis for directory: ${directory}`);
@@ -89,12 +90,20 @@ export class AnalyzerService {
 
       // 2. Scan Files
       logger.info("Scanning files...");
-      const files: FileInfo[] = await scanner.scan(); // No argument needed
+      let files: FileInfo[] = await scanner.scan(); // No argument needed
       if (files.length === 0) {
         logger.warn("No files found to analyze.");
         return;
       }
       logger.info(`Found ${files.length} files.`);
+
+      // Apply maxFiles limit if specified
+      if (configOverride?.maxFiles && files.length > configOverride.maxFiles) {
+        logger.warn(
+          `Limiting analysis to ${configOverride.maxFiles} files (found ${files.length})`,
+        );
+        files = files.slice(0, configOverride.maxFiles);
+      }
 
       // 3. Parse Files (Pass 1) with streaming writes
       logger.info("Parsing files (Pass 1) with streaming writes to Neo4j...");

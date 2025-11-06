@@ -40,7 +40,7 @@ async function main() {
 
   program
     .name("code-analyzer-cli") // Replace with your actual CLI name
-    .version(getPackageVersion(), "-v, --version", "Output the current version")
+    .version(getPackageVersion(), "-V, --version", "Output the current version")
     .description(
       "A CLI tool to analyze codebases and store insights in Neo4j.",
     );

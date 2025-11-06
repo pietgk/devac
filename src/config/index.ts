@@ -10,6 +10,8 @@ dotenv.config({ path: path.resolve(process.cwd(), ".env") });
 interface Config {
   /** The logging level (e.g., 'debug', 'info', 'warn', 'error'). */
   logLevel: string;
+  /** Verbosity level (0=default, 1=-v, 2=-vv, 3=-vvv/--debug). */
+  verbosity: number;
   /** Neo4j database connection URL. */
   neo4jUrl: string;
   /** Neo4j database username. */
@@ -30,6 +32,7 @@ interface Config {
 
 const config: Config = {
   logLevel: process.env.LOG_LEVEL || "info",
+  verbosity: parseInt(process.env.VERBOSITY || "0", 10),
   neo4jUrl: process.env.NEO4J_URL || "bolt://localhost:7687",
   neo4jUser: process.env.NEO4J_USER || "neo4j",
   neo4jPassword: process.env.NEO4J_PASSWORD || "password", // Replace with your default password
@@ -101,6 +104,14 @@ if (isNaN(config.storageBatchSize) || config.storageBatchSize <= 0) {
     `Invalid STORAGE_BATCH_SIZE found, defaulting to 100. Value: ${process.env.STORAGE_BATCH_SIZE}`,
   );
   config.storageBatchSize = 100;
+}
+
+/**
+ * Sets the verbosity level at runtime (used by CLI)
+ * @param level - Verbosity level: 0 (default), 1 (-v), 2 (-vv), 3 (-vvv/--debug)
+ */
+export function setVerbosity(level: number): void {
+  config.verbosity = Math.max(0, Math.min(3, level));
 }
 
 export default config;

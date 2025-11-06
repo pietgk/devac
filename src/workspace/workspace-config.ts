@@ -23,6 +23,13 @@ export const RepositoryConfigSchema = z.object({
     .optional(),
 });
 
+export const FilterPresetSchema = z.object({
+  name: z.string().min(1, "Filter preset name cannot be empty"),
+  description: z.string().optional(),
+  repositories: z.array(z.string()),
+  maxFiles: z.number().optional(),
+});
+
 export const WorkspaceConfigSchema = z.object({
   version: z.literal("1.0"),
   workspaceRoot: z.string().min(1, "Workspace root cannot be empty"),
@@ -31,6 +38,7 @@ export const WorkspaceConfigSchema = z.object({
     ignorePatterns: z.array(z.string()).default([]),
     extensions: z.array(z.string()).default([]),
   }),
+  filterPresets: z.array(FilterPresetSchema).optional(),
 });
 
 // ============================================================================
@@ -38,6 +46,7 @@ export const WorkspaceConfigSchema = z.object({
 // ============================================================================
 
 export type RepositoryConfig = z.infer<typeof RepositoryConfigSchema>;
+export type FilterPreset = z.infer<typeof FilterPresetSchema>;
 export type WorkspaceConfig = z.infer<typeof WorkspaceConfigSchema>;
 
 // ============================================================================
@@ -66,6 +75,12 @@ export interface SyncOptions {
   dryRun?: boolean;
   /** Update schema before syncing */
   updateSchema?: boolean;
+  /** Filter repositories by names */
+  filter?: string[];
+  /** Use a named filter preset */
+  filterPreset?: string;
+  /** Maximum files to process per repository */
+  maxFiles?: number;
 }
 
 // ============================================================================

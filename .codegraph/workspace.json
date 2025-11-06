@@ -100,5 +100,35 @@
       ".cpp",
       ".h"
     ]
-  }
+  },
+  "filterPresets": [
+    {
+      "name": "debug-monorepo",
+      "description": "Debug monorepo-3.0 temp file issue with limited files",
+      "repositories": ["monorepo-3.0"],
+      "maxFiles": 100
+    },
+    {
+      "name": "quick-test",
+      "description": "Quick test with small repositories",
+      "repositories": ["CodeGraph", "contentful-monorepo"],
+      "maxFiles": 50
+    },
+    {
+      "name": "monorepos-only",
+      "description": "Sync only monorepo projects",
+      "repositories": ["frontend-monorepo", "mindler", "monorepo-3.0"]
+    },
+    {
+      "name": "apps-only",
+      "description": "Sync only application projects",
+      "repositories": ["app", "public-website-3"]
+    },
+    {
+      "name": "single-service-test",
+      "description": "Test with just CodeGraph for debugging",
+      "repositories": ["CodeGraph"],
+      "maxFiles": 20
+    }
+  ]
 }
