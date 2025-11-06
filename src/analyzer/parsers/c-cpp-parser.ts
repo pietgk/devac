@@ -371,6 +371,19 @@ class CCppAstVisitor {
       return; // Skip anonymous classes or nodes we can't name
     }
 
+    // Filter out CSS class selectors (common false positives)
+    // CSS classes start with a dot and contain hyphens/underscores
+    if (
+      name.startsWith(".") ||
+      name.includes("-") ||
+      /^[a-z]+[-_][a-z0-9-_]*$/i.test(name)
+    ) {
+      logger.debug(
+        `[CCppAstVisitor] Skipping likely CSS class selector: ${name} at ${this.filepath}:${location.startLine}`,
+      );
+      return;
+    }
+
     const originalClassId = this.currentClassEntityId; // Save outer class context if nested
 
     const entityId = generateEntityId("cppclass", `${this.filepath}:${name}`);

@@ -10,7 +10,7 @@ import config from "../config/index.js";
 import { Project } from "ts-morph";
 import { Neo4jClient } from "../database/neo4j-client.js";
 import { Neo4jError } from "../utils/errors.js";
-// Removed setTimeout import
+import { SleepDetector } from "../utils/sleep-detector.js";
 
 const logger = createContextLogger("AnalyzerService");
 
@@ -21,6 +21,7 @@ export class AnalyzerService {
   private parser: Parser;
   private storageManager: StorageManager;
   private neo4jClient: Neo4jClient;
+  private sleepDetector: SleepDetector;
   private repositoryMetadata?: {
     repository: string;
     repositoryPath: string;
@@ -47,9 +48,45 @@ export class AnalyzerService {
     // Pass the client instance to StorageManager
     this.storageManager = new StorageManager(this.neo4jClient);
     this.repositoryMetadata = repositoryMetadata;
+
+    // Initialize sleep detector
+    this.sleepDetector = new SleepDetector();
+    this.sleepDetector.on("wake", this.handleSystemWake.bind(this));
+
     logger.info(
       `AnalyzerService initialized${repositoryMetadata ? ` for repository: ${repositoryMetadata.repository}` : ""}.`,
     );
+  }
+
+  /**
+   * Handles system wake events (after sleep/suspend).
+   * Checks and restores Neo4j connection if needed.
+   */
+  private async handleSystemWake(event: {
+    sleepDuration: number;
+    detectedAt: number;
+  }): Promise<void> {
+    const sleepMinutes = Math.round(event.sleepDuration / 60000);
+    logger.warn(
+      `System wake detected after ~${sleepMinutes} minutes. Checking Neo4j connection...`,
+    );
+
+    try {
+      const isHealthy =
+        await this.neo4jClient.isConnectionHealthy("SleepWakeHandler");
+      if (!isHealthy) {
+        logger.warn("Neo4j connection lost during sleep. Reconnecting...");
+        await this.neo4jClient.reconnect("SleepWakeHandler");
+        logger.info("Neo4j connection restored successfully");
+      } else {
+        logger.info("Neo4j connection still healthy after wake");
+      }
+    } catch (error: any) {
+      logger.error(
+        `Failed to restore Neo4j connection after wake: ${error.message}`,
+      );
+      // Don't throw - allow analysis to continue and fail naturally if needed
+    }
   }
 
   /**
@@ -77,6 +114,10 @@ export class AnalyzerService {
       configOverride?.supportedExtensions ?? config.supportedExtensions;
 
     try {
+      // Start sleep detection monitoring
+      this.sleepDetector.start();
+      logger.debug("Sleep detector monitoring started");
+
       // Instantiate FileScanner here with directory and config
       scanner = new FileScanner(
         absoluteDirectory,
@@ -232,8 +273,16 @@ export class AnalyzerService {
       throw error; // Re-throw the error for higher-level handling
     } finally {
       // 6. Cleanup & Disconnect
+      logger.info("Cleaning up temporary files...");
+      await this.parser.cleanupTempFiles();
+
       logger.info("Closing Neo4j driver...");
       await this.neo4jClient.closeDriver("AnalyzerService-Cleanup");
+
+      // Stop sleep detection monitoring
+      this.sleepDetector.stop();
+      logger.debug("Sleep detector monitoring stopped");
+
       logger.info("Analysis complete.");
     }
   }

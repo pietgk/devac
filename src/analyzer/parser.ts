@@ -380,22 +380,12 @@ export class Parser {
           } else {
             logger.warn(`Skipping invalid JSON structure in file: ${file}`);
           }
-          await fs
-            .unlink(filePath)
-            .catch((err) =>
-              logger.warn(
-                `Failed to delete temp file ${filePath}: ${err.message}`,
-              ),
-            );
+          // NOTE: Do NOT delete temp files here - they are needed for Pass 2
+          // Cleanup happens after Pass 2 completes via cleanupTempFiles()
         } catch (error: any) {
           logger.error(
-            `Error processing or deleting temp file ${filePath}: ${error.message}`,
+            `Error processing temp file ${filePath}: ${error.message}`,
           );
-          try {
-            await fs.unlink(filePath);
-          } catch {
-            /* ignore cleanup error */
-          }
         }
       }
 
@@ -1118,6 +1108,50 @@ export class Parser {
       },
       {} as Record<string, RelationshipInfo[]>,
     );
+  }
+
+  /**
+   * Cleanup temporary JSON files after Pass 2 completes.
+   * Should be called at the end of the analysis process.
+   */
+  async cleanupTempFiles(): Promise<void> {
+    const tempDir = config.tempDir;
+    try {
+      const files = await fs.readdir(tempDir);
+      const jsonFiles = files.filter((f) => f.endsWith(".json"));
+
+      if (jsonFiles.length === 0) {
+        logger.debug("[cleanupTempFiles] No temporary files to clean up");
+        return;
+      }
+
+      logger.info(
+        `[cleanupTempFiles] Cleaning up ${jsonFiles.length} temporary JSON files...`,
+      );
+      let deletedCount = 0;
+      let errorCount = 0;
+
+      for (const file of jsonFiles) {
+        const filePath = path.join(tempDir, file);
+        try {
+          await fs.unlink(filePath);
+          deletedCount++;
+        } catch (error: any) {
+          logger.warn(
+            `[cleanupTempFiles] Failed to delete ${file}: ${error.message}`,
+          );
+          errorCount++;
+        }
+      }
+
+      logger.info(
+        `[cleanupTempFiles] Cleanup complete: ${deletedCount} deleted, ${errorCount} errors`,
+      );
+    } catch (error: any) {
+      logger.error(
+        `[cleanupTempFiles] Error accessing temp directory: ${error.message}`,
+      );
+    }
   }
 }
 

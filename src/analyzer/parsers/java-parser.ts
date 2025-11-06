@@ -324,10 +324,17 @@ class JavaAstVisitor {
       return;
     }
 
+    // Get the qualified name from the parent class/interface node
+    const parentNode = this.nodes.find(
+      (n) => n.entityId === this.currentClassOrInterfaceId,
+    );
+    const parentQualifiedName =
+      parentNode?.properties?.qualifiedName || parentNode?.name || "";
+
     const methodEntityId = generateEntityId(
       "javamethod",
-      `${this.currentClassOrInterfaceId}.${name}`,
-    ); // ID relative to parent
+      `${parentQualifiedName}.${name}`,
+    ); // Use parent's qualified name, not entity ID
     const methodNode: JavaMethodNode = {
       id: generateInstanceId(this.instanceCounter, "javamethod", name, {
         line: location.startLine,
@@ -393,10 +400,14 @@ class JavaAstVisitor {
       return; // Likely a parsing error or unexpected structure
     }
 
+    // Use the qualified name from parent class node (already found above as parentClassNode)
+    const parentQualifiedName =
+      parentClassNode.properties?.qualifiedName || parentClassNode.name || "";
+
     const methodEntityId = generateEntityId(
       "javamethod",
-      `${this.currentClassOrInterfaceId}.${name}`,
-    ); // Use same kind for simplicity
+      `${parentQualifiedName}.${name}`,
+    ); // Use parent's qualified name, not entity ID
     const methodNode: JavaMethodNode = {
       id: generateInstanceId(this.instanceCounter, "javamethod", name, {
         line: location.startLine,
@@ -454,6 +465,13 @@ class JavaAstVisitor {
       return;
     }
 
+    // Get the qualified name from the parent class/interface node
+    const parentNode = this.nodes.find(
+      (n) => n.entityId === this.currentClassOrInterfaceId,
+    );
+    const parentQualifiedName =
+      parentNode?.properties?.qualifiedName || parentNode?.name || "";
+
     for (const declarator of declaratorList) {
       const nameNode = declarator.childForFieldName("name"); // Tree-sitter Java uses 'name'
       const name = getNodeText(nameNode);
@@ -461,7 +479,7 @@ class JavaAstVisitor {
 
       const fieldEntityId = generateEntityId(
         "javafield",
-        `${this.currentClassOrInterfaceId}.${name}`,
+        `${parentQualifiedName}.${name}`,
       );
       const fieldNode: JavaFieldNode = {
         id: generateInstanceId(this.instanceCounter, "javafield", name, {
