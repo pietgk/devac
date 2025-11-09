@@ -1,1 +1,23 @@
+# Git LFS Configuration for CodeGraph
+
+# Binary artifacts
+*.jar filter=lfs diff=lfs merge=lfs -text
+*.war filter=lfs diff=lfs merge=lfs -text
+*.zip filter=lfs diff=lfs merge=lfs -text
+*.tar.gz filter=lfs diff=lfs merge=lfs -text
+# Database files
+*.db filter=lfs diff=lfs merge=lfs -text
+*.sqlite filter=lfs diff=lfs merge=lfs -text
+*.sqlite3 filter=lfs diff=lfs merge=lfs -text
+# Log files (large ones)
+*.log filter=lfs diff=lfs merge=lfs -text
+# Documentation with images
+*.pdf filter=lfs diff=lfs merge=lfs -text
+# Media files
+*.png filter=lfs diff=lfs merge=lfs -text
+*.jpg filter=lfs diff=lfs merge=lfs -text
+*.jpeg filter=lfs diff=lfs merge=lfs -text
+*.gif filter=lfs diff=lfs merge=lfs -text
+*.mp4 filter=lfs diff=lfs merge=lfs -text
+*.mov filter=lfs diff=lfs merge=lfs -text
 test-harness-wrapper/target/*.jar filter=lfs diff=lfs merge=lfs -text
