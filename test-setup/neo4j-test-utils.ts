@@ -1,24 +1,102 @@
 // test-setup/neo4j-test-utils.ts
 
 import { Neo4jClient } from '../src/database/neo4j-client.js';
+import { UniversalDatabaseManager } from './universal-db-manager.js';
+import { ServiceStrategy } from './strategies/service-strategy.js';
+import { SilentStrategyLogger } from './strategy-logger.js';
+import type { DbStrategyResult } from './types.js';
 
 /**
- * Configuration for test Neo4j connection
+ * Global database manager instance (singleton for test session)
+ */
+let dbManager: UniversalDatabaseManager | null = null;
+let currentConnection: DbStrategyResult | null = null;
+
+/**
+ * Get or create database manager instance.
+ */
+function getDatabaseManager(): UniversalDatabaseManager {
+  if (!dbManager) {
+    // Use silent logger by default for tests (set DEBUG_DB_STRATEGY=true to enable logging)
+    const logger = process.env.DEBUG_DB_STRATEGY === 'true'
+      ? undefined // Will use ConsoleStrategyLogger
+      : new SilentStrategyLogger();
+
+    dbManager = new UniversalDatabaseManager(logger);
+
+    // Register strategies in priority order
+    // Phase 1-2: Only service strategy for now
+    // TODO Phase 3: Add container strategy
+    // TODO Phase 4: Add native (Test Harness) strategy
+    dbManager.registerStrategy(new ServiceStrategy());
+  }
+  return dbManager;
+}
+
+/**
+ * Configuration for test Neo4j connection (legacy - for backward compatibility)
  */
 export const TEST_NEO4J_CONFIG = {
-  uri: process.env.TEST_NEO4J_URI || 'bolt://localhost:7687',
-  username: process.env.TEST_NEO4J_USERNAME || 'neo4j',
-  password: process.env.TEST_NEO4J_PASSWORD || 'test1234',
-  database: process.env.TEST_NEO4J_DATABASE || 'codegraph_test',
+  uri: process.env.TEST_NEO4J_URI || process.env.NEO4J_URI || 'bolt://localhost:7687',
+  username: process.env.TEST_NEO4J_USERNAME || process.env.NEO4J_USERNAME || 'neo4j',
+  password: process.env.TEST_NEO4J_PASSWORD || process.env.NEO4J_PASSWORD || 'test1234',
+  database: process.env.TEST_NEO4J_DATABASE || process.env.NEO4J_DATABASE || 'codegraph_test',
 };
 
 /**
  * Creates a Neo4j client configured for testing.
- * Uses dedicated test database for isolation.
+ * Uses universal database manager with automatic strategy selection:
+ * 1. Service (pre-existing Neo4j) - 0ms startup
+ * 2. Container (Docker) - 5-10s startup (TODO: Phase 3)
+ * 3. Native (Test Harness) - 3-7s startup (TODO: Phase 4)
+ *
+ * @returns Neo4j client ready for testing
  */
 export async function createTestNeo4jClient(): Promise<Neo4jClient> {
-  const client = new Neo4jClient(TEST_NEO4J_CONFIG);
+  const manager = getDatabaseManager();
+
+  // Get connection using universal strategy
+  const connection = await manager.getConnection({
+    type: 'neo4j',
+    service: {
+      enabled: true,
+      uri: TEST_NEO4J_CONFIG.uri,
+      username: TEST_NEO4J_CONFIG.username,
+      password: TEST_NEO4J_CONFIG.password,
+      database: TEST_NEO4J_CONFIG.database,
+    },
+    container: {
+      enabled: false, // TODO: Phase 3
+    },
+    native: {
+      enabled: false, // TODO: Phase 4
+    },
+  });
+
+  // Store connection for cleanup
+  currentConnection = connection;
+
+  // Create Neo4j client with connection details
+  const client = new Neo4jClient({
+    uri: connection.uri,
+    username: connection.username,
+    password: connection.password,
+    database: connection.database,
+  });
+
   return client;
+}
+
+/**
+ * Cleanup database manager after all tests.
+ * Call this in global afterAll or test teardown.
+ */
+export async function cleanupDatabaseManager(): Promise<void> {
+  if (dbManager) {
+    await dbManager.cleanup();
+    dbManager = null;
+    currentConnection = null;
+  }
 }
 
 /**

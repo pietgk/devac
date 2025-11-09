@@ -9,7 +9,7 @@ import {
   createTestCollection,
   countNodesByLabel,
   countRelationshipsByType,
-} from '../../../../test-setup/neo4j-test-utils.js';
+} from '../../../../../test-setup/neo4j-test-utils.js';
 import fs from 'fs/promises';
 
 describe('ResourceManager - Integration Tests', () => {

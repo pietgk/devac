@@ -7,7 +7,7 @@ import {
   createTestNeo4jClient,
   cleanTestDatabase,
   createTestCollection,
-} from '../../../../test-setup/neo4j-test-utils.js';
+} from '../../../../../test-setup/neo4j-test-utils.js';
 
 describe('ErrorManager - Integration Tests', () => {
   let neo4jClient: Neo4jClient;

@@ -1,6 +1,13 @@
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      // Help resolve test-setup imports
+      '@test-setup': '/test-setup',
+    },
+    extensions: ['.ts', '.tsx', '.js', '.jsx', '.json'],
+  },
   test: {
     // Test file patterns
     include: ['src/**/*.{spec,test}.ts', 'src/**/__tests__/**/*.ts'],
