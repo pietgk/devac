@@ -51,8 +51,15 @@ coverage/
 junit.xml
 
 # Maven build artifacts
-target/
+# Ignore all target directories except test-harness-wrapper
+target/*
+!target/.gitkeep
+test-harness-wrapper/target/classes/
+test-harness-wrapper/target/maven-*/
+test-harness-wrapper/target/*.original
+# Allow JAR files in test-harness-wrapper/target/ (tracked in Git LFS)
 *.jar
+!test-harness-wrapper/target/*.jar
 *.war
 *.ear
 pom.xml.tag
