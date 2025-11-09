@@ -2,7 +2,7 @@
 
 import { Neo4jClient } from '../src/database/neo4j-client.js';
 import { UniversalDatabaseManager } from './universal-db-manager.js';
-import { ServiceStrategy } from './strategies/service-strategy.js';
+import { ServiceStrategy, NativeStrategy } from './strategies/index.js';
 import { SilentStrategyLogger } from './strategy-logger.js';
 import type { DbStrategyResult } from './types.js';
 
@@ -25,10 +25,11 @@ function getDatabaseManager(): UniversalDatabaseManager {
     dbManager = new UniversalDatabaseManager(logger);
 
     // Register strategies in priority order
-    // Phase 1-2: Only service strategy for now
-    // TODO Phase 3: Add container strategy
-    // TODO Phase 4: Add native (Test Harness) strategy
+    // 1. Service (Phase 2) - Fastest, requires pre-existing Neo4j
+    // 2. Native (Phase 4) - Portable, works everywhere with Java
+    // 3. Container (Phase 3 - TODO) - Strong isolation, requires Docker
     dbManager.registerStrategy(new ServiceStrategy());
+    dbManager.registerStrategy(new NativeStrategy());
   }
   return dbManager;
 }
@@ -47,8 +48,8 @@ export const TEST_NEO4J_CONFIG = {
  * Creates a Neo4j client configured for testing.
  * Uses universal database manager with automatic strategy selection:
  * 1. Service (pre-existing Neo4j) - 0ms startup
- * 2. Container (Docker) - 5-10s startup (TODO: Phase 3)
- * 3. Native (Test Harness) - 3-7s startup (TODO: Phase 4)
+ * 2. Native (Test Harness via Java) - 3-7s startup ✅ Phase 4
+ * 3. Container (Docker) - 5-10s startup (TODO: Phase 3)
  *
  * @returns Neo4j client ready for testing
  */
@@ -69,7 +70,7 @@ export async function createTestNeo4jClient(): Promise<Neo4jClient> {
       enabled: false, // TODO: Phase 3
     },
     native: {
-      enabled: false, // TODO: Phase 4
+      enabled: true, // ✅ Phase 4: Native strategy via Neo4j Test Harness
     },
   });
 

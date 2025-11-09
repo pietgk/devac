@@ -1,0 +1,14 @@
+# Maven build artifacts
+target/
+
+# But keep the final JAR (we want to commit this once built)
+!target/test-harness-wrapper.jar
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
