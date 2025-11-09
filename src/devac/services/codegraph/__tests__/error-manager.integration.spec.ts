@@ -1,30 +1,25 @@
-// src/devac/services/codegraph/__tests__/error-manager.spec.ts
+// src/devac/services/codegraph/__tests__/error-manager.integration.spec.ts
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { ErrorManager, ServiceErrorType, ServiceErrorSeverity } from '../error-manager.js';
+import { ErrorManager } from '../error-manager.js';
 import { Neo4jClient } from '../../../../database/neo4j-client.js';
-import { Neo4jContainer, StartedNeo4jContainer } from '@testcontainers/neo4j';
+import {
+  createTestNeo4jClient,
+  cleanTestDatabase,
+  createTestCollection,
+} from '../../../../test-setup/neo4j-test-utils.js';
 
-describe('ErrorManager', () => {
-  let neo4jContainer: StartedNeo4jContainer;
+describe('ErrorManager - Integration Tests', () => {
   let neo4jClient: Neo4jClient;
   let errorManager: ErrorManager;
 
   beforeEach(async () => {
-    // Start Neo4j testcontainer
-    neo4jContainer = await new Neo4jContainer('neo4j:5-community')
-      .withReuse()
-      .start();
+    // Connect to local test database
+    neo4jClient = await createTestNeo4jClient();
+    await neo4jClient.initializeDriver('ErrorManagerIntegration');
 
-    const uri = neo4jContainer.getBoltUrl();
-    neo4jClient = new Neo4jClient({
-      uri,
-      username: 'neo4j',
-      password: 'password',
-      database: 'neo4j',
-    });
-
-    await neo4jClient.initializeDriver('ErrorManagerTest');
+    // Clean database before each test for isolation
+    await cleanTestDatabase(neo4jClient, 'ErrorManagerIntegration');
 
     errorManager = new ErrorManager(neo4jClient, {
       serviceId: 'test-service',
@@ -33,8 +28,7 @@ describe('ErrorManager', () => {
   });
 
   afterEach(async () => {
-    await neo4jClient.closeDriver('ErrorManagerTest');
-    await neo4jContainer.stop();
+    await neo4jClient.closeDriver('ErrorManagerIntegration');
   });
 
   describe('Error Tracking', () => {
@@ -198,7 +192,7 @@ describe('ErrorManager', () => {
         `,
         { serviceId: 'test-service' },
         'READ',
-        'ErrorManagerTest'
+        'ErrorManagerIntegration'
       );
 
       expect(result.records).toHaveLength(1);
@@ -208,8 +202,9 @@ describe('ErrorManager', () => {
     });
 
     it('should link errors to collection when provided', async () => {
-      // Arrange
+      // Arrange - Create a collection first
       const collectionId = 'coll-123';
+      await createTestCollection(neo4jClient, collectionId);
 
       errorManager.recordError({
         type: 'PARSING_ERROR',
@@ -229,7 +224,7 @@ describe('ErrorManager', () => {
         `,
         { serviceId: 'test-service', collectionId },
         'READ',
-        'ErrorManagerTest'
+        'ErrorManagerIntegration'
       );
 
       expect(result.records[0].get('errorCount').toInt()).toBe(1);
@@ -256,7 +251,7 @@ describe('ErrorManager', () => {
         `,
         { serviceId: 'test-service' },
         'READ',
-        'ErrorManagerTest'
+        'ErrorManagerIntegration'
       );
 
       expect(result.records[0].get('errorCount').toInt()).toBe(5);

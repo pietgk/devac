@@ -153,19 +153,44 @@ npm run analyze
 
 ### Testing
 
+DevAC uses a two-tier testing strategy:
+- **Unit Tests**: Fast, mocked dependencies (~62 tests, <5s)
+- **Integration Tests**: Real Neo4j database (~25 tests, ~10-30s)
+
+#### Test Setup (One-Time)
+
+1. **Verify Neo4j Connection**:
 ```bash
-# Run all tests
+npm run neo4j:verify
+```
+
+2. **Create Test Database**:
+```bash
+npm run neo4j:setup-test-db
+```
+
+This creates a dedicated `codegraph_test` database for test isolation.
+
+#### Running Tests
+
+```bash
+# All tests (unit + integration)
 npm test
 
+# Unit tests only (fast, no Neo4j required)
+npm run test:unit
+
+# Integration tests only (requires Neo4j)
+npm run test:integration
+
 # Watch mode for TDD
-npm test:watch
+npm run test:watch
 
-# Run only integration tests
-npm test:integration
-
-# Run only unit tests
-npm test:unit
+# With coverage report
+npm run test:coverage
 ```
+
+**See `TEST_SETUP.md` for detailed testing documentation.**
 
 ### Code Quality
 
