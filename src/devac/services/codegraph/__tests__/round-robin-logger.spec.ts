@@ -6,12 +6,12 @@ import fs from 'fs/promises';
 import path from 'path';
 
 describe('RoundRobinLogger', () => {
-  const testLogDir = '.devac-test/logs/codegraph';
+  const testLogDir = '.devac-test-logger/logs/codegraph';
   let logger: RoundRobinLogger;
 
   beforeEach(async () => {
     // Clean up test directory
-    await fs.rm('.devac-test', { recursive: true, force: true });
+    await fs.rm('.devac-test-logger', { recursive: true, force: true });
   });
 
   afterEach(async () => {
@@ -20,7 +20,7 @@ describe('RoundRobinLogger', () => {
       logger[Symbol.dispose]();
     }
     // Clean up test directory
-    await fs.rm('.devac-test', { recursive: true, force: true });
+    await fs.rm('.devac-test-logger', { recursive: true, force: true });
   });
 
   describe('Initialization', () => {

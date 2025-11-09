@@ -8,13 +8,13 @@ import path from 'path';
 import { vi } from 'vitest';
 
 describe('ResourceManager - Unit Tests', () => {
-  const testResourceDir = '.devac-test/resources';
+  const testResourceDir = '.devac-test-resources/resources';
   let mockNeo4jClient: Neo4jClient;
   let resourceManager: ResourceManager;
 
   beforeEach(async () => {
     // Clean up test directory
-    await fs.rm('.devac-test', { recursive: true, force: true });
+    await fs.rm('.devac-test-resources', { recursive: true, force: true });
 
     // Mock Neo4j client
     mockNeo4jClient = {
@@ -34,7 +34,7 @@ describe('ResourceManager - Unit Tests', () => {
       resourceManager[Symbol.dispose]();
     }
     // Clean up test directory
-    await fs.rm('.devac-test', { recursive: true, force: true });
+    await fs.rm('.devac-test-resources', { recursive: true, force: true });
   });
 
   describe('Initialization', () => {

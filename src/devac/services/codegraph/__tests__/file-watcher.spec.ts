@@ -6,13 +6,13 @@ import fs from 'fs/promises';
 import path from 'path';
 
 describe('FileWatcher - Unit Tests', () => {
-  const testWatchDir = '.devac-test/watch';
+  const testWatchDir = '.devac-test-watcher/watch';
   let fileWatcher: FileWatcher;
   let receivedEvents: FileChangeEvent[] = [];
 
   beforeEach(async () => {
     // Clean up test directory
-    await fs.rm('.devac-test', { recursive: true, force: true });
+    await fs.rm('.devac-test-watcher', { recursive: true, force: true });
     await fs.mkdir(testWatchDir, { recursive: true });
 
     // Reset events
@@ -26,7 +26,7 @@ describe('FileWatcher - Unit Tests', () => {
     }
 
     // Clean up test directory
-    await fs.rm('.devac-test', { recursive: true, force: true });
+    await fs.rm('.devac-test-watcher', { recursive: true, force: true });
   });
 
   describe('Initialization', () => {
