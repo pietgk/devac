@@ -1,6 +1,51 @@
 # DevAC Testing Setup Guide
 
-This guide explains how to set up and run integration tests for DevAC using a local Neo4j instance.
+This guide explains how to set up and run integration tests for DevAC.
+
+## 🎯 Universal Database Testing (NEW!)
+
+**DevAC features a universal database testing framework** that automatically selects the best available strategy:
+
+| Strategy | Startup | Requirements | Use Case |
+|----------|---------|--------------|----------|
+| **Service** | 0ms | Pre-existing Neo4j | Local dev with Neo4j installed |
+| **Native** | 3-7s | Java 21+ | Claude Code web, CI without Docker |
+| **Container** | 5-10s | Docker | CI/CD with strong isolation |
+
+**All strategies work transparently** - tests automatically use the best available option!
+
+See [PHASE_3_COMPLETE.md](PHASE_3_COMPLETE.md) and [PHASE_4_COMPLETE.md](PHASE_4_COMPLETE.md) for complete details.
+
+---
+
+## Quick Start (Choose Your Environment)
+
+**If you have Neo4j installed:**
+```bash
+npm run test:integration  # Uses service strategy (fastest)
+```
+
+**If you have Docker but no Neo4j:**
+```bash
+npm run test:integration  # Uses container strategy automatically
+```
+
+**If you have Java 21+ but no Docker:**
+```bash
+npm run test:integration  # Uses native strategy (Test Harness)
+```
+
+**Force a specific strategy:**
+```bash
+FORCE_STRATEGY=native npm run test:integration
+FORCE_STRATEGY=container npm run test:integration
+```
+
+---
+
+## Traditional Setup (Service Strategy)
+
+This section covers setting up a local Neo4j instance for the service strategy.
 
 ## Prerequisites
 

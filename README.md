@@ -23,6 +23,7 @@
 
 - **[Quick Start Guide](docs/QUICK_START.md)** - Get up and running in minutes with installation, basic usage, and C4 diagram queries
 - **[Architecture Documentation](docs/architecture/ARCHITECTURE.md)** - Complete technical architecture, entity ID system, parsing pipeline, and validation
+- **[Testing Guide](TEST_SETUP.md)** - Universal database testing with automatic strategy selection (Service/Native/Container)
 - **[MCP Setup Guide](MCP_SETUP.md)** - Step-by-step setup for Model Context Protocol integration
 - **[Example Queries](example-queries.md)** - 50+ tested Cypher queries for exploring your codebase
 
