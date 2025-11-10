@@ -1,7 +1,12 @@
 // test-setup/strategies/service-strategy.ts
 
-import net from 'net';
-import type { DatabaseStrategy, DbStrategyConfig, DbStrategyResult, StrategyLogger } from '../types.js';
+import net from "net";
+import type {
+  DatabaseStrategy,
+  DbStrategyConfig,
+  DbStrategyResult,
+  StrategyLogger,
+} from "../types.js";
 
 /**
  * Service Strategy - connects to pre-existing database.
@@ -23,7 +28,7 @@ import type { DatabaseStrategy, DbStrategyConfig, DbStrategyResult, StrategyLogg
  * - Not isolated
  */
 export class ServiceStrategy implements DatabaseStrategy {
-  name: 'service' = 'service';
+  name: "service" = "service";
   private config: DbStrategyConfig | null = null;
 
   /**
@@ -31,30 +36,58 @@ export class ServiceStrategy implements DatabaseStrategy {
    * Uses TCP port connectivity check.
    */
   async canUse(): Promise<boolean> {
-    // Check if connection details are provided via environment or config
-    const uri =
-      process.env[this.getEnvVarName('URL')] ||
-      process.env[this.getEnvVarName('URI')];
+    // Since config is not set yet, check for common database environment variables
+    // Check for Neo4j, PostgreSQL, MySQL connection strings
+    const hasConnectionString = !!(
+      process.env.NEO4J_URL ||
+      process.env.NEO4J_URI ||
+      process.env.POSTGRES_URL ||
+      process.env.POSTGRES_URI ||
+      process.env.POSTGRESQL_URL ||
+      process.env.MYSQL_URL ||
+      process.env.MYSQL_URI ||
+      process.env.TEST_NEO4J_URI ||
+      process.env.TEST_NEO4J_URL
+    );
 
-    if (uri) {
+    if (process.env.DEBUG_DB_STRATEGY === "true") {
+      console.log(
+        `[ServiceStrategy.canUse] Has connection string: ${hasConnectionString}`,
+      );
+      console.log(
+        `[ServiceStrategy.canUse] NEO4J_URL=${process.env.NEO4J_URL}, NEO4J_URI=${process.env.NEO4J_URI}`,
+      );
+    }
+
+    if (hasConnectionString) {
       return true; // If URI is provided, assume service is available
     }
 
-    // Otherwise, check if service is running on default port
-    const port = this.getDefaultPort();
-    if (!port) return false;
+    // Otherwise, check if Neo4j service is running on default port
+    // (We can't check other database types without knowing the config)
+    const neo4jPort = 7687;
+    const portAccessible = await this.checkPort(neo4jPort);
 
-    return await this.checkPort(port);
+    if (process.env.DEBUG_DB_STRATEGY === "true") {
+      console.log(
+        `[ServiceStrategy.canUse] Port ${neo4jPort} accessible: ${portAccessible}`,
+      );
+    }
+
+    return portAccessible;
   }
 
   /**
    * Connect to existing database service.
    */
-  async start(config: DbStrategyConfig, logger: StrategyLogger): Promise<DbStrategyResult> {
+  async start(
+    config: DbStrategyConfig,
+    logger: StrategyLogger,
+  ): Promise<DbStrategyResult> {
     this.config = config;
     const startTime = Date.now();
 
-    logger.debug('Service strategy: Reading connection details...');
+    logger.debug("Service strategy: Reading connection details...");
 
     // Get connection details from environment or config
     const uri = this.getUri();
@@ -62,7 +95,7 @@ export class ServiceStrategy implements DatabaseStrategy {
     const password = this.getPassword();
     const database = this.getDatabase();
 
-    logger.debug('Service strategy: Verifying connectivity...');
+    logger.debug("Service strategy: Verifying connectivity...");
 
     // Verify connection is actually available
     if (!(await this.verifyConnection(uri, username, password))) {
@@ -71,9 +104,12 @@ export class ServiceStrategy implements DatabaseStrategy {
 
     const endTime = Date.now();
 
-    logger.info(`Service strategy: Connected to existing ${config.type} instance`, {
-      database,
-    });
+    logger.info(
+      `Service strategy: Connected to existing ${config.type} instance`,
+      {
+        database,
+      },
+    );
 
     return {
       uri,
@@ -81,10 +117,10 @@ export class ServiceStrategy implements DatabaseStrategy {
       password,
       database,
       cleanup: async () => {
-        logger.debug('Service strategy: No cleanup needed (external service)');
+        logger.debug("Service strategy: No cleanup needed (external service)");
       },
-      strategy: 'service',
-      provider: 'manual',
+      strategy: "service",
+      provider: "manual",
       startupTime: endTime - startTime,
     };
   }
@@ -101,8 +137,8 @@ export class ServiceStrategy implements DatabaseStrategy {
    */
   private getUri(): string {
     const envUri =
-      process.env[this.getEnvVarName('URL')] ||
-      process.env[this.getEnvVarName('URI')];
+      process.env[this.getEnvVarName("URL")] ||
+      process.env[this.getEnvVarName("URI")];
 
     if (envUri) return envUri;
 
@@ -112,7 +148,7 @@ export class ServiceStrategy implements DatabaseStrategy {
 
     // Build default URI
     const protocol = this.getProtocol();
-    const host = this.config?.service?.port ? 'localhost' : 'localhost';
+    const host = this.config?.service?.port ? "localhost" : "localhost";
     const port = this.config?.service?.port || this.getDefaultPort();
 
     return `${protocol}://${host}:${port}`;
@@ -123,8 +159,8 @@ export class ServiceStrategy implements DatabaseStrategy {
    */
   private getUsername(): string {
     return (
-      process.env[this.getEnvVarName('USERNAME')] ||
-      process.env[this.getEnvVarName('USER')] ||
+      process.env[this.getEnvVarName("USERNAME")] ||
+      process.env[this.getEnvVarName("USER")] ||
       this.config?.service?.username ||
       this.getDefaultUsername()
     );
@@ -135,7 +171,7 @@ export class ServiceStrategy implements DatabaseStrategy {
    */
   private getPassword(): string {
     return (
-      process.env[this.getEnvVarName('PASSWORD')] ||
+      process.env[this.getEnvVarName("PASSWORD")] ||
       this.config?.service?.password ||
       this.getDefaultPassword()
     );
@@ -145,11 +181,19 @@ export class ServiceStrategy implements DatabaseStrategy {
    * Get database name from environment or config.
    */
   private getDatabase(): string {
-    return (
-      process.env[this.getEnvVarName('DATABASE')] ||
-      this.config?.service?.database ||
-      this.getDefaultDatabase()
-    );
+    // Check environment variable first
+    const envDatabase = process.env[this.getEnvVarName("DATABASE")];
+    if (envDatabase !== undefined) {
+      return envDatabase;
+    }
+
+    // Check config
+    if (this.config?.service?.database !== undefined) {
+      return this.config.service.database;
+    }
+
+    // Fall back to default only if neither env nor config is set
+    return this.getDefaultDatabase();
   }
 
   /**
@@ -157,9 +201,9 @@ export class ServiceStrategy implements DatabaseStrategy {
    * e.g., NEO4J_URL, POSTGRES_URL, MYSQL_URL
    */
   private getEnvVarName(suffix: string): string {
-    const dbType = this.config?.type.toUpperCase() || '';
+    const dbType = this.config?.type.toUpperCase() || "";
     // Handle aliases
-    if (dbType === 'POSTGRESQL') {
+    if (dbType === "POSTGRESQL") {
       return `POSTGRES_${suffix}`;
     }
     return `${dbType}_${suffix}`;
@@ -170,12 +214,12 @@ export class ServiceStrategy implements DatabaseStrategy {
    */
   private getProtocol(): string {
     const protocols: Record<string, string> = {
-      neo4j: 'bolt',
-      postgresql: 'postgresql',
-      mysql: 'mysql',
-      dynamodb: 'http',
+      neo4j: "bolt",
+      postgresql: "postgresql",
+      mysql: "mysql",
+      dynamodb: "http",
     };
-    return protocols[this.config?.type || ''] || 'unknown';
+    return protocols[this.config?.type || ""] || "unknown";
   }
 
   /**
@@ -188,7 +232,7 @@ export class ServiceStrategy implements DatabaseStrategy {
       mysql: 3306,
       dynamodb: 8000,
     };
-    return ports[this.config?.type || ''] || 0;
+    return ports[this.config?.type || ""] || 0;
   }
 
   /**
@@ -196,12 +240,12 @@ export class ServiceStrategy implements DatabaseStrategy {
    */
   private getDefaultUsername(): string {
     const usernames: Record<string, string> = {
-      neo4j: 'neo4j',
-      postgresql: 'postgres',
-      mysql: 'root',
-      dynamodb: 'local',
+      neo4j: "neo4j",
+      postgresql: "postgres",
+      mysql: "root",
+      dynamodb: "local",
     };
-    return usernames[this.config?.type || ''] || 'admin';
+    return usernames[this.config?.type || ""] || "admin";
   }
 
   /**
@@ -209,12 +253,12 @@ export class ServiceStrategy implements DatabaseStrategy {
    */
   private getDefaultPassword(): string {
     const passwords: Record<string, string> = {
-      neo4j: 'test1234',
-      postgresql: 'postgres',
-      mysql: 'root',
-      dynamodb: 'local',
+      neo4j: "test1234",
+      postgresql: "postgres",
+      mysql: "root",
+      dynamodb: "local",
     };
-    return passwords[this.config?.type || ''] || 'password';
+    return passwords[this.config?.type || ""] || "password";
   }
 
   /**
@@ -222,12 +266,12 @@ export class ServiceStrategy implements DatabaseStrategy {
    */
   private getDefaultDatabase(): string {
     const databases: Record<string, string> = {
-      neo4j: 'codegraph_test',
-      postgresql: 'test',
-      mysql: 'test',
-      dynamodb: 'local',
+      neo4j: "neo4j", // Default database for Neo4j 4.0+
+      postgresql: "test",
+      mysql: "test",
+      dynamodb: "local",
     };
-    return databases[this.config?.type || ''] || 'test';
+    return databases[this.config?.type || ""] || "test";
   }
 
   /**
@@ -241,18 +285,18 @@ export class ServiceStrategy implements DatabaseStrategy {
         resolve(false);
       }, 1000);
 
-      socket.on('connect', () => {
+      socket.on("connect", () => {
         clearTimeout(timeout);
         socket.destroy();
         resolve(true);
       });
 
-      socket.on('error', () => {
+      socket.on("error", () => {
         clearTimeout(timeout);
         resolve(false);
       });
 
-      socket.connect(port, 'localhost');
+      socket.connect(port, "localhost");
     });
   }
 
@@ -264,7 +308,7 @@ export class ServiceStrategy implements DatabaseStrategy {
   private async verifyConnection(
     uri: string,
     username: string,
-    password: string
+    password: string,
   ): Promise<boolean> {
     // For now, just verify the port is accessible
     // Database-specific connection verification happens in tests

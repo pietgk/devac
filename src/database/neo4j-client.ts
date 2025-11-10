@@ -112,7 +112,7 @@ export class Neo4jClient {
       `(${context}) Verifying Neo4j connectivity to database: ${this.neo4jConfig.database}...`,
     );
     try {
-      // verifyConnectivity checks authentication and connectivity.
+      // verifyConnectivity checks authentication and connectivity (Neo4j 4.0+)
       await this.driver.verifyConnectivity({
         database: this.neo4jConfig.database,
       });
@@ -170,11 +170,17 @@ export class Neo4jClient {
   ): Promise<Session> {
     const driver = await this.getDriver(context); // Ensures driver is initialized
     try {
-      const session = driver.session({
-        database: this.neo4jConfig.database,
+      // Build session config for Neo4j 4.0+
+      const sessionConfig = {
         defaultAccessMode:
           accessMode === "READ" ? neo4j.session.READ : neo4j.session.WRITE,
-      });
+        database: this.neo4jConfig.database,
+      };
+
+      logger.debug(
+        `(${context}) Creating session for database: ${this.neo4jConfig.database}`,
+      );
+      const session = driver.session(sessionConfig);
       logger.debug(`(${context}) Neo4j session obtained for ${accessMode}.`);
       return session;
     } catch (error: any) {
