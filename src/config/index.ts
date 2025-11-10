@@ -36,7 +36,7 @@ const config: Config = {
   neo4jUrl: process.env.NEO4J_URL || "bolt://localhost:7687",
   neo4jUser: process.env.NEO4J_USER || "neo4j",
   neo4jPassword: process.env.NEO4J_PASSWORD || "password", // Replace with your default password
-  neo4jDatabase: process.env.NEO4J_DATABASE || "codegraph",
+  neo4jDatabase: process.env.NEO4J_DATABASE || "neo4j", // Default database for Neo4j 4.0+
   storageBatchSize: parseInt(process.env.STORAGE_BATCH_SIZE || "100", 10),
   tempDir: path.resolve(
     process.cwd(),

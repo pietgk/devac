@@ -1,12 +1,12 @@
 // src/devac/services/codegraph/resource-manager.ts
 
-import fs from 'fs/promises';
-import path from 'path';
-import crypto from 'crypto';
-import { randomUUID } from 'crypto';
-import { Neo4jClient } from '../../../database/neo4j-client.js';
+import fs from "fs/promises";
+import path from "path";
+import crypto from "crypto";
+import { randomUUID } from "crypto";
+import { Neo4jClient } from "../../../database/neo4j-client.js";
 
-export type ResourceType = 'log' | 'snapshot' | 'error-log' | 'file-content';
+export type ResourceType = "log" | "snapshot" | "error-log" | "file-content";
 
 export interface ResourceMetadata {
   [key: string]: any;
@@ -74,7 +74,7 @@ export class ResourceManager implements Disposable {
 
     const resourceId = randomUUID();
     const hash = this.calculateHash(options.content);
-    const size = Buffer.byteLength(options.content, 'utf-8');
+    const size = Buffer.byteLength(options.content, "utf-8");
     const createdAt = Date.now();
 
     // Create type subdirectory
@@ -83,7 +83,7 @@ export class ResourceManager implements Disposable {
 
     // Store content to disk
     const resourcePath = path.join(typeDir, `${resourceId}.txt`);
-    await fs.writeFile(resourcePath, options.content, 'utf-8');
+    await fs.writeFile(resourcePath, options.content, "utf-8");
 
     // Create resource object
     const resource: Resource = {
@@ -104,7 +104,11 @@ export class ResourceManager implements Disposable {
 
     // Create Neo4j node if requested
     if (options.persistToGraph) {
-      await this.persistToGraph(resource, options.collectionId, options.errorId);
+      await this.persistToGraph(
+        resource,
+        options.collectionId,
+        options.errorId,
+      );
     }
 
     return resourceId;
@@ -138,7 +142,7 @@ export class ResourceManager implements Disposable {
     }
 
     try {
-      const content = await fs.readFile(resource.path, 'utf-8');
+      const content = await fs.readFile(resource.path, "utf-8");
       return content;
     } catch (error) {
       return null;
@@ -161,17 +165,17 @@ export class ResourceManager implements Disposable {
       RETURN r.id AS id
       `,
       {},
-      'READ',
-      'ResourceManager'
+      "READ",
+      "ResourceManager",
     );
 
     const graphResourceIds = new Set(
-      result.records.map((record: any) => record.get('id'))
+      result.records.map((record: any) => record.get("id")),
     );
 
     // Find resources that are on disk but not in graph
     const orphanedIds = allResourceIds.filter(
-      (id) => !graphResourceIds.has(id)
+      (id) => !graphResourceIds.has(id),
     );
 
     return orphanedIds;
@@ -234,8 +238,8 @@ export class ResourceManager implements Disposable {
       byType: {
         log: 0,
         snapshot: 0,
-        'error-log': 0,
-        'file-content': 0,
+        "error-log": 0,
+        "file-content": 0,
       },
     };
 
@@ -260,7 +264,7 @@ export class ResourceManager implements Disposable {
    * Calculate SHA-256 hash of content.
    */
   private calculateHash(content: string): string {
-    return crypto.createHash('sha256').update(content).digest('hex');
+    return crypto.createHash("sha256").update(content).digest("hex");
   }
 
   /**
@@ -269,11 +273,10 @@ export class ResourceManager implements Disposable {
   private async persistToGraph(
     resource: Resource,
     collectionId?: string,
-    errorId?: string
+    errorId?: string,
   ): Promise<void> {
-    // Create Resource node
-    await this.neo4jClient.runTransaction(
-      `
+    // Build a single Cypher query to create resource and relationships atomically
+    let cypher = `
       CREATE (r:Resource {
         id: $id,
         type: $type,
@@ -282,46 +285,44 @@ export class ResourceManager implements Disposable {
         path: $path,
         createdAt: $createdAt
       })
-      `,
-      {
-        id: resource.id,
-        type: resource.type,
-        size: resource.size,
-        hash: resource.hash,
-        path: resource.path,
-        createdAt: resource.createdAt,
-      },
-      'WRITE',
-      'ResourceManager'
-    );
+    `;
 
-    // Link to collection if provided
+    const params: Record<string, any> = {
+      id: resource.id,
+      type: resource.type,
+      size: resource.size,
+      hash: resource.hash,
+      path: resource.path,
+      createdAt: resource.createdAt,
+    };
+
+    // Add collection relationship if provided
     if (collectionId) {
-      await this.neo4jClient.runTransaction(
-        `
-        MATCH (r:Resource {id: $id})
-        MATCH (c:Collection {id: $collectionId})
-        CREATE (r)-[:STORED_IN]->(c)
-        `,
-        { id: resource.id, collectionId },
-        'WRITE',
-        'ResourceManager'
-      );
+      cypher += `
+      WITH r
+      MATCH (c:Collection {id: $collectionId})
+      CREATE (r)-[:STORED_IN]->(c)
+      `;
+      params.collectionId = collectionId;
     }
 
-    // Link to error if provided
+    // Add error relationship if provided
     if (errorId) {
-      await this.neo4jClient.runTransaction(
-        `
-        MATCH (r:Resource {id: $id})
-        MATCH (e:ServiceError {id: $errorId})
-        CREATE (r)-[:ATTACHED_TO]->(e)
-        `,
-        { id: resource.id, errorId },
-        'WRITE',
-        'ResourceManager'
-      );
+      cypher += `
+      WITH r
+      MATCH (e:ServiceError {id: $errorId})
+      CREATE (r)-[:ATTACHED_TO]->(e)
+      `;
+      params.errorId = errorId;
     }
+
+    // Execute as single transaction
+    await this.neo4jClient.runTransaction(
+      cypher,
+      params,
+      "WRITE",
+      "ResourceManager",
+    );
   }
 
   /**
@@ -329,25 +330,34 @@ export class ResourceManager implements Disposable {
    */
   private async saveResourceMetadata(
     resourceId: string,
-    resource: Resource
+    resource: Resource,
   ): Promise<void> {
     const metadataPath = this.getMetadataPath(resourceId, resource.type);
-    await fs.writeFile(metadataPath, JSON.stringify(resource, null, 2), 'utf-8');
+    await fs.writeFile(
+      metadataPath,
+      JSON.stringify(resource, null, 2),
+      "utf-8",
+    );
   }
 
   /**
    * Load resource metadata from disk.
    */
   private async loadResourceMetadata(
-    resourceId: string
+    resourceId: string,
   ): Promise<Resource | null> {
     // Try to find metadata file in any type directory
-    const types: ResourceType[] = ['log', 'snapshot', 'error-log', 'file-content'];
+    const types: ResourceType[] = [
+      "log",
+      "snapshot",
+      "error-log",
+      "file-content",
+    ];
 
     for (const type of types) {
       const metadataPath = this.getMetadataPath(resourceId, type);
       try {
-        const content = await fs.readFile(metadataPath, 'utf-8');
+        const content = await fs.readFile(metadataPath, "utf-8");
         const resource = JSON.parse(content) as Resource;
         this.resourceIndex.set(resourceId, resource);
         return resource;
@@ -364,19 +374,24 @@ export class ResourceManager implements Disposable {
    * Load all resource metadata into index.
    */
   private async loadResourceIndex(): Promise<void> {
-    const types: ResourceType[] = ['log', 'snapshot', 'error-log', 'file-content'];
+    const types: ResourceType[] = [
+      "log",
+      "snapshot",
+      "error-log",
+      "file-content",
+    ];
 
     for (const type of types) {
       const typeDir = path.join(this.resourceDir, type);
 
       try {
         const files = await fs.readdir(typeDir);
-        const metadataFiles = files.filter((f) => f.endsWith('.meta.json'));
+        const metadataFiles = files.filter((f) => f.endsWith(".meta.json"));
 
         for (const metadataFile of metadataFiles) {
           const metadataPath = path.join(typeDir, metadataFile);
           try {
-            const content = await fs.readFile(metadataPath, 'utf-8');
+            const content = await fs.readFile(metadataPath, "utf-8");
             const resource = JSON.parse(content) as Resource;
             this.resourceIndex.set(resource.id, resource);
           } catch (error) {
@@ -403,7 +418,7 @@ export class ResourceManager implements Disposable {
    */
   private checkDisposed(): void {
     if (this.disposed) {
-      throw new Error('ResourceManager has been disposed');
+      throw new Error("ResourceManager has been disposed");
     }
   }
 }

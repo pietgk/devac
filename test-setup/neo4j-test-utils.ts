@@ -1,10 +1,10 @@
 // test-setup/neo4j-test-utils.ts
 
-import { Neo4jClient } from '../src/database/neo4j-client.js';
-import { UniversalDatabaseManager } from './universal-db-manager.js';
-import { ServiceStrategy, ContainerStrategy, NativeStrategy } from './strategies/index.js';
-import { SilentStrategyLogger } from './strategy-logger.js';
-import type { DbStrategyResult } from './types.js';
+import { Neo4jClient } from "../src/database/neo4j-client.js";
+import { UniversalDatabaseManager } from "./universal-db-manager.js";
+import { ServiceStrategy, ContainerStrategy, NativeStrategy } from "./strategies/index.js";
+import { SilentStrategyLogger } from "./strategy-logger.js";
+import type { DbStrategyResult } from "./types.js";
 
 /**
  * Global database manager instance (singleton for test session)
@@ -18,9 +18,10 @@ let currentConnection: DbStrategyResult | null = null;
 function getDatabaseManager(): UniversalDatabaseManager {
   if (!dbManager) {
     // Use silent logger by default for tests (set DEBUG_DB_STRATEGY=true to enable logging)
-    const logger = process.env.DEBUG_DB_STRATEGY === 'true'
-      ? undefined // Will use ConsoleStrategyLogger
-      : new SilentStrategyLogger();
+    const logger =
+      process.env.DEBUG_DB_STRATEGY === "true"
+        ? undefined // Will use ConsoleStrategyLogger
+        : new SilentStrategyLogger();
 
     dbManager = new UniversalDatabaseManager(logger);
 
@@ -39,10 +40,16 @@ function getDatabaseManager(): UniversalDatabaseManager {
  * Configuration for test Neo4j connection (legacy - for backward compatibility)
  */
 export const TEST_NEO4J_CONFIG = {
-  uri: process.env.TEST_NEO4J_URI || process.env.NEO4J_URI || 'bolt://localhost:7687',
-  username: process.env.TEST_NEO4J_USERNAME || process.env.NEO4J_USERNAME || 'neo4j',
-  password: process.env.TEST_NEO4J_PASSWORD || process.env.NEO4J_PASSWORD || 'test1234',
-  database: process.env.TEST_NEO4J_DATABASE || process.env.NEO4J_DATABASE || 'codegraph_test',
+  uri:
+    process.env.TEST_NEO4J_URI ||
+    process.env.NEO4J_URI ||
+    "bolt://localhost:7687",
+  username:
+    process.env.TEST_NEO4J_USERNAME || process.env.NEO4J_USERNAME || "neo4j",
+  password:
+    process.env.TEST_NEO4J_PASSWORD || process.env.NEO4J_PASSWORD || "test1234",
+  database:
+    process.env.TEST_NEO4J_DATABASE || process.env.NEO4J_DATABASE || "neo4j", // Default database for Neo4j 4.0+
 };
 
 /**
@@ -59,7 +66,7 @@ export async function createTestNeo4jClient(): Promise<Neo4jClient> {
 
   // Get connection using universal strategy
   const connection = await manager.getConnection({
-    type: 'neo4j',
+    type: "neo4j",
     service: {
       enabled: true,
       uri: TEST_NEO4J_CONFIG.uri,
@@ -110,19 +117,19 @@ export async function cleanupDatabaseManager(): Promise<void> {
  */
 export async function cleanTestDatabase(
   client: Neo4jClient,
-  context: string = 'TestCleanup'
+  context: string = "TestCleanup",
 ): Promise<void> {
   try {
     // Delete all nodes and relationships
     await client.runTransaction(
-      'MATCH (n) DETACH DELETE n',
+      "MATCH (n) DETACH DELETE n",
       {},
-      'WRITE',
-      context
+      "WRITE",
+      context,
     );
   } catch (error: any) {
     // If database is already empty, that's fine
-    if (!error.message.includes('not found')) {
+    if (!error.message.includes("not found")) {
       throw error;
     }
   }
@@ -136,7 +143,7 @@ export async function cleanTestDatabase(
  * @returns Object with node and relationship counts
  */
 export async function verifyDatabaseEmpty(
-  client: Neo4jClient
+  client: Neo4jClient,
 ): Promise<{ nodeCount: number; relationshipCount: number }> {
   const result = await client.runTransaction<any>(
     `
@@ -145,14 +152,14 @@ export async function verifyDatabaseEmpty(
     RETURN count(DISTINCT n) AS nodeCount, count(DISTINCT r) AS relCount
     `,
     {},
-    'READ',
-    'TestVerification'
+    "READ",
+    "TestVerification",
   );
 
   const record = result.records[0];
   return {
-    nodeCount: record.get('nodeCount').toInt(),
-    relationshipCount: record.get('relCount').toInt(),
+    nodeCount: record.get("nodeCount").toInt(),
+    relationshipCount: record.get("relCount").toInt(),
   };
 }
 
@@ -166,7 +173,7 @@ export async function verifyDatabaseEmpty(
  */
 export async function createTestCollection(
   client: Neo4jClient,
-  collectionId: string = 'test-collection'
+  collectionId: string = "test-collection",
 ): Promise<string> {
   await client.runTransaction(
     `
@@ -177,8 +184,8 @@ export async function createTestCollection(
     })
     `,
     { id: collectionId },
-    'WRITE',
-    'TestSetup'
+    "WRITE",
+    "TestSetup",
   );
   return collectionId;
 }
@@ -192,15 +199,15 @@ export async function createTestCollection(
  */
 export async function countNodesByLabel(
   client: Neo4jClient,
-  label: string
+  label: string,
 ): Promise<number> {
   const result = await client.runTransaction<any>(
     `MATCH (n:${label}) RETURN count(n) AS count`,
     {},
-    'READ',
-    'TestVerification'
+    "READ",
+    "TestVerification",
   );
-  return result.records[0].get('count').toInt();
+  return result.records[0].get("count").toInt();
 }
 
 /**
@@ -212,15 +219,15 @@ export async function countNodesByLabel(
  */
 export async function countRelationshipsByType(
   client: Neo4jClient,
-  type: string
+  type: string,
 ): Promise<number> {
   const result = await client.runTransaction<any>(
     `MATCH ()-[r:${type}]->() RETURN count(r) AS count`,
     {},
-    'READ',
-    'TestVerification'
+    "READ",
+    "TestVerification",
   );
-  return result.records[0].get('count').toInt();
+  return result.records[0].get("count").toInt();
 }
 
 /**
@@ -232,9 +239,9 @@ export async function countRelationshipsByType(
  */
 export async function isNeo4jAvailable(client: Neo4jClient): Promise<boolean> {
   try {
-    await client.initializeDriver('AvailabilityCheck');
-    const healthy = await client.isConnectionHealthy('AvailabilityCheck');
-    await client.closeDriver('AvailabilityCheck');
+    await client.initializeDriver("AvailabilityCheck");
+    const healthy = await client.isConnectionHealthy("AvailabilityCheck");
+    await client.closeDriver("AvailabilityCheck");
     return healthy;
   } catch (error) {
     return false;
@@ -249,10 +256,10 @@ export async function isNeo4jAvailable(client: Neo4jClient): Promise<boolean> {
  */
 export async function getNeo4jVersion(client: Neo4jClient): Promise<string> {
   const result = await client.runTransaction<any>(
-    'CALL dbms.components() YIELD versions RETURN versions[0] AS version',
+    "CALL dbms.components() YIELD versions RETURN versions[0] AS version",
     {},
-    'READ',
-    'TestSetup'
+    "READ",
+    "TestSetup",
   );
-  return result.records[0].get('version');
+  return result.records[0].get("version");
 }
