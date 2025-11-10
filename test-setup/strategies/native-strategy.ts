@@ -40,18 +40,14 @@ export class NativeStrategy implements DatabaseStrategy {
 
   async canUse(): Promise<boolean> {
     try {
-      // Check 1: Java available
+      // Check if Java available
       const javaAvailable = await this.checkJavaAvailable();
       if (!javaAvailable) {
         return false;
       }
 
-      // Check 2: JAR file exists
-      const jarExists = await this.checkJarExists();
-      if (!jarExists) {
-        return false;
-      }
-
+      // If Java is available, we can use this strategy
+      // (JAR will be auto-downloaded if missing)
       return true;
     } catch (error) {
       return false;
