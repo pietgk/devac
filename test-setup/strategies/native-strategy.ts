@@ -3,6 +3,7 @@
 import { spawn, ChildProcess } from 'child_process';
 import { access } from 'fs/promises';
 import path from 'path';
+import { JarDownloader } from '../jar-downloader.js';
 import type {
   DatabaseStrategy,
   DbStrategyResult,
@@ -69,6 +70,17 @@ export class NativeStrategy implements DatabaseStrategy {
     // Override JAR path if specified in config
     if (config.native?.provider) {
       this.jarPath = config.native.provider;
+    }
+
+    // Ensure JAR is available (download from GitHub releases if needed)
+    try {
+      const downloader = new JarDownloader(this.jarPath);
+      await downloader.ensureJarAvailable();
+    } catch (error) {
+      logger.error('Failed to ensure JAR availability', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
     }
 
     // Start Java process
