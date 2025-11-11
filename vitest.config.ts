@@ -17,7 +17,10 @@ export default defineConfig(({ mode }) => {
       // Inject environment variables into test environment
       env,
       // Test file patterns
-      include: ["src/**/*.{spec,test}.ts", "src/**/__tests__/**/*.ts"],
+      include: [
+        "src/**/*.{spec,test}.ts",
+        "src/**/__tests__/**/*.{spec,test}.ts",
+      ],
 
       // Global test settings
       globals: true,

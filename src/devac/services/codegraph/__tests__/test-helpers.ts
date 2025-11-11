@@ -1,11 +1,11 @@
 // src/devac/services/codegraph/__tests__/codegraph-service-test-helpers.ts
 
-import fs from 'fs/promises';
-import path from 'path';
-import os from 'os';
-import { Neo4jClient } from '../../../../database/neo4j-client.js';
-import type { ServiceConfig } from '../../../types/index.js';
-import type { CodeGraphServiceConfig } from '../codegraph-service.js';
+import fs from "fs/promises";
+import path from "path";
+import os from "os";
+import { Neo4jClient } from "../../../../database/neo4j-client.js";
+import type { ServiceConfig } from "../../../types/index.js";
+import type { CodeGraphServiceConfig } from "../codegraph-service.js";
 
 /**
  * Creates a real test project with actual files on the file system.
@@ -15,7 +15,7 @@ import type { CodeGraphServiceConfig } from '../codegraph-service.js';
  */
 export async function createTestProject(
   dir: string,
-  files: Record<string, string>
+  files: Record<string, string>,
 ): Promise<void> {
   for (const [relPath, content] of Object.entries(files)) {
     const fullPath = path.join(dir, relPath);
@@ -25,7 +25,7 @@ export async function createTestProject(
     await fs.mkdir(dirPath, { recursive: true });
 
     // Write file
-    await fs.writeFile(fullPath, content, 'utf-8');
+    await fs.writeFile(fullPath, content, "utf-8");
   }
 }
 
@@ -38,7 +38,7 @@ export async function createTestProject(
  */
 export async function queryCollections(
   client: Neo4jClient,
-  serviceId: string
+  serviceId: string,
 ): Promise<any[]> {
   const result = await client.runTransaction<any>(
     `
@@ -47,19 +47,24 @@ export async function queryCollections(
     ORDER BY c.timestamp DESC
     `,
     { serviceId },
-    'READ',
-    'TestQuery'
+    "READ",
+    "TestQuery",
   );
 
   return result.records.map((record) => {
-    const node = record.get('c');
+    const node = record.get("c");
     return {
       id: node.properties.id,
       serviceId: node.properties.serviceId,
       timestamp: node.properties.timestamp,
-      itemsProcessed: node.properties.itemsProcessed?.toInt?.() ?? node.properties.itemsProcessed,
-      nodesCreated: node.properties.nodesCreated?.toInt?.() ?? node.properties.nodesCreated,
-      relationshipsCreated: node.properties.relationshipsCreated?.toInt?.() ?? node.properties.relationshipsCreated,
+      itemsProcessed:
+        node.properties.itemsProcessed?.toInt?.() ??
+        node.properties.itemsProcessed,
+      nodesCreated:
+        node.properties.nodesCreated?.toInt?.() ?? node.properties.nodesCreated,
+      relationshipsCreated:
+        node.properties.relationshipsCreated?.toInt?.() ??
+        node.properties.relationshipsCreated,
       duration: node.properties.duration?.toInt?.() ?? node.properties.duration,
       errors: node.properties.errors?.toInt?.() ?? node.properties.errors,
       warnings: node.properties.warnings?.toInt?.() ?? node.properties.warnings,
@@ -76,7 +81,7 @@ export async function queryCollections(
  */
 export async function queryCollection(
   client: Neo4jClient,
-  collectionId: string
+  collectionId: string,
 ): Promise<any | null> {
   const result = await client.runTransaction<any>(
     `
@@ -84,22 +89,27 @@ export async function queryCollection(
     RETURN c
     `,
     { collectionId },
-    'READ',
-    'TestQuery'
+    "READ",
+    "TestQuery",
   );
 
   if (result.records.length === 0) {
     return null;
   }
 
-  const node = result.records[0].get('c');
+  const node = result.records[0].get("c");
   return {
     id: node.properties.id,
     serviceId: node.properties.serviceId,
     timestamp: node.properties.timestamp,
-    itemsProcessed: node.properties.itemsProcessed?.toInt?.() ?? node.properties.itemsProcessed,
-    nodesCreated: node.properties.nodesCreated?.toInt?.() ?? node.properties.nodesCreated,
-    relationshipsCreated: node.properties.relationshipsCreated?.toInt?.() ?? node.properties.relationshipsCreated,
+    itemsProcessed:
+      node.properties.itemsProcessed?.toInt?.() ??
+      node.properties.itemsProcessed,
+    nodesCreated:
+      node.properties.nodesCreated?.toInt?.() ?? node.properties.nodesCreated,
+    relationshipsCreated:
+      node.properties.relationshipsCreated?.toInt?.() ??
+      node.properties.relationshipsCreated,
     duration: node.properties.duration?.toInt?.() ?? node.properties.duration,
     errors: node.properties.errors?.toInt?.() ?? node.properties.errors,
     warnings: node.properties.warnings?.toInt?.() ?? node.properties.warnings,
@@ -115,7 +125,7 @@ export async function queryCollection(
  */
 export async function queryServiceNode(
   client: Neo4jClient,
-  serviceId: string
+  serviceId: string,
 ): Promise<any | null> {
   const result = await client.runTransaction<any>(
     `
@@ -123,15 +133,15 @@ export async function queryServiceNode(
     RETURN s
     `,
     { serviceId },
-    'READ',
-    'TestQuery'
+    "READ",
+    "TestQuery",
   );
 
   if (result.records.length === 0) {
     return null;
   }
 
-  const node = result.records[0].get('s');
+  const node = result.records[0].get("s");
   return {
     id: node.properties.id,
     name: node.properties.name,
@@ -152,7 +162,7 @@ export async function queryServiceNode(
  */
 export async function queryLogFileLink(
   client: Neo4jClient,
-  collectionId: string
+  collectionId: string,
 ): Promise<any | null> {
   const result = await client.runTransaction<any>(
     `
@@ -160,8 +170,8 @@ export async function queryLogFileLink(
     RETURN log, r.startLine AS startLine, r.endLine AS endLine
     `,
     { collectionId },
-    'READ',
-    'TestQuery'
+    "READ",
+    "TestQuery",
   );
 
   if (result.records.length === 0) {
@@ -169,14 +179,14 @@ export async function queryLogFileLink(
   }
 
   const record = result.records[0];
-  const logNode = record.get('log');
+  const logNode = record.get("log");
 
   return {
     path: logNode.properties.path,
     type: logNode.properties.type,
     format: logNode.properties.format,
-    startLine: record.get('startLine')?.toInt?.() ?? record.get('startLine'),
-    endLine: record.get('endLine')?.toInt?.() ?? record.get('endLine'),
+    startLine: record.get("startLine")?.toInt?.() ?? record.get("startLine"),
+    endLine: record.get("endLine")?.toInt?.() ?? record.get("endLine"),
   };
 }
 
@@ -191,30 +201,30 @@ export async function queryLogFileLink(
 export function createServiceConfig(
   tempDir: string,
   neo4jClient: Neo4jClient,
-  overrides?: Partial<CodeGraphServiceConfig>
+  overrides?: Partial<CodeGraphServiceConfig>,
 ): ServiceConfig {
   const config: CodeGraphServiceConfig = {
     directories: [tempDir],
-    extensions: ['.ts', '.tsx', '.js', '.jsx'],
-    ignore: ['**/node_modules/**', '**/.git/**'],
+    extensions: [".ts", ".tsx", ".js", ".jsx"],
+    ignore: ["**/node_modules/**", "**/.git/**"],
     watch: false, // Disabled by default for tests
-    logDir: path.join(tempDir, 'logs'),
-    resourceDir: path.join(tempDir, 'resources'),
+    logDir: path.join(tempDir, "logs"),
+    resourceDir: path.join(tempDir, "resources"),
     maxLogFileSize: 1024 * 1024, // 1MB
     maxLogFiles: 3,
     neo4j: {
-      uri: (neo4jClient as any).config.uri,
-      username: (neo4jClient as any).config.username,
-      password: (neo4jClient as any).config.password,
-      database: (neo4jClient as any).config.database,
+      uri: (neo4jClient as any).neo4jConfig.uri,
+      username: (neo4jClient as any).neo4jConfig.username,
+      password: (neo4jClient as any).neo4jConfig.password,
+      database: (neo4jClient as any).neo4jConfig.database,
     },
     ...overrides,
   };
 
   return {
-    id: 'test-codegraph',
-    name: 'Test CodeGraph Service',
-    type: 'codegraph',
+    id: "test-codegraph",
+    name: "Test CodeGraph Service",
+    type: "codegraph",
     enabled: true,
     config,
   };
@@ -228,7 +238,7 @@ export function createServiceConfig(
  * @returns Object with tempDir path and cleanup function
  */
 export async function createTempDir(
-  prefix: string = 'codegraph-test-'
+  prefix: string = "codegraph-test-",
 ): Promise<{ tempDir: string; cleanup: () => Promise<void> }> {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
 
@@ -254,7 +264,7 @@ export async function createTempDir(
 export async function waitFor(
   condition: () => boolean | Promise<boolean>,
   timeout: number = 5000,
-  interval: number = 100
+  interval: number = 100,
 ): Promise<void> {
   const startTime = Date.now();
 
