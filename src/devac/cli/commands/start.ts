@@ -1,10 +1,13 @@
 // src/devac/cli/commands/start.ts
 
+import path from 'path';
 import { Command } from 'commander';
+import { createActor } from 'xstate';
 import { createContextLogger } from '../../../utils/logger.js';
 import { Orchestrator } from '../../orchestrator/orchestrator.js';
 import { loadDevACConfig } from '../config.js';
-import type { DevACConfig } from '../../types/index.js';
+import { CodeGraphService } from '../../services/codegraph/index.js';
+import type { DevACConfig, ServiceConfig } from '../../types/index.js';
 
 const logger = createContextLogger('CLI:Start');
 
@@ -38,6 +41,52 @@ export function registerStartCommand(program: Command): void {
         orchestrator.start();
 
         logger.info('DevAC orchestrator started');
+
+        // Register and start CodeGraph service if enabled
+        if (config.services?.codegraph?.enabled) {
+          logger.info('Registering CodeGraph service...');
+
+          const workspaceDir = path.resolve(process.cwd(), '.devac');
+
+          const serviceConfig: ServiceConfig = {
+            id: 'codegraph',
+            name: 'CodeGraph Analyzer',
+            type: 'codegraph',
+            enabled: true,
+            config: {
+              directories: config.services.codegraph.directories || ['./'],
+              extensions: config.services.codegraph.extensions || ['.ts', '.tsx', '.js', '.jsx', '.py'],
+              ignore: config.services.codegraph.ignore || [
+                '**/node_modules/**',
+                '**/.git/**',
+                '**/dist/**',
+                '**/build/**',
+              ],
+              watch: config.services.codegraph.watch ?? true,
+              logDir: path.join(workspaceDir, 'logs', 'codegraph'),
+              resourceDir: path.join(workspaceDir, 'resources', 'codegraph'),
+              maxLogFileSize: 10 * 1024 * 1024, // 10MB
+              maxLogFiles: 10,
+              neo4j: {
+                uri: config.neo4j.uri,
+                username: config.neo4j.username,
+                password: config.neo4j.password,
+                database: config.neo4j.database,
+              },
+            },
+          };
+
+          const service = new CodeGraphService(serviceConfig);
+          const machine = service.createMachine();
+          const actor = createActor(machine, { input: { config: serviceConfig } });
+
+          actor.start();
+
+          orchestrator.registerService('codegraph', actor, serviceConfig);
+          orchestrator.startService('codegraph');
+
+          logger.info('CodeGraph service registered and started');
+        }
 
         // TODO: Start web server if enabled
         if (options.web) {

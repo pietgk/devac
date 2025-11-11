@@ -34,6 +34,7 @@ export class RoundRobinLogger implements Disposable {
   private currentFileNumber: number = 1;
   private currentFileSize: number = 0;
   private currentLineCount: number = 0;
+  private sessionStartLine: number = 0;
   private disposed: boolean = false;
 
   constructor(options: RoundRobinLoggerOptions) {
@@ -90,6 +91,47 @@ export class RoundRobinLogger implements Disposable {
       startLine: 1,
       endLine: this.currentLineCount,
     };
+  }
+
+  /**
+   * Get the line range for the current session (from last mark to now).
+   */
+  getSessionLineRange(): LineRange {
+    this.checkDisposed();
+    return {
+      startLine: this.sessionStartLine || 1,
+      endLine: this.currentLineCount,
+    };
+  }
+
+  /**
+   * Mark the start of a new session (for tracking log line ranges).
+   */
+  markSessionStart(): void {
+    this.checkDisposed();
+    this.sessionStartLine = this.currentLineCount + 1;
+  }
+
+  /**
+   * Get the current line count.
+   */
+  getCurrentLineCount(): number {
+    this.checkDisposed();
+    return this.currentLineCount;
+  }
+
+  /**
+   * Get the current file size in bytes.
+   */
+  async getCurrentFileSize(): Promise<number> {
+    this.checkDisposed();
+    try {
+      const filePath = this.getCurrentFilePath();
+      const stats = await fs.stat(filePath);
+      return stats.size;
+    } catch (error) {
+      return this.currentFileSize; // Fallback to tracked size
+    }
   }
 
   /**
