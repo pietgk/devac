@@ -10,6 +10,7 @@
     "dev": "tsx src/index.ts",
     "devac": "node dist/devac/cli/index.js",
     "devac:dev": "tsx src/devac/cli/index.ts",
+    "ui-gen": "tsx src/devac/ui-gen/cli.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:unit": "vitest run src/devac/services/codegraph/__tests__/error-manager.unit.spec.ts src/devac/services/codegraph/__tests__/round-robin-logger.spec.ts src/devac/services/codegraph/__tests__/resource-manager.spec.ts src/devac/services/codegraph/__tests__/file-watcher.spec.ts",

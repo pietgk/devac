@@ -50,10 +50,10 @@ export function createServicesRouter(registry: ServiceRegistry): Router {
     try {
       const { serviceId } = req.params;
 
-      if (!registry.has(serviceId)) {
+      if (!serviceId || !registry.has(serviceId)) {
         return res.status(404).json({
           error: "Service not found",
-          serviceId,
+          serviceId: serviceId || "unknown",
         });
       }
 
@@ -79,7 +79,9 @@ export function createServicesRouter(registry: ServiceRegistry): Router {
         version: metadata.version,
       });
     } catch (error: any) {
-      logger.error(`Error getting service ${req.params.serviceId}: ${error.message}`);
+      logger.error(
+        `Error getting service ${req.params.serviceId}: ${error.message}`,
+      );
       res.status(500).json({
         error: "Failed to get service details",
         message: error.message,
@@ -95,10 +97,10 @@ export function createServicesRouter(registry: ServiceRegistry): Router {
     try {
       const { serviceId } = req.params;
 
-      if (!registry.has(serviceId)) {
+      if (!serviceId || !registry.has(serviceId)) {
         return res.status(404).json({
           error: "Service not found",
-          serviceId,
+          serviceId: serviceId || "unknown",
         });
       }
 
@@ -120,7 +122,9 @@ export function createServicesRouter(registry: ServiceRegistry): Router {
         timestamp: new Date().toISOString(),
       });
     } catch (error: any) {
-      logger.error(`Error starting service ${req.params.serviceId}: ${error.message}`);
+      logger.error(
+        `Error starting service ${req.params.serviceId}: ${error.message}`,
+      );
       res.status(500).json({
         error: "Failed to start service",
         message: error.message,
@@ -137,10 +141,10 @@ export function createServicesRouter(registry: ServiceRegistry): Router {
       const { serviceId } = req.params;
       const { graceful = true } = req.body;
 
-      if (!registry.has(serviceId)) {
+      if (!serviceId || !registry.has(serviceId)) {
         return res.status(404).json({
           error: "Service not found",
-          serviceId,
+          serviceId: serviceId || "unknown",
         });
       }
 
@@ -153,7 +157,9 @@ export function createServicesRouter(registry: ServiceRegistry): Router {
         });
       }
 
-      logger.info(`Stopping service: ${serviceId}${graceful ? " (graceful)" : ""}`);
+      logger.info(
+        `Stopping service: ${serviceId}${graceful ? " (graceful)" : ""}`,
+      );
       service.send({ type: "STOP", graceful });
 
       res.json({
@@ -163,7 +169,9 @@ export function createServicesRouter(registry: ServiceRegistry): Router {
         timestamp: new Date().toISOString(),
       });
     } catch (error: any) {
-      logger.error(`Error stopping service ${req.params.serviceId}: ${error.message}`);
+      logger.error(
+        `Error stopping service ${req.params.serviceId}: ${error.message}`,
+      );
       res.status(500).json({
         error: "Failed to stop service",
         message: error.message,
@@ -178,12 +186,12 @@ export function createServicesRouter(registry: ServiceRegistry): Router {
   router.post("/:serviceId/restart", (req: Request, res: Response) => {
     try {
       const { serviceId } = req.params;
-      const { graceful = true } = req.body;
+      const { graceful = true } = req.body || {};
 
-      if (!registry.has(serviceId)) {
+      if (!serviceId || !registry.has(serviceId)) {
         return res.status(404).json({
           error: "Service not found",
-          serviceId,
+          serviceId: serviceId || "unknown",
         });
       }
 
@@ -202,9 +210,12 @@ export function createServicesRouter(registry: ServiceRegistry): Router {
       service.send({ type: "STOP", graceful });
 
       // Start after a short delay to allow graceful shutdown
-      setTimeout(() => {
-        service.send({ type: "START" });
-      }, graceful ? 1000 : 100);
+      setTimeout(
+        () => {
+          service.send({ type: "START" });
+        },
+        graceful ? 1000 : 100,
+      );
 
       res.json({
         message: `Service ${serviceId} restart command sent`,
@@ -212,7 +223,9 @@ export function createServicesRouter(registry: ServiceRegistry): Router {
         timestamp: new Date().toISOString(),
       });
     } catch (error: any) {
-      logger.error(`Error restarting service ${req.params.serviceId}: ${error.message}`);
+      logger.error(
+        `Error restarting service ${req.params.serviceId}: ${error.message}`,
+      );
       res.status(500).json({
         error: "Failed to restart service",
         message: error.message,
@@ -228,10 +241,10 @@ export function createServicesRouter(registry: ServiceRegistry): Router {
     try {
       const { serviceId } = req.params;
 
-      if (!registry.has(serviceId)) {
+      if (!serviceId || !registry.has(serviceId)) {
         return res.status(404).json({
           error: "Service not found",
-          serviceId,
+          serviceId: serviceId || "unknown",
         });
       }
 
@@ -254,7 +267,9 @@ export function createServicesRouter(registry: ServiceRegistry): Router {
         timestamp: new Date().toISOString(),
       });
     } catch (error: any) {
-      logger.error(`Error getting service health ${req.params.serviceId}: ${error.message}`);
+      logger.error(
+        `Error getting service health ${req.params.serviceId}: ${error.message}`,
+      );
       res.status(500).json({
         error: "Failed to get service health",
         message: error.message,

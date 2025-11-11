@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DevAC Dashboard Demo</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family:
+          "Inter",
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        background: #fafafa;
+        color: #1d1b1b;
+      }
+
+      .container {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding-bottom: 16px;
+        border-bottom: 1px solid #e8e7e7;
+        margin-bottom: 24px;
+      }
+
+      .header h1 {
+        font-size: 32px;
+        font-weight: 600;
+      }
+
+      .header p {
+        color: #6b6a6a;
+        margin-top: 4px;
+      }
+
+      .status-badges {
+        display: flex;
+        gap: 8px;
+      }
+
+      .badge {
+        padding: 6px 12px;
+        border-radius: 16px;
+        font-size: 14px;
+        font-weight: 500;
+      }
+
+      .badge.success {
+        background: #e8f5e9;
+        color: #2e7d32;
+      }
+
+      .badge.warning {
+        background: #fff3e0;
+        color: #e65100;
+      }
+
+      .badge.error {
+        background: #ffebee;
+        color: #c62828;
+      }
+
+      .badge.default {
+        background: #f5f5f5;
+        color: #757575;
+      }
+
+      .services-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        gap: 16px;
+      }
+
+      .service-card {
+        background: white;
+        border-radius: 12px;
+        padding: 16px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      }
+
+      .service-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 16px;
+      }
+
+      .service-title {
+        font-size: 18px;
+        font-weight: 600;
+      }
+
+      .service-type {
+        font-size: 14px;
+        color: #6b6a6a;
+        margin-top: 4px;
+      }
+
+      .service-badges {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        align-items: flex-end;
+      }
+
+      .service-stats {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+
+      .stat-item {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .stat-label {
+        font-size: 12px;
+        color: #6b6a6a;
+      }
+
+      .stat-value {
+        font-size: 16px;
+        font-weight: 500;
+      }
+
+      .service-actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      .button {
+        padding: 10px 20px;
+        border-radius: 24px;
+        font-size: 14px;
+        font-weight: 500;
+        cursor: pointer;
+        border: none;
+        transition: all 0.2s;
+      }
+
+      .button.primary {
+        background: #f0affa;
+        color: #1d1b1b;
+      }
+
+      .button.primary:hover {
+        background: #49125c;
+        color: white;
+      }
+
+      .button.outlined {
+        background: transparent;
+        border: 1px solid #e8e7e7;
+        color: #1d1b1b;
+      }
+
+      .button.outlined:hover {
+        background: #f5f5f5;
+      }
+
+      .button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .loading {
+        text-align: center;
+        padding: 48px;
+        color: #6b6a6a;
+      }
+
+      .error {
+        padding: 16px;
+        background: #ffebee;
+        color: #c62828;
+        border-radius: 8px;
+        margin-bottom: 24px;
+      }
+
+      .layout-switcher {
+        position: fixed;
+        top: 16px;
+        right: 16px;
+        display: flex;
+        gap: 8px;
+        background: white;
+        padding: 8px;
+        border-radius: 12px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        z-index: 1000;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="layout-switcher">
+      <button class="button primary" onclick="switchLayout('command-center')">
+        Command Center
+      </button>
+      <button class="button outlined" onclick="switchLayout('timeline')">
+        Timeline
+      </button>
+    </div>
+
+    <div id="app">
+      <div class="loading">Loading...</div>
+    </div>
+
+    <script>
+      // Auto-detect API base URL:
+      // - If served from http:// (same server), use current origin
+      // - If opened from file://, use localhost:3000
+      // - If TEST_BASE_URL is set (for tests), use that
+      const API_BASE_URL =
+        window.TEST_BASE_URL ||
+        (window.location.protocol === "file:"
+          ? "http://localhost:3000"
+          : window.location.origin);
+      let services = [];
+      let eventSource = null;
+
+      // Load services
+      async function loadServices() {
+        try {
+          const response = await fetch(`${API_BASE_URL}/api/services`);
+          services = await response.json();
+          renderCommandCenter();
+        } catch (error) {
+          renderError("Failed to load services: " + error.message);
+        }
+      }
+
+      // Service actions
+      async function startService(serviceId) {
+        try {
+          await fetch(`${API_BASE_URL}/api/services/${serviceId}/start`, {
+            method: "POST",
+          });
+          setTimeout(loadServices, 500);
+        } catch (error) {
+          alert("Failed to start service: " + error.message);
+        }
+      }
+
+      async function stopService(serviceId) {
+        try {
+          await fetch(`${API_BASE_URL}/api/services/${serviceId}/stop`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ graceful: true }),
+          });
+          setTimeout(loadServices, 500);
+        } catch (error) {
+          alert("Failed to stop service: " + error.message);
+        }
+      }
+
+      // Connect to SSE
+      function connectSSE() {
+        if (eventSource) {
+          eventSource.close();
+        }
+
+        eventSource = new EventSource(`${API_BASE_URL}/api/events`);
+
+        eventSource.addEventListener("connection", (e) => {
+          console.log("SSE connected:", JSON.parse(e.data));
+        });
+
+        eventSource.addEventListener("event", (e) => {
+          const event = JSON.parse(e.data);
+          console.log("SSE event:", event);
+          if (
+            event.type.includes("SERVICE") ||
+            event.type === "START" ||
+            event.type === "STOP"
+          ) {
+            loadServices();
+          }
+        });
+
+        eventSource.onerror = (e) => {
+          console.error("SSE error:", e);
+        };
+      }
+
+      // Render Command Center
+      function renderCommandCenter() {
+        const runningCount = services.filter(
+          (s) => s.status === "running",
+        ).length;
+        const stoppedCount = services.filter(
+          (s) => s.status === "stopped",
+        ).length;
+        const errorCount = services.filter((s) => s.status === "error").length;
+
+        const html = `
+        <div class="container">
+          <div class="header">
+            <div>
+              <h1>Command Center</h1>
+              <p>${services.length} service${services.length !== 1 ? "s" : ""} registered</p>
+            </div>
+            <div class="status-badges">
+              <span class="badge success">${runningCount} running</span>
+              <span class="badge default">${stoppedCount} stopped</span>
+              ${errorCount > 0 ? `<span class="badge error">${errorCount} error</span>` : ""}
+              <span class="badge success">Live</span>
+            </div>
+          </div>
+
+          <div class="services-grid">
+            ${services
+              .map(
+                (service) => `
+              <div class="service-card">
+                <div class="service-header">
+                  <div>
+                    <div class="service-title">${service.name}</div>
+                    <div class="service-type">${service.type}</div>
+                  </div>
+                  <div class="service-badges">
+                    <span class="badge ${getStatusClass(service.status)}">${service.status}</span>
+                    <span class="badge ${getHealthClass(service.health)}">${service.health}</span>
+                  </div>
+                </div>
+
+                <div class="service-stats">
+                  <div class="stat-item">
+                    <div class="stat-label">Uptime</div>
+                    <div class="stat-value">${formatUptime(service.stats.uptime)}</div>
+                  </div>
+                  <div class="stat-item">
+                    <div class="stat-label">Requests</div>
+                    <div class="stat-value">${service.stats.requestCount.toLocaleString()}</div>
+                  </div>
+                </div>
+
+                <div class="service-actions">
+                  ${
+                    service.status === "stopped" || service.status === "error"
+                      ? `<button class="button primary" onclick="startService('${service.id}')">Start</button>`
+                      : ""
+                  }
+                  ${
+                    service.status === "running"
+                      ? `<button class="button outlined" onclick="stopService('${service.id}')">Stop</button>`
+                      : ""
+                  }
+                </div>
+              </div>
+            `,
+              )
+              .join("")}
+          </div>
+        </div>
+      `;
+
+        document.getElementById("app").innerHTML = html;
+      }
+
+      function renderError(message) {
+        document.getElementById("app").innerHTML = `
+        <div class="container">
+          <div class="error">${message}</div>
+        </div>
+      `;
+      }
+
+      function getStatusClass(status) {
+        if (status === "running") return "success";
+        if (status === "error") return "error";
+        if (status === "starting" || status === "stopping") return "warning";
+        return "default";
+      }
+
+      function getHealthClass(health) {
+        if (health === "healthy") return "success";
+        if (health === "unhealthy") return "error";
+        return "default";
+      }
+
+      function formatUptime(ms) {
+        if (ms === 0) return "—";
+        const seconds = Math.floor(ms / 1000);
+        const minutes = Math.floor(seconds / 60);
+        const hours = Math.floor(minutes / 60);
+        const days = Math.floor(hours / 24);
+
+        if (days > 0) return `${days}d ${hours % 24}h`;
+        if (hours > 0) return `${hours}h ${minutes % 60}m`;
+        if (minutes > 0) return `${minutes}m`;
+        return `${seconds}s`;
+      }
+
+      function switchLayout(layout) {
+        localStorage.setItem("devac-layout-preference", layout);
+        if (layout === "timeline") {
+          alert(
+            "Timeline view not implemented in this simple demo. Use the React components for full functionality.",
+          );
+        }
+      }
+
+      // Initialize
+      loadServices();
+      connectSSE();
+
+      // Poll every 30 seconds as backup
+      setInterval(loadServices, 30000);
+    </script>
+  </body>
+</html>

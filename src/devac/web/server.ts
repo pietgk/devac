@@ -1,7 +1,14 @@
 // src/devac/web/server.ts
 
-import express, { type Express, type Request, type Response, type NextFunction } from "express";
+import express, {
+  type Express,
+  type Request,
+  type Response,
+  type NextFunction,
+} from "express";
 import cors from "cors";
+import path from "path";
+import { fileURLToPath } from "url";
 import { createSSEManager, type SSEManager } from "./sse-manager.js";
 import { createServicesRouter } from "./routes/services.js";
 import { createEventsRouter } from "./routes/events.js";
@@ -11,6 +18,10 @@ import { createContextLogger } from "../../utils/logger.js";
 import type { Server } from "http";
 
 const logger = createContextLogger("WebServer");
+
+// Get __dirname equivalent in ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 /**
  * Orchestrator interface for web server
@@ -49,7 +60,9 @@ export interface WebServerResult {
 /**
  * Create and configure Express web server
  */
-export async function createWebServer(options: WebServerOptions): Promise<WebServerResult> {
+export async function createWebServer(
+  options: WebServerOptions,
+): Promise<WebServerResult> {
   const { port, host, cors: enableCors, orchestrator } = options;
 
   logger.info("Creating web server...", { port, host, cors: enableCors });
@@ -59,10 +72,12 @@ export async function createWebServer(options: WebServerOptions): Promise<WebSer
 
   // Middleware
   if (enableCors) {
-    app.use(cors({
-      origin: true, // Allow all origins in dev
-      credentials: true,
-    }));
+    app.use(
+      cors({
+        origin: true, // Allow all origins in dev
+        credentials: true,
+      }),
+    );
   }
 
   app.use(express.json());
@@ -116,7 +131,17 @@ export async function createWebServer(options: WebServerOptions): Promise<WebSer
   app.use("/api/services", createServicesRouter(registry));
   app.use("/api/events", createEventsRouter(sseManager));
 
-  // 404 handler
+  // Serve static files from frontend directory
+  const frontendDir = path.join(__dirname, "frontend");
+  logger.info(`Serving static files from: ${frontendDir}`);
+  app.use(express.static(frontendDir));
+
+  // Serve demo.html as the index page
+  app.get("/", (req: Request, res: Response) => {
+    res.sendFile(path.join(frontendDir, "demo.html"));
+  });
+
+  // 404 handler (only for routes that don't match anything)
   app.use((req: Request, res: Response) => {
     res.status(404).json({
       error: "Not found",
@@ -150,7 +175,8 @@ export async function createWebServer(options: WebServerOptions): Promise<WebSer
   const server = await new Promise<Server>((resolve, reject) => {
     const s = app.listen(port, host, () => {
       const address = s.address();
-      const actualPort = typeof address === "object" && address ? address.port : port;
+      const actualPort =
+        typeof address === "object" && address ? address.port : port;
       logger.info(`Web server listening on http://${host}:${actualPort}`);
       resolve(s);
     });
