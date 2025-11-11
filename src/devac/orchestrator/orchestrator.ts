@@ -170,7 +170,7 @@ export function createOrchestratorMachine() {
           },
           onError: {
             target: 'error',
-            actions: ['logError', assign({ error: ({ event }) => event.error })],
+            actions: ['logError', assign({ error: ({ event }) => event.error as Error })],
           },
         },
       },

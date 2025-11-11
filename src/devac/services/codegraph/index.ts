@@ -4,4 +4,4 @@ export { CodeGraphService, type CodeGraphServiceConfig } from './codegraph-servi
 export { RoundRobinLogger, type LogEntry, type RoundRobinLoggerOptions, type LineRange } from './round-robin-logger.js';
 export { ResourceManager, type ResourceType, type ResourceMetadata, type StoreResourceOptions, type Resource, type ResourceStatistics, type ResourceManagerOptions } from './resource-manager.js';
 export { FileWatcher, type FileChangeType, type FileChangeEvent, type FileWatcherOptions, type WatcherStatistics } from './file-watcher.js';
-export { ErrorManager, type ErrorManagerOptions, type ErrorSeverity, type ErrorContext, type ErrorEntry, type ErrorStatistics } from './error-manager.js';
+export { ErrorManager, type ErrorManagerConfig, type ServiceErrorType, type ServiceErrorSeverity, type ServiceError } from './error-manager.js';
