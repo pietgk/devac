@@ -1,0 +1,52 @@
+{
+  "version": "1.0.0",
+  "neo4j": {
+    "uri": "bolt://localhost:7687",
+    "username": "neo4j",
+    "password": "password",
+    "database": "devac"
+  },
+  "web": {
+    "port": 3000,
+    "host": "localhost",
+    "cors": true
+  },
+  "services": {
+    "codegraph": {
+      "enabled": false,
+      "extensions": [
+        ".ts",
+        ".js",
+        ".py",
+        ".java",
+        ".go"
+      ],
+      "ignore": [
+        "**/node_modules/**",
+        "**/.git/**"
+      ],
+      "watch": true
+    },
+    "git": {
+      "enabled": false,
+      "watch": true,
+      "historyDepth": 100
+    },
+    "build": {
+      "enabled": false,
+      "watch": true
+    },
+    "test": {
+      "enabled": false,
+      "watch": true
+    }
+  },
+  "logging": {
+    "level": "info",
+    "maxFileSize": "10MB",
+    "maxFiles": 10
+  },
+  "workspace": {
+    "autoDiscover": true
+  }
+}
