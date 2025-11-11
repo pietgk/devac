@@ -1,8 +1,9 @@
-# Phase 2 Testing Strategy - Integration-First, Minimal Mocking
+# Phase 2 Testing Strategy - The Testing Trophy
 
 **Date**: 2025-11-11
 **Author**: Claude + User
-**Status**: Planning
+**Inspiration**: Kent C. Dodds' Testing Trophy
+**Motto**: "Write tests. Not too many. Mostly integration." - Kent C. Dodds
 
 ---
 
@@ -25,442 +26,353 @@
 
 ---
 
-## 🏗️ Testing Philosophy
+## 🏆 The Testing Trophy
 
-### Core Principles
-
-**1. Integration-First, Not Unit-First**
-- Start with integration tests that test real behavior
-- Add unit tests only for complex pure logic
-- Avoid the "unit test everything" trap
-
-**2. Minimize Mocking**
-> "Excessive mocking is a design smell" - User
-
-When you need lots of mocks, it often means:
-- ❌ Classes are too tightly coupled
-- ❌ Dependencies are doing too much
-- ❌ Abstraction boundaries are wrong
-- ❌ Testing implementation, not behavior
-
-**Good indicators**:
-- ✅ 0-2 mocks per test → Good design
-- ⚠️ 3-5 mocks per test → Acceptable, review design
-- ❌ 6+ mocks per test → Design problem, refactor
-
-**3. Use Real Dependencies**
-- **Database**: Real Neo4j via universal testing framework ✅
-- **File System**: Real temp directories ✅
-- **Logger**: Real logger with temp files ✅
-- **ResourceManager**: Real instance with temp dirs ✅
-- **ErrorManager**: Real instance ✅
-
-**4. Test Behavior, Not Implementation**
-```typescript
-// ❌ BAD: Testing implementation details
-expect(service['analyzerService']).toHaveBeenCalled();
-expect(service['neo4jClient'].runTransaction).toHaveBeenCalledWith(...);
-
-// ✅ GOOD: Testing observable behavior
-const collections = await queryCollections();
-expect(collections).toHaveLength(1);
-expect(collections[0].itemsProcessed).toBe(5);
-```
-
----
-
-## 🧪 Test Pyramid for CodeGraphService
+Kent C. Dodds' Testing Trophy gives us better guidance than the old testing pyramid:
 
 ```
            /\
-          /  \
-         / UI \         0 tests (no UI yet)
-        /______\
-       /        \
-      /  E2E     \      2 tests (full lifecycle)
-     /____________\
-    /              \
-   /  Integration   \   ~10 tests (with real deps)
-  /___________________\
- /                     \
-/      Unit Tests       \  ~3 tests (pure logic only)
-/_________________________\
-
-Total: ~15 high-quality tests
+          /E2E\         Few - Expensive but high confidence
+         /------\
+        /        \
+       / Integr.  \     Most - Best ROI, test real behavior
+      /            \
+     /--------------\
+    |              |
+    |    Static    |    Many - TypeScript, ESLint (we have this!)
+    |______________|
+          |
+       Unit         Small - Only complex pure logic
 ```
 
-### Test Distribution
+### Why This Shape?
 
-**Unit Tests (~3 tests)**: Pure logic only
-- Collection statistics estimation
-- Directory validation
-- Line range calculation
+**Static Analysis (Foundation)**:
+- ✅ **TypeScript** - Catches type errors at compile time (we have this!)
+- ✅ **ESLint** - Catches code quality issues (we have this!)
+- 🎁 **Bonus**: Zero runtime cost, instant feedback
+- **ROI**: Extremely high - catches bugs before running code
 
-**Integration Tests (~10 tests)**: Real dependencies
-- Service initialization with real Neo4j
-- Scan with real FileScanner and AnalyzerService
-- Collection creation in real Neo4j
-- Log file creation and linking
-- Error tracking with real ErrorManager
-- Resource manager integration
+**Unit Tests (Small Layer)**:
+- Only for complex pure logic that's hard to test via integration
+- No mocking needed (pure functions)
+- Fast and focused
+- **ROI**: Medium - useful but limited scope
 
-**E2E Tests (~2 tests)**: Full lifecycle
-- Complete flow: init → scan → watch → process → cleanup
-- File change simulation with real FileWatcher
+**Integration Tests (Biggest Layer)**:
+- Test real user workflows with real dependencies
+- Catch most bugs at lowest cost
+- Give confidence for refactoring
+- **ROI**: Highest - best balance of speed, cost, and confidence
+
+**E2E Tests (Top)**:
+- Full system tests with all real dependencies
+- Slow and expensive but catch critical integration issues
+- Use sparingly for critical paths
+- **ROI**: Good for confidence, but expensive
 
 ---
 
-## 📋 Detailed Test Plan
+## 📏 Kent C. Dodds' Principles Applied
 
-### Test Group 1: Integration Tests (PRIMARY)
+### 1. "Write tests. Not too many. Mostly integration."
 
-#### Test 1.1: Service Initialization
-**What**: Initialize CodeGraphService with real dependencies
-**Dependencies**: Real Neo4j, temp directories
-**Mocks**: None
-**Verification**:
-- Neo4j Service node created
-- Logger initialized and file created
-- Resource manager initialized
-- Error manager initialized
-- AnalyzerService initialized
+**For CodeGraphService**:
+```
+Static:   TypeScript + ESLint ✅ (already have)
+Unit:     1-2 tests            (pure logic only)
+Integr.:  8-10 tests           (MOST - test real behavior)
+E2E:      1-2 tests            (confidence builders)
+───────────────────────────────
+Total:    ~12 tests            (not too many!)
+```
+
+**Key Insight**: More tests ≠ better. **Confidence matters, not coverage percentage.**
+
+### 2. Test User Behavior, Not Implementation
 
 ```typescript
-describe('CodeGraphService - Integration', () => {
-  let neo4jClient: Neo4jClient;
-  let cleanup: () => Promise<void>;
-  let tempDir: string;
+// ❌ BAD: Testing implementation details
+expect(service['neo4jClient'].runTransaction).toHaveBeenCalled();
+expect(service['analyzerService']).toHaveBeenCalledWith(directory);
 
-  beforeEach(async () => {
-    // Use universal testing framework
-    const connection = await createTestNeo4jClient();
-    neo4jClient = connection.client;
-    cleanup = connection.cleanup;
+// ✅ GOOD: Testing user-observable behavior
+await service.scan();
+const collections = await queryCollections(neo4jClient);
+expect(collections[0].itemsProcessed).toBe(5);
+expect(collections[0].nodesCreated).toBeGreaterThan(0);
+```
 
-    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codegraph-test-'));
-  });
+**Why**: Implementation details change. User behavior shouldn't.
 
-  afterEach(async () => {
-    await cleanup();
-    await fs.rm(tempDir, { recursive: true });
-  });
+### 3. Minimize Mocking (Use Real Dependencies)
 
-  it('should initialize with all real dependencies', async () => {
-    const serviceConfig: ServiceConfig = {
-      id: 'test-codegraph',
-      name: 'Test CodeGraph',
-      type: 'codegraph',
-      enabled: true,
-      config: {
-        directories: [tempDir],
-        extensions: ['.ts', '.js'],
-        ignore: ['**/node_modules/**'],
-        watch: false, // Disable for test
-        logDir: path.join(tempDir, 'logs'),
-        resourceDir: path.join(tempDir, 'resources'),
-        maxLogFileSize: 1024 * 1024,
-        maxLogFiles: 3,
-        neo4j: {
-          uri: neo4jClient.getUri(),
-          username: neo4jClient.getUsername(),
-          password: neo4jClient.getPassword(),
-          database: neo4jClient.getDatabase(),
-        },
-      },
-    };
+**Real Dependencies** (Integration Tests):
+- ✅ Real Neo4j (universal testing framework)
+- ✅ Real file system (temp directories)
+- ✅ Real logger (temp log files)
+- ✅ Real ResourceManager
+- ✅ Real ErrorManager
+- ✅ Real FileWatcher
+- ⚠️ Mock only AnalyzerService (expensive full analysis)
 
-    const service = new CodeGraphService(serviceConfig);
-    await service['initialize'](); // Call protected method for test
+**Mock Ratio**: <10% (1 out of 7 dependencies)
 
-    // Verify Service node in Neo4j
-    const result = await neo4jClient.runQuery(
-      'MATCH (s:Service {id: $id}) RETURN s',
-      { id: 'test-codegraph' }
-    );
-    expect(result.records).toHaveLength(1);
-    expect(result.records[0].get('s').properties.name).toBe('Test CodeGraph');
+**Kent's Rule**: "The more your tests resemble the way your software is used, the more confidence they can give you."
 
-    // Verify log directory created
-    expect(await fs.access(path.join(tempDir, 'logs'))).resolves.toBeUndefined();
+### 4. Test Confidence Over Code Coverage
 
-    // Verify resource directory created
-    expect(await fs.access(path.join(tempDir, 'resources'))).resolves.toBeUndefined();
+```typescript
+// ❌ Don't chase 100% coverage
+// It leads to testing implementation details
+
+// ✅ Test critical user workflows
+it('should complete full lifecycle: init → scan → process → cleanup', async () => {
+  // This one test gives huge confidence
+});
+```
+
+**Our Goal**: High confidence in critical paths, not arbitrary coverage percentage.
+
+**Target**: ~85% coverage naturally, not forced.
+
+---
+
+## 🧪 Test Suite Structure (Trophy-Shaped)
+
+### Layer 1: Static Analysis (Foundation) ✅
+
+**Already Complete!**
+- TypeScript type checking (608 lines of type-safe code)
+- ESLint linting
+- Compile-time guarantees
+
+**Benefit**: Catches entire classes of bugs at zero runtime cost.
+
+```bash
+# Run static analysis
+npm run build  # TypeScript
+npm run lint   # ESLint
+```
+
+### Layer 2: Unit Tests (1-2 tests)
+
+**Only for pure, complex logic that's hard to test via integration.**
+
+#### Test U1: Statistics Estimation (Pure Function)
+```typescript
+describe('Pure Logic - Unit Tests', () => {
+  it('should estimate statistics from file count', () => {
+    // Pure calculation - no dependencies needed
+    const estimateStats = (fileCount: number) => ({
+      nodesCreated: fileCount * 15,
+      relationshipsCreated: fileCount * 10,
+    });
+
+    expect(estimateStats(0)).toEqual({ nodesCreated: 0, relationshipsCreated: 0 });
+    expect(estimateStats(5)).toEqual({ nodesCreated: 75, relationshipsCreated: 50 });
+    expect(estimateStats(100)).toEqual({ nodesCreated: 1500, relationshipsCreated: 1000 });
   });
 });
 ```
 
-#### Test 1.2: Scan with Real FileScanner
-**What**: Run scan() with real files
-**Dependencies**: Real Neo4j, FileScanner, temp test project
-**Mocks**: Mock AnalyzerService.analyze() (expensive to run full analysis)
-**Verification**:
-- Files counted correctly
-- Collection created in Neo4j
-- Log file created with entries
-- Collection linked to log file
+**Characteristics**:
+- No mocking (pure function)
+- Fast (<1ms)
+- Tests edge cases
+
+### Layer 3: Integration Tests (8-10 tests) - THE BULK
+
+**Test real user workflows with real dependencies.**
+
+#### Test I1: Service Initialization
+**User Story**: "As a developer, I want to start CodeGraphService"
 
 ```typescript
-it('should scan real files and create collection', async () => {
-  // Create test project with real files
+it('should initialize service with all real components', async () => {
+  // Setup: Real Neo4j + real temp directories
+  const { client, cleanup } = await createTestNeo4jClient();
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'test-'));
+
+  // Execute: Initialize service
+  const service = new CodeGraphService(createServiceConfig(tempDir, client));
+  await service['initialize']();
+
+  // Verify: Observable outcomes (not implementation)
+  const serviceNode = await queryNeo4j(client,
+    'MATCH (s:Service {id: "test"}) RETURN s'
+  );
+  expect(serviceNode).toBeDefined();
+  expect(serviceNode.name).toBe('Test CodeGraph');
+
+  // Verify: Log directory created (real FS)
+  await expect(fs.access(path.join(tempDir, 'logs'))).resolves.toBeUndefined();
+
+  // Cleanup
+  await cleanup();
+  await fs.rm(tempDir, { recursive: true });
+});
+```
+
+**Mocks**: 0
+**Real Dependencies**: 6 (Neo4j, FS, Logger, ResourceManager, ErrorManager, AnalyzerService)
+
+#### Test I2: Scan Real Files
+**User Story**: "As a developer, I want to scan my codebase"
+
+```typescript
+it('should scan project and create collection in Neo4j', async () => {
+  // Setup: Create real test project
   await createTestProject(tempDir, {
     'src/index.ts': 'console.log("hello");',
     'src/utils.ts': 'export const add = (a, b) => a + b;',
-    'test/index.test.ts': 'test("add", () => {});',
   });
 
-  const service = new CodeGraphService(serviceConfig);
+  const service = new CodeGraphService(config);
   await service['initialize']();
 
-  // Mock only AnalyzerService.analyze (it's expensive)
-  const analyzeSpy = vi.spyOn(service['analyzerService'], 'analyze')
-    .mockResolvedValue(undefined);
+  // Mock only expensive analyzer
+  vi.spyOn(service['analyzerService'], 'analyze').mockResolvedValue(undefined);
 
-  // Run scan
+  // Execute: User action
   const result = await service['scan']();
 
-  // Verify file counting
-  expect(result.itemsFound).toBe(3); // 3 .ts files
+  // Verify: User-observable outcomes
+  expect(result.itemsFound).toBe(2); // Found 2 files
 
-  // Verify AnalyzerService was called
-  expect(analyzeSpy).toHaveBeenCalledOnce();
+  // Verify: Collection created in real Neo4j
+  const collections = await queryCollections(client, 'test');
+  expect(collections).toHaveLength(1);
+  expect(collections[0].itemsProcessed).toBe(2);
+  expect(collections[0].nodesCreated).toBe(30); // 2 * 15
 
-  // Verify Collection in Neo4j
-  const collections = await neo4jClient.runQuery(
-    'MATCH (s:Service {id: $id})-[:COLLECTED_AT]->(c:Collection) RETURN c',
-    { id: 'test-codegraph' }
-  );
-  expect(collections.records).toHaveLength(1);
-
-  const collection = collections.records[0].get('c').properties;
-  expect(collection.itemsProcessed).toBe(3);
-  expect(collection.nodesCreated).toBe(45); // 3 files * 15 nodes/file
-  expect(collection.relationshipsCreated).toBe(30); // 3 files * 10 relationships/file
-
-  // Verify log file exists
+  // Verify: Real log file created
   const logFile = path.join(tempDir, 'logs', '001.log');
-  expect(await fs.access(logFile)).resolves.toBeUndefined();
-
-  // Verify log contains entries
   const logContent = await fs.readFile(logFile, 'utf-8');
-  const lines = logContent.trim().split('\n');
-  expect(lines.length).toBeGreaterThan(0);
-
-  // Parse and verify JSON log entries
-  const entries = lines.map(line => JSON.parse(line));
-  expect(entries.some(e => e.message.includes('Starting initial code scan'))).toBe(true);
-  expect(entries.some(e => e.message.includes('scan completed'))).toBe(true);
-
-  // Verify Collection linked to LogFile
-  const logLinks = await neo4jClient.runQuery(
-    'MATCH (c:Collection)-[r:LOGGED_IN]->(log:LogFile) RETURN r, log',
-    {}
-  );
-  expect(logLinks.records).toHaveLength(1);
-  expect(logLinks.records[0].get('r').properties.startLine).toBeGreaterThan(0);
+  expect(logContent).toContain('Starting initial code scan');
+  expect(logContent).toContain('scan completed');
 });
 ```
 
-#### Test 1.3: File Watcher Integration
-**What**: Start watcher and simulate file change
-**Dependencies**: Real FileWatcher with temp dir
-**Mocks**: None (use real file system)
-**Verification**:
-- Watcher starts successfully
-- File changes detected
-- Events sent to state machine
+**Mocks**: 1 (AnalyzerService only)
+**Real Dependencies**: 6 (Neo4j, FS, FileScanner, Logger, ResourceManager, ErrorManager)
+
+#### Test I3: File Watcher Detects Changes
+**User Story**: "As a developer, I want my changes detected automatically"
 
 ```typescript
 it('should detect real file changes', async () => {
-  const service = new CodeGraphService(serviceConfig);
+  const service = new CodeGraphService(config);
   await service['initialize']();
 
-  const events: BaseServiceEvent[] = [];
-  const sendEvent = (event: BaseServiceEvent) => {
-    events.push(event);
-  };
+  const detectedEvents: BaseServiceEvent[] = [];
+  const cleanup = service['startWatcher'](e => detectedEvents.push(e));
 
-  // Start watcher
-  const cleanup = service['startWatcher'](sendEvent);
+  // Execute: Real file system change
+  await fs.writeFile(path.join(tempDir, 'new.ts'), 'console.log("new");');
 
-  // Create a new file (real FS operation)
-  const testFile = path.join(tempDir, 'new-file.ts');
-  await fs.writeFile(testFile, 'console.log("new");');
-
-  // Wait for debounce
+  // Wait for debounce (real time passing)
   await new Promise(resolve => setTimeout(resolve, 1500));
 
-  // Verify event was sent
-  expect(events).toHaveLength(1);
-  expect(events[0].type).toBe('FILE_CHANGED');
-  expect(events[0].path).toContain('new-file.ts');
-  expect(events[0].changeType).toBe('add');
+  // Verify: Event detected
+  expect(detectedEvents).toHaveLength(1);
+  expect(detectedEvents[0].type).toBe('FILE_CHANGED');
+  expect(detectedEvents[0].path).toContain('new.ts');
 
-  // Cleanup
   cleanup();
 });
 ```
 
-#### Test 1.4: Process File Change
-**What**: Process a file change event
-**Dependencies**: Real Neo4j, logger, resource manager
-**Mocks**: Mock AnalyzerService (expensive)
-**Verification**:
-- New Collection created
-- ServiceOutput returned with correct structure
-- Log entries created
-- Collection linked to log file
+**Mocks**: 0
+**Real Dependencies**: All (FileWatcher, FS, Logger)
+
+#### Test I4: Process File Change
+**User Story**: "As a developer, when I change a file, it should be re-analyzed"
 
 ```typescript
-it('should process file change and create collection', async () => {
-  const service = new CodeGraphService(serviceConfig);
+it('should process file change and track in Neo4j', async () => {
+  const service = new CodeGraphService(config);
   await service['initialize']();
   await service['scan'](); // Initial scan
 
-  // Mock analyzer
-  const analyzeSpy = vi.spyOn(service['analyzerService'], 'analyze')
-    .mockResolvedValue(undefined);
+  // Mock analyzer (expensive)
+  vi.spyOn(service['analyzerService'], 'analyze').mockResolvedValue(undefined);
 
-  // Simulate file change event
+  // Execute: User triggered file change
   const output = await service['process']({
     type: 'FILE_CHANGED',
     path: path.join(tempDir, 'changed.ts'),
     changeType: 'change',
   });
 
-  // Verify ServiceOutput structure
+  // Verify: ServiceOutput structure (API contract)
   expect(output.collectionId).toBeDefined();
-  expect(output.serviceId).toBe('test-codegraph');
+  expect(output.serviceId).toBe('test');
   expect(output.stats.itemsProcessed).toBe(1);
-  expect(output.resources).toHaveLength(1);
   expect(output.resources[0].type).toBe('logfile');
   expect(output.resources[0].lineRange).toBeDefined();
 
-  // Verify new Collection in Neo4j
-  const collections = await neo4jClient.runQuery(
-    'MATCH (c:Collection {id: $id}) RETURN c',
-    { id: output.collectionId }
-  );
-  expect(collections.records).toHaveLength(1);
+  // Verify: New collection in real Neo4j
+  const collection = await queryCollection(client, output.collectionId);
+  expect(collection).toBeDefined();
+  expect(collection.timestamp).toBeDefined();
 });
 ```
 
-#### Test 1.5: Error Tracking
-**What**: Track error with real ErrorManager
-**Dependencies**: Real ErrorManager, Neo4j
-**Mocks**: None
-**Verification**:
-- Error recorded in ErrorManager
-- Error logged to log file
-- Service continues (graceful degradation)
+**Mocks**: 1 (AnalyzerService)
+**Real Dependencies**: 6 (Neo4j, Logger, ResourceManager, ErrorManager, FS)
+
+#### Test I5-I8: Additional Integration Tests
+
+- **I5**: Log file linking (Collection → LogFile relationship)
+- **I6**: Error tracking (ErrorManager integration)
+- **I7**: Resource manager (large data storage)
+- **I8**: Cleanup (all resources disposed)
+
+### Layer 4: E2E Tests (1-2 tests) - CONFIDENCE
+
+**Full system test with all real components.**
+
+#### Test E1: Complete User Workflow
+**User Story**: "As a developer, I want the full experience"
 
 ```typescript
-it('should track errors with real ErrorManager', async () => {
-  const service = new CodeGraphService(serviceConfig);
-  await service['initialize']();
-
-  // Trigger error by using invalid directory
-  const badConfig = { ...serviceConfig };
-  badConfig.config.directories = ['/nonexistent/path'];
-
-  try {
-    await service['scan']();
-    fail('Should have thrown error');
-  } catch (error) {
-    // Expected
-  }
-
-  // Verify error was logged
-  const logFile = path.join(tempDir, 'logs', '001.log');
-  const logContent = await fs.readFile(logFile, 'utf-8');
-  expect(logContent).toContain('"level":"error"');
-  expect(logContent).toContain('Scan failed');
-});
-```
-
-#### Test 1.6: Cleanup
-**What**: Test cleanup() method
-**Dependencies**: Real Neo4j, file system
-**Mocks**: None
-**Verification**:
-- Logger disposed
-- Resource manager disposed
-- Service status updated in Neo4j
-- Neo4j connection closed
-
-```typescript
-it('should cleanup all resources', async () => {
-  const service = new CodeGraphService(serviceConfig);
-  await service['initialize']();
-
-  // Verify service is running
-  let serviceNode = await neo4jClient.runQuery(
-    'MATCH (s:Service {id: $id}) RETURN s',
-    { id: 'test-codegraph' }
-  );
-  expect(serviceNode.records[0].get('s').properties.status).toBe('initializing');
-
-  // Run cleanup
-  await service['cleanup']();
-
-  // Verify service status updated
-  serviceNode = await neo4jClient.runQuery(
-    'MATCH (s:Service {id: $id}) RETURN s',
-    { id: 'test-codegraph' }
-  );
-  expect(serviceNode.records[0].get('s').properties.status).toBe('stopped');
-  expect(serviceNode.records[0].get('s').properties.stoppedAt).toBeDefined();
-});
-```
-
----
-
-### Test Group 2: E2E Tests (COMPREHENSIVE)
-
-#### Test 2.1: Full Lifecycle
-**What**: Complete flow from initialization to cleanup
-**Dependencies**: All real dependencies
-**Mocks**: Only AnalyzerService.analyze()
-**Verification**: End-to-end behavior
-
-```typescript
-it('should handle full service lifecycle', async () => {
-  // Create test project
+it('should handle complete lifecycle: init → scan → watch → process → cleanup', async () => {
+  // Setup: Real project
   await createTestProject(tempDir, {
     'src/main.ts': 'console.log("main");',
   });
 
-  const service = new CodeGraphService(serviceConfig);
+  const service = new CodeGraphService(config);
 
-  // Mock analyzer
+  // Mock only analyzer (expensive)
   vi.spyOn(service['analyzerService'], 'analyze').mockResolvedValue(undefined);
 
-  // 1. Initialize
+  // 1. Initialize (user starts service)
   await service['initialize']();
 
-  // Verify Service node
-  let result = await neo4jClient.runQuery(
-    'MATCH (s:Service {id: $id}) RETURN s',
-    { id: 'test-codegraph' }
-  );
-  expect(result.records).toHaveLength(1);
+  const serviceNode = await queryNeo4j(client, 'MATCH (s:Service {id: "test"}) RETURN s');
+  expect(serviceNode.status).toBe('initializing');
 
-  // 2. Scan
+  // 2. Scan (initial analysis)
   const scanResult = await service['scan']();
   expect(scanResult.itemsFound).toBe(1);
 
-  // Verify Collection created
-  result = await neo4jClient.runQuery(
-    'MATCH (s:Service)-[:COLLECTED_AT]->(c:Collection) RETURN count(c) as count',
-    {}
-  );
-  expect(result.records[0].get('count').toNumber()).toBe(1);
+  const collections1 = await queryCollections(client, 'test');
+  expect(collections1).toHaveLength(1);
 
-  // 3. Watch (start and stop immediately)
+  // 3. Watch (file monitoring)
   const events: BaseServiceEvent[] = [];
   const stopWatcher = service['startWatcher'](e => events.push(e));
+
+  // Simulate file change
+  await fs.writeFile(path.join(tempDir, 'src/main.ts'), 'console.log("updated");');
+  await new Promise(resolve => setTimeout(resolve, 1500));
+
+  expect(events).toHaveLength(1);
   stopWatcher();
 
-  // 4. Process (simulate)
+  // 4. Process (handle change)
   const output = await service['process']({
     type: 'FILE_CHANGED',
     path: path.join(tempDir, 'src/main.ts'),
@@ -468,147 +380,149 @@ it('should handle full service lifecycle', async () => {
   });
   expect(output.collectionId).toBeDefined();
 
-  // Verify 2 collections now (scan + process)
-  result = await neo4jClient.runQuery(
-    'MATCH (s:Service)-[:COLLECTED_AT]->(c:Collection) RETURN count(c) as count',
-    {}
-  );
-  expect(result.records[0].get('count').toNumber()).toBe(2);
+  const collections2 = await queryCollections(client, 'test');
+  expect(collections2).toHaveLength(2); // scan + process
 
-  // 5. Cleanup
+  // 5. Cleanup (user stops service)
   await service['cleanup']();
 
-  // Verify service stopped
-  result = await neo4jClient.runQuery(
-    'MATCH (s:Service {id: $id}) RETURN s.status as status',
-    { id: 'test-codegraph' }
-  );
-  expect(result.records[0].get('status')).toBe('stopped');
+  const finalServiceNode = await queryNeo4j(client, 'MATCH (s:Service {id: "test"}) RETURN s');
+  expect(finalServiceNode.status).toBe('stopped');
+  expect(finalServiceNode.stoppedAt).toBeDefined();
+
+  // Verify: All collections still exist (data persisted)
+  const finalCollections = await queryCollections(client, 'test');
+  expect(finalCollections).toHaveLength(2);
 });
 ```
 
+**Mocks**: 1 (AnalyzerService)
+**Real Dependencies**: All 7
+**Value**: Highest confidence in critical path
+
 ---
 
-### Test Group 3: Unit Tests (MINIMAL)
+## 🎯 Testing Goals (Trophy-Aligned)
 
-#### Test 3.1: Statistics Estimation
-**What**: Test pure calculation logic
-**Dependencies**: None
-**Mocks**: None (pure function)
+| Metric | Target | Rationale |
+|--------|--------|-----------|
+| **Confidence** | High | Primary goal |
+| **Integration Tests** | 8-10 (bulk) | Best ROI |
+| **Mocking Ratio** | <10% | Mostly real |
+| **Code Coverage** | ~85% | Natural byproduct |
+| **Test Speed** | <20s | Fast feedback |
+| **Maintenance Cost** | Low | Test behavior |
 
+**Kent's Wisdom**: "The more your tests resemble the way your software is used, the more confidence they can give you."
+
+---
+
+## ✅ Test Quality Checklist (Trophy Edition)
+
+Static Analysis:
+- [x] TypeScript enabled (strict mode)
+- [x] ESLint configured
+- [x] All code compiles cleanly
+
+Integration Tests (THE BULK):
+- [ ] Test user workflows, not implementation
+- [ ] Use real dependencies (Neo4j, FS, Logger)
+- [ ] Mock only expensive operations (<10%)
+- [ ] Verify observable outcomes
+- [ ] Independent tests (any order)
+- [ ] Fast (<20s for all tests)
+
+E2E Tests:
+- [ ] Test critical user journeys
+- [ ] All real dependencies
+- [ ] High confidence builders
+
+Unit Tests:
+- [ ] Only for complex pure logic
+- [ ] No mocking (pure functions)
+- [ ] Fast (<1ms each)
+
+---
+
+## 🚀 Implementation Order (~2 hours)
+
+**1. Test Infrastructure** (20 min):
 ```typescript
-describe('CodeGraphService - Unit Tests', () => {
-  it('should estimate statistics based on file count', () => {
-    // This could be extracted to a pure function
-    const estimateStats = (fileCount: number) => ({
-      nodesCreated: fileCount * 15,
-      relationshipsCreated: fileCount * 10,
-    });
-
-    expect(estimateStats(0)).toEqual({ nodesCreated: 0, relationshipsCreated: 0 });
-    expect(estimateStats(1)).toEqual({ nodesCreated: 15, relationshipsCreated: 10 });
-    expect(estimateStats(100)).toEqual({ nodesCreated: 1500, relationshipsCreated: 1000 });
-  });
-});
+// Test helpers
+async function createTestProject(dir: string, files: Record<string, string>)
+async function queryCollections(client: Neo4jClient, serviceId: string)
+async function createServiceConfig(tempDir: string, client: Neo4jClient)
 ```
 
+**2. Integration Tests** (80 min) - THE BULK:
+- I1: Initialization (15 min)
+- I2: Scan (15 min)
+- I3: File watcher (15 min)
+- I4: Process (15 min)
+- I5-I8: Remaining scenarios (20 min)
+
+**3. E2E Test** (15 min):
+- E1: Full lifecycle
+
+**4. Unit Test** (5 min):
+- U1: Pure calculation
+
+**Total**: ~2 hours for trophy-shaped test suite
+
 ---
 
-## 🛠️ Test Helpers & Fixtures
+## 📊 Expected Results
 
-### Helper: Create Test Project
+```bash
+npm test
 
-```typescript
-async function createTestProject(
-  baseDir: string,
-  files: Record<string, string>
-): Promise<void> {
-  for (const [filePath, content] of Object.entries(files)) {
-    const fullPath = path.join(baseDir, filePath);
-    await fs.mkdir(path.dirname(fullPath), { recursive: true });
-    await fs.writeFile(fullPath, content, 'utf-8');
-  }
-}
+✅ Static Analysis (TypeScript): PASS
+✅ Unit Tests:        1 passed    (pure logic)
+✅ Integration Tests: 8 passed    (BULK - real behavior)
+✅ E2E Tests:         1 passed    (confidence)
+───────────────────────────────────────────
+Total:               10 tests
+Time:                ~18s
+Coverage:            ~85% (natural)
+Confidence:          HIGH ✅
 ```
-
-### Helper: Query Collections
-
-```typescript
-async function queryCollections(
-  neo4jClient: Neo4jClient,
-  serviceId: string
-): Promise<any[]> {
-  const result = await neo4jClient.runQuery(
-    `MATCH (s:Service {id: $serviceId})-[:COLLECTED_AT]->(c:Collection)
-     RETURN c
-     ORDER BY c.timestamp`,
-    { serviceId }
-  );
-  return result.records.map(r => r.get('c').properties);
-}
-```
-
----
-
-## 📊 Coverage Goals
-
-| Category | Target | Rationale |
-|----------|--------|-----------|
-| Integration Tests | 90%+ | Primary test suite |
-| Unit Tests | Supplement only | Only for pure logic |
-| E2E Tests | 2-3 scenarios | Confidence in full flow |
-| **Overall Code Coverage** | **85%+** | High confidence |
-| **Mocking Ratio** | **<20%** | Mostly real dependencies |
-
----
-
-## ✅ Test Quality Checklist
-
-- [ ] Tests use real Neo4j (universal testing framework)
-- [ ] Tests use real file system (temp directories)
-- [ ] Tests use real logger (temp log files)
-- [ ] Mocking is minimal (<2 mocks per test)
-- [ ] Tests verify observable behavior, not implementation
-- [ ] Tests are independent (can run in any order)
-- [ ] Tests clean up after themselves
-- [ ] Test names describe behavior: "should X when Y"
-- [ ] Integration tests are the majority
-- [ ] Tests run fast (<30s for full suite)
-
----
-
-## 🚀 Implementation Order
-
-1. **Setup test infrastructure** (30 min):
-   - Test helpers (createTestProject, queryCollections)
-   - Shared beforeEach/afterEach setup
-   - Universal testing framework integration
-
-2. **Integration tests** (90 min):
-   - Test 1.1: Initialization
-   - Test 1.2: Scan
-   - Test 1.3: File watcher
-   - Test 1.4: Process
-   - Test 1.5: Error tracking
-   - Test 1.6: Cleanup
-
-3. **E2E tests** (30 min):
-   - Test 2.1: Full lifecycle
-
-4. **Unit tests** (15 min):
-   - Test 3.1: Pure calculations
-
-**Total Time**: ~2.5 hours
 
 ---
 
 ## 📚 References
 
-- **Testing Trophy**: Kent C. Dodds - Integration tests give best ROI
-- **Test-Induced Design Damage**: DHH - Don't let tests damage your design
-- **Mocking is a Code Smell**: Uncle Bob - Prefer real objects when possible
+**Kent C. Dodds**:
+- [The Testing Trophy](https://kentcdodds.com/blog/the-testing-trophy-and-testing-classifications)
+- [Write Tests. Not Too Many. Mostly Integration.](https://kentcdodds.com/blog/write-tests)
+- [Testing Implementation Details](https://kentcdodds.com/blog/testing-implementation-details)
+
+**Key Quotes**:
+> "The more your tests resemble the way your software is used, the more confidence they can give you." - Kent C. Dodds
+
+> "Write tests. Not too many. Mostly integration." - Guillermo Rauch (adopted by Kent)
+
+---
+
+## 🎓 Lessons for Phase 3+
+
+**Do This** (Trophy Approach):
+1. ✅ Write tests first (TDD)
+2. ✅ Focus on integration tests (bulk of suite)
+3. ✅ Use real dependencies (minimize mocking)
+4. ✅ Test user behavior (not implementation)
+5. ✅ Leverage TypeScript (static analysis foundation)
+
+**Don't Do This** (Anti-patterns):
+1. ❌ Chase 100% code coverage
+2. ❌ Test implementation details
+3. ❌ Mock everything (design smell)
+4. ❌ Write unit tests for everything
+5. ❌ Skip static analysis
 
 ---
 
 **Status**: Ready to implement
-**Next**: Create test files and start with integration tests
+**Shape**: Trophy (not pyramid)
+**Focus**: Integration tests with real dependencies
+**Goal**: Confidence, not coverage
+**Next**: Build the tests following this trophy structure
