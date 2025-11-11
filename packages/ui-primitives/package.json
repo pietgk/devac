@@ -1,0 +1,23 @@
+{
+  "name": "@devac/ui-primitives",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mindler Open Code UI primitives for DevAC (extracted from mindlerui)",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "styled-components": "^6.1.19"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.12",
+    "@types/styled-components": "^5.1.34",
+    "typescript": "~5.8.3"
+  }
+}

@@ -1,141 +1,194 @@
-# CodeGraph C4 Diagrams - Quick Start Guide
+# DevAC Web UI - Quick Start Guide
 
-## What's New
-
-CodeGraph now supports C4 architecture diagrams by analyzing:
-- **Package boundaries** (workspaces in monorepos)
-- **Import relationships** (which files/packages depend on what)
-- **React components** (component hierarchy and hooks usage)
-
-## Quick Commands
-
-### 1. Build
-```bash
-cd /Users/grop/ws/CodeGraph
-npm run build
-```
-
-### 2. Analyze a Codebase
-```bash
-# Full workspace analysis
-node dist/index.js analyze /Users/grop/ws/frontend-monorepo \
-  --neo4j-url bolt://localhost:7687 \
-  --neo4j-user neo4j \
-  --neo4j-password test1234 \
-  --reset-db \
-  --update-schema
-
-# Single package analysis
-node dist/index.js analyze /path/to/package \
-  --neo4j-url bolt://localhost:7687 \
-  --neo4j-user neo4j \
-  --neo4j-password test1234
-```
-
-### 3. Query for C4 Diagrams
-
-#### Container Diagram (Packages and Dependencies)
-```cypher
-MATCH (p:Package)
-OPTIONAL MATCH (p)-[d:DEPENDS_ON]->(target:Package)
-RETURN 
-  p.name as Package,
-  p.properties.type as Type,
-  collect(DISTINCT target.name) as Dependencies
-ORDER BY size(Dependencies) DESC;
-```
-
-#### Component Diagram (Files within a Package)
-```cypher
-MATCH (p:Package {name: '@mindlercare/ui-web'})<-[:BELONGS_TO]-(f:File)
-OPTIONAL MATCH (f)-[:IMPORTS]->(imp:Import)-[:RESOLVES_TO]->(target:File)
-WHERE target.properties.packageName = '@mindlercare/ui-web'
-RETURN 
-  f.name as Component,
-  collect(DISTINCT target.name) as InternalDependencies
-ORDER BY size(InternalDependencies) DESC
-LIMIT 20;
-```
-
-#### React Component Architecture
-```cypher
-MATCH (f:File)-[:CONTAINS]->(comp:Function)
-WHERE comp.properties.isReactComponent = true
-OPTIONAL MATCH (comp)-[:RENDERS_COMPONENT]->(rendered)
-RETURN 
-  comp.name as Component,
-  f.properties.packageName as Package,
-  collect(DISTINCT rendered.name) as RendersComponents
-ORDER BY size(RendersComponents) DESC
-LIMIT 20;
-```
-
-#### Cross-Package Dependencies
-```cypher
-MATCH (sourceFile:File)-[:BELONGS_TO]->(sourcePkg:Package)
-MATCH (sourceFile)-[:IMPORTS]->(imp:Import)
-MATCH (imp)-[:RESOLVES_TO]->(targetFile:File)-[:BELONGS_TO]->(targetPkg:Package)
-WHERE sourcePkg <> targetPkg
-RETURN 
-  sourcePkg.name as From,
-  targetPkg.name as To,
-  count(*) as ImportCount
-ORDER BY ImportCount DESC
-LIMIT 20;
-```
-
-## Graph Schema
-
-### Nodes
-- **Package**: Workspace packages (frontends, shared-libraries, tools)
-- **File**: Source files with `packageName` property
-- **Function**: Functions/components with `isReactComponent` and `isHook` flags
-- **Import**: Import statements with `importedNames` array
-
-### Relationships
-- **BELONGS_TO**: File → Package
-- **RESOLVES_TO**: Import → File
-- **DEPENDS_ON**: Package → Package
-- **RENDERS_COMPONENT**: Function → Function
-- **USES_HOOK**: Function → Function
-
-## Validation Test
-
-```bash
-# Test package extraction
-node test-package-extraction.js
-
-# Expected output:
-# Found 11 packages:
-#   - mindlercare (frontend)
-#   - @mindlercare/ui-web (shared-library)
-#   - etc.
-```
-
-## Files Reference
-
-- **Implementation**: See `IMPLEMENTATION_COMPLETE.md`
-- **Queries**: See `test-c4-queries.cypher`
-- **Core Code**: `src/analyzer/parsers/package-extractor.ts`
-
-## Troubleshooting
-
-### Issue: "Node already exists" error
-**Solution**: Use `--reset-db` flag to clear existing data
-
-### Issue: Package not detected
-**Check**: Ensure `pnpm-workspace.yaml` or `package.json` has workspaces field
-
-### Issue: Import not resolved
-**Check**: Verify tsconfig.json has paths configured for aliases
-
-## Next Steps
-
-1. Run full analysis on your target codebase
-2. Open Neo4j Browser: http://localhost:7474
-3. Run C4 queries from `test-c4-queries.cypher`
-4. Visualize package dependencies and component hierarchies
+**Phase 0: COMPLETE ✅**  
+**Ready for:** Phase 1 (Backend) & Phase 2 (Frontend)
 
 ---
 
-For detailed implementation details, see `IMPLEMENTATION_COMPLETE.md`
+## 🎯 What You Have Now
+
+### UI Primitives Package
+- **Location:** `packages/ui-primitives/`
+- **Components:** Button, Card, Badge, Text
+- **Theme:** Complete design token system from Figma
+- **Quality:** Production-tested from mindlerui
+
+### Component Generator CLI
+- **Location:** `src/devac/ui-gen/cli.ts`
+- **Purpose:** Copy components into your project (Open Code philosophy)
+
+---
+
+## 🚀 Quick Commands
+
+### List Available Components
+```bash
+npx tsx src/devac/ui-gen/cli.ts list
+```
+
+### Copy a Component
+```bash
+# Copy Button
+npx tsx src/devac/ui-gen/cli.ts add Button
+
+# Copy all components
+npx tsx src/devac/ui-gen/cli.ts add-all
+```
+
+### Copy to Custom Location
+```bash
+npx tsx src/devac/ui-gen/cli.ts add Button --path ./my/custom/path
+```
+
+### Force Overwrite
+```bash
+npx tsx src/devac/ui-gen/cli.ts add Button --force
+```
+
+---
+
+## 📦 Usage Example
+
+Once you copy components, use them like this:
+
+```typescript
+import { Button } from "@/components/ui/Button";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
+import { Badge } from "@/components/ui/Badge";
+import { Text } from "@/components/ui/Text";
+
+export function ServiceCard({ service }) {
+  return (
+    <Card variant="elevated">
+      <CardHeader>
+        <CardTitle>
+          <Text variant="h4">{service.name}</Text>
+        </CardTitle>
+      </CardHeader>
+      
+      <CardContent>
+        <Badge variant={service.status === "running" ? "success" : "default"}>
+          {service.status}
+        </Badge>
+        
+        <Text variant="body" color="muted">
+          {service.description}
+        </Text>
+      </CardContent>
+      
+      <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+        <Button variant="primary" size="s" onClick={onStart}>
+          Start
+        </Button>
+        <Button variant="secondary" size="s" onClick={onStop}>
+          Stop
+        </Button>
+      </div>
+    </Card>
+  );
+}
+```
+
+---
+
+## 🎨 Customization Example
+
+Since you OWN the components, customize them freely:
+
+```typescript
+// Edit src/devac/web/frontend/components/ui/Button/Button.styles.ts
+
+// Add a new variant
+${({ $variant, theme }) => {
+  // ... existing variants ...
+  
+  if ($variant === "success") {
+    return css`
+      background: ${theme.colors.success};
+      color: white;
+      &:hover:not(:disabled) {
+        background: #006645; // Darker green
+      }
+    `;
+  }
+}}
+```
+
+Then use it:
+```typescript
+<Button variant="success">Success Action</Button>
+```
+
+**No forking. No pull requests. Just edit your code.**
+
+---
+
+## 🎯 Next Steps (Phase 1-3)
+
+### Phase 1: Backend (Days 3-4)
+Follow `PHASE_3_UI_PLAN_FINAL.md` Section "Task 1: Backend Foundation"
+
+1. Install dependencies
+2. Create Express server
+3. Implement SSE Manager
+4. Add service routes
+5. Test health check
+
+### Phase 2: Frontend (Days 4-5)
+Follow `PHASE_3_UI_PLAN_FINAL.md` Section "Task 2: Frontend Foundation"
+
+1. Install Next.js + styled-components
+2. **Copy UI components:** `npx tsx src/devac/ui-gen/cli.ts add-all`
+3. Create DevAC theme (extend primitives)
+4. Setup providers (Theme, Query)
+5. Create API client
+
+### Phase 3: Dashboard (Week 2)
+Follow `PHASE_3_UI_PLAN_FINAL.md` Section "Task 3-4: Dashboard & Components"
+
+1. Build layouts (Command Center, Timeline)
+2. Create ServiceCard using owned components
+3. Create EventFeed
+4. Integration tests
+
+---
+
+## 📚 Documentation
+
+- **Phase 0 Summary:** `PHASE_0_COMPLETE.md`
+- **Primitives README:** `packages/ui-primitives/README.md`
+- **CLI Guide:** `src/devac/ui-gen/README.md`
+- **Full Plan:** `PHASE_3_UI_PLAN_FINAL.md`
+
+---
+
+## 💡 Key Concepts
+
+### "Open Code" Philosophy
+- **Don't** `npm install` components
+- **Do** copy them into your codebase
+- **Result:** Full ownership, zero lock-in
+
+### Why This Matters
+1. **Customization:** Edit styles/behavior directly
+2. **No Breaking Changes:** You control when to update
+3. **AI-Friendly:** Full source visibility
+4. **Bundle Size:** Only include what you use
+5. **Future-Proof:** Can add React Native variants later
+
+---
+
+## 🎉 You're Ready!
+
+Phase 0 is complete. You have:
+- ✅ Production-quality UI primitives
+- ✅ Working component generator
+- ✅ Complete design system
+- ✅ Strategic architecture foundation
+
+**Now:** Start Phase 1 (Backend) or Phase 2 (Frontend)  
+**Reference:** `PHASE_3_UI_PLAN_FINAL.md` for step-by-step instructions
+
+---
+
+*Questions? Check `PHASE_0_COMPLETE.md` for detailed explanation.*
