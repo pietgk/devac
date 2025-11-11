@@ -8,6 +8,7 @@ import { Orchestrator } from "../../orchestrator/orchestrator.js";
 import { loadDevACConfig } from "../config.js";
 import { CodeGraphService } from "../../services/codegraph/index.js";
 import { createWebServer } from "../../web/server.js";
+import { registerDemoServices } from "../demo-services.js";
 import type { DevACConfig, ServiceConfig } from "../../types/index.js";
 import type { Server } from "http";
 
@@ -25,12 +26,14 @@ export function registerStartCommand(program: Command): void {
     .option("-p, --port <number>", "Web server port", "3000")
     .option("--no-web", "Start without web server")
     .option("-w, --workspace <name>", "Workspace name")
+    .option("--demo", "Start with demo services for testing the UI")
     .action(
       async (options: {
         config: string;
         port: string;
         web: boolean;
         workspace?: string;
+        demo?: boolean;
       }) => {
         try {
           logger.info("Starting DevAC...");
@@ -48,6 +51,13 @@ export function registerStartCommand(program: Command): void {
           orchestrator.start();
 
           logger.info("DevAC orchestrator started");
+
+          // Register demo services if --demo flag is set
+          if (options.demo) {
+            logger.info("Registering demo services...");
+            registerDemoServices(orchestrator);
+            logger.info("Demo services registered (3 services)");
+          }
 
           // Register and start CodeGraph service if enabled
           if (config.services?.codegraph?.enabled) {
