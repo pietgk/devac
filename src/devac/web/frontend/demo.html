@@ -206,15 +206,153 @@
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
         z-index: 1000;
       }
+
+      /* Log Viewer Styles */
+      .log-viewer {
+        background: white;
+        border-radius: 12px;
+        padding: 16px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      }
+
+      .log-filters {
+        display: flex;
+        gap: 12px;
+        margin-bottom: 16px;
+        flex-wrap: wrap;
+      }
+
+      .log-filters select,
+      .log-filters input {
+        padding: 8px 12px;
+        border: 1px solid #e8e7e7;
+        border-radius: 8px;
+        font-size: 14px;
+        background: white;
+      }
+
+      .log-filters button {
+        padding: 8px 16px;
+      }
+
+      .log-list {
+        max-height: 600px;
+        overflow-y: auto;
+        border: 1px solid #e8e7e7;
+        border-radius: 8px;
+        background: #fafafa;
+      }
+
+      .log-entry {
+        padding: 12px;
+        border-bottom: 1px solid #e8e7e7;
+        font-family: "Monaco", "Menlo", monospace;
+        font-size: 13px;
+        display: flex;
+        gap: 12px;
+      }
+
+      .log-entry:last-child {
+        border-bottom: none;
+      }
+
+      .log-entry.error {
+        background: #ffebee;
+      }
+
+      .log-entry.warn {
+        background: #fff3e0;
+      }
+
+      .log-timestamp {
+        color: #6b6a6a;
+        flex-shrink: 0;
+      }
+
+      .log-level {
+        flex-shrink: 0;
+        font-weight: 600;
+        text-transform: uppercase;
+        width: 60px;
+      }
+
+      .log-level.error {
+        color: #c62828;
+      }
+
+      .log-level.warn {
+        color: #e65100;
+      }
+
+      .log-level.info {
+        color: #1976d2;
+      }
+
+      .log-service {
+        color: #6b6a6a;
+        flex-shrink: 0;
+        min-width: 120px;
+      }
+
+      .log-message {
+        flex: 1;
+        word-break: break-word;
+      }
+
+      .log-stack {
+        margin-top: 8px;
+        padding: 8px;
+        background: rgba(0, 0, 0, 0.05);
+        border-radius: 4px;
+        font-size: 12px;
+        white-space: pre-wrap;
+        color: #c62828;
+      }
+
+      .log-empty {
+        padding: 48px;
+        text-align: center;
+        color: #6b6a6a;
+      }
+
+      .log-status {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+        padding: 8px;
+        background: #f5f5f5;
+        border-radius: 8px;
+        font-size: 14px;
+      }
+
+      .log-status .badge {
+        margin-left: 8px;
+      }
     </style>
   </head>
   <body>
     <div class="layout-switcher">
-      <button class="button primary" onclick="switchLayout('command-center')">
+      <button
+        class="button primary"
+        id="btn-command-center"
+        onclick="switchLayout('command-center')"
+      >
         Command Center
       </button>
-      <button class="button outlined" onclick="switchLayout('timeline')">
+      <button
+        class="button outlined"
+        id="btn-timeline"
+        onclick="switchLayout('timeline')"
+      >
         Timeline
+      </button>
+      <button
+        class="button outlined"
+        id="btn-logs"
+        onclick="switchLayout('logs')"
+      >
+        Logs
       </button>
     </div>
 
@@ -321,7 +459,7 @@
               <span class="badge success">${runningCount} running</span>
               <span class="badge default">${stoppedCount} stopped</span>
               ${errorCount > 0 ? `<span class="badge error">${errorCount} error</span>` : ""}
-              <span class="badge success">Live</span>
+              <span class="badge success" data-testid="sse-status">Connected</span>
             </div>
           </div>
 
@@ -329,10 +467,10 @@
             ${services
               .map(
                 (service) => `
-              <div class="service-card">
+              <div class="service-card" data-testid="service-card">
                 <div class="service-header">
                   <div>
-                    <div class="service-title">${service.name}</div>
+                    <div class="service-title" data-testid="service-name">${service.name}</div>
                     <div class="service-type">${service.type}</div>
                   </div>
                   <div class="service-badges">
@@ -344,17 +482,19 @@
                 <div class="service-stats">
                   <div class="stat-item">
                     <div class="stat-label">Uptime</div>
-                    <div class="stat-value">${formatUptime(service.stats.uptime)}</div>
+                    <div class="stat-value">${formatUptime(service.stats.uptime || 0)}</div>
                   </div>
                   <div class="stat-item">
                     <div class="stat-label">Requests</div>
-                    <div class="stat-value">${service.stats.requestCount.toLocaleString()}</div>
+                    <div class="stat-value">${(service.stats.requestCount || service.stats.itemsProcessed || 0).toLocaleString()}</div>
                   </div>
                 </div>
 
                 <div class="service-actions">
                   ${
-                    service.status === "stopped" || service.status === "error"
+                    service.status === "stopped" ||
+                    service.status === "idle" ||
+                    service.status === "error"
                       ? `<button class="button primary" onclick="startService('${service.id}')">Start</button>`
                       : ""
                   }
@@ -409,12 +549,230 @@
         return `${seconds}s`;
       }
 
+      // Log viewer state
+      let logs = [];
+      let logEventSource = null;
+      let currentLogFilter = {
+        level: "all",
+        service: "all",
+        search: "",
+      };
+
+      // Load logs from API
+      async function loadLogs() {
+        try {
+          const params = new URLSearchParams({ limit: "100" });
+          if (currentLogFilter.level !== "all") {
+            params.append("level", currentLogFilter.level);
+          }
+          if (currentLogFilter.service !== "all") {
+            params.append("service", currentLogFilter.service);
+          }
+          if (currentLogFilter.search) {
+            params.append("search", currentLogFilter.search);
+          }
+
+          const response = await fetch(
+            `${API_BASE_URL}/api/logs?${params.toString()}`,
+          );
+          const data = await response.json();
+          logs = data.logs || [];
+          renderLogs();
+        } catch (error) {
+          console.error("Failed to load logs:", error);
+        }
+      }
+
+      // Connect to log stream
+      function connectLogStream() {
+        if (logEventSource) {
+          logEventSource.close();
+        }
+
+        const params = new URLSearchParams();
+        if (currentLogFilter.level !== "all") {
+          params.append("level", currentLogFilter.level);
+        }
+        if (currentLogFilter.service !== "all") {
+          params.append("service", currentLogFilter.service);
+        }
+
+        logEventSource = new EventSource(
+          `${API_BASE_URL}/api/logs/stream?${params.toString()}`,
+        );
+
+        logEventSource.addEventListener("log", (e) => {
+          const log = JSON.parse(e.data);
+
+          // Apply search filter client-side
+          if (
+            currentLogFilter.search &&
+            !log.message
+              .toLowerCase()
+              .includes(currentLogFilter.search.toLowerCase()) &&
+            !log.service
+              ?.toLowerCase()
+              .includes(currentLogFilter.search.toLowerCase())
+          ) {
+            return;
+          }
+
+          // Add to beginning of logs array
+          logs.unshift(log);
+
+          // Keep only last 100 logs
+          if (logs.length > 100) {
+            logs.pop();
+          }
+
+          renderLogs();
+        });
+
+        logEventSource.onerror = (e) => {
+          console.error("Log stream error:", e);
+        };
+      }
+
+      // Render log viewer
+      function renderLogs() {
+        const uniqueServices = [
+          ...new Set(logs.map((l) => l.service).filter(Boolean)),
+        ];
+
+        const html = `
+        <div class="container">
+          <div class="header">
+            <div>
+              <h1>System Logs</h1>
+              <p>Real-time log monitoring</p>
+            </div>
+            <div class="status-badges">
+              <span class="badge success">Live Streaming</span>
+            </div>
+          </div>
+
+          <div class="log-viewer">
+            <div class="log-status">
+              <div>
+                <strong>${logs.length}</strong> log${logs.length !== 1 ? "s" : ""}
+              </div>
+              <div>
+                <button class="button outlined" onclick="clearLogs()">Clear</button>
+                <button class="button outlined" onclick="loadLogs()">Refresh</button>
+              </div>
+            </div>
+
+            <div class="log-filters">
+              <select id="level-filter" onchange="updateLogFilter('level', this.value)">
+                <option value="all">All Levels</option>
+                <option value="error">Error</option>
+                <option value="warn">Warning</option>
+                <option value="info">Info</option>
+              </select>
+
+              <select id="service-filter" onchange="updateLogFilter('service', this.value)">
+                <option value="all">All Services</option>
+                ${uniqueServices.map((s) => `<option value="${s}">${s}</option>`).join("")}
+              </select>
+
+              <input
+                type="text"
+                id="search-filter"
+                placeholder="Search logs..."
+                value="${currentLogFilter.search}"
+                oninput="updateLogFilter('search', this.value)"
+              />
+            </div>
+
+            <div class="log-list">
+              ${
+                logs.length === 0
+                  ? `<div class="log-empty">No logs to display</div>`
+                  : logs
+                      .map(
+                        (log) => `
+                <div class="log-entry ${log.level}">
+                  <div class="log-timestamp">${formatLogTimestamp(log.timestamp)}</div>
+                  <div class="log-level ${log.level}">${log.level}</div>
+                  ${log.service ? `<div class="log-service">[${log.service}]</div>` : ""}
+                  <div class="log-message">
+                    ${escapeHtml(log.message)}
+                    ${log.stack ? `<div class="log-stack">${escapeHtml(log.stack)}</div>` : ""}
+                  </div>
+                </div>
+              `,
+                      )
+                      .join("")
+              }
+            </div>
+          </div>
+        </div>
+      `;
+
+        document.getElementById("app").innerHTML = html;
+
+        // Restore filter values
+        document.getElementById("level-filter").value = currentLogFilter.level;
+        document.getElementById("service-filter").value =
+          currentLogFilter.service;
+      }
+
+      function updateLogFilter(type, value) {
+        currentLogFilter[type] = value;
+
+        if (type === "level" || type === "service") {
+          // Reconnect stream with new filters
+          connectLogStream();
+        }
+
+        // Reload logs from API
+        loadLogs();
+      }
+
+      function clearLogs() {
+        logs = [];
+        renderLogs();
+      }
+
+      function formatLogTimestamp(timestamp) {
+        const date = new Date(timestamp);
+        return date.toLocaleTimeString("en-US", { hour12: false });
+      }
+
+      function escapeHtml(text) {
+        const div = document.createElement("div");
+        div.textContent = text;
+        return div.innerHTML;
+      }
+
       function switchLayout(layout) {
         localStorage.setItem("devac-layout-preference", layout);
+
+        // Update button styles
+        document.querySelectorAll(".layout-switcher button").forEach((btn) => {
+          btn.className = "button outlined";
+        });
+        document.getElementById(`btn-${layout}`).className = "button primary";
+
         if (layout === "timeline") {
           alert(
             "Timeline view not implemented in this simple demo. Use the React components for full functionality.",
           );
+          return;
+        }
+
+        if (layout === "logs") {
+          if (logEventSource) {
+            logEventSource.close();
+          }
+          loadLogs();
+          connectLogStream();
+        } else if (layout === "command-center") {
+          if (logEventSource) {
+            logEventSource.close();
+            logEventSource = null;
+          }
+          renderCommandCenter();
         }
       }
 

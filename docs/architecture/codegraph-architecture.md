@@ -991,8 +991,8 @@ open http://localhost:7474
 - ⚠️ Validation tests (2 hours) → automated verification
 
 **Key Files**:
-- Architecture: `docs/architecture/ARCHITECTURE.md` (this file)
-- Quick Start: `docs/QUICK_START.md`
+- Architecture: `docs/architecture/codegraph-architecture.md` (this file)
+- Quick Start: `docs/guides/quick-start.md`
 - Entity ID System: `src/analyzer/parser-utils.ts`
 - Package Detection: `src/analyzer/parsers/package-extractor.ts`
 - Import Resolution: `src/analyzer/parsers/import-resolver.ts`

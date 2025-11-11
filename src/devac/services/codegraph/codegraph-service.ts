@@ -1,16 +1,21 @@
 // src/devac/services/codegraph/codegraph-service.ts
 
-import path from 'path';
-import { randomUUID } from 'crypto';
-import { BaseService, type BaseServiceEvent } from '../base-service.js';
-import type { ServiceConfig, ServiceOutput, CollectionStats } from '../../types/index.js';
-import { AnalyzerService } from '../../../analyzer/analyzer-service.js';
-import { FileScanner } from '../../../scanner/file-scanner.js';
-import { RoundRobinLogger } from './round-robin-logger.js';
-import { ResourceManager } from './resource-manager.js';
-import { FileWatcher } from './file-watcher.js';
-import { ErrorManager } from './error-manager.js';
-import { Neo4jClient } from '../../../database/neo4j-client.js';
+import path from "path";
+import { randomUUID } from "crypto";
+import { BaseService, type BaseServiceEvent } from "../base-service.js";
+import type {
+  ServiceConfig,
+  ServiceOutput,
+  CollectionStats,
+} from "../../types/index.js";
+import { AnalyzerService } from "../../../analyzer/analyzer-service.js";
+import { FileScanner } from "../../../scanner/file-scanner.js";
+import { LineTrackingTransport } from "../../web/line-tracking-transport.js";
+import { addTransport, removeTransport } from "../../../utils/logger.js";
+import { ResourceManager } from "./resource-manager.js";
+import { FileWatcher } from "./file-watcher.js";
+import { ErrorManager } from "./error-manager.js";
+import { Neo4jClient } from "../../../database/neo4j-client.js";
 
 /**
  * CodeGraph service-specific configuration
@@ -61,7 +66,7 @@ export class CodeGraphService extends BaseService {
   private analyzerService!: AnalyzerService;
 
   // DevAC utility components
-  private roundRobinLogger!: RoundRobinLogger;
+  private lineTrackingTransport!: LineTrackingTransport;
   private resourceManager!: ResourceManager;
   private fileWatcher: FileWatcher | null = null;
   private errorManager!: ErrorManager;
@@ -75,7 +80,7 @@ export class CodeGraphService extends BaseService {
 
   constructor(config: ServiceConfig) {
     super(config);
-    this.logger.info('CodeGraphService constructor called', {
+    this.logger.info("CodeGraphService constructor called", {
       id: config.id,
       name: config.name,
     });
@@ -90,10 +95,12 @@ export class CodeGraphService extends BaseService {
 
     // Validate configuration
     if (!serviceConfig.directories || serviceConfig.directories.length === 0) {
-      throw new Error('CodeGraphService requires at least one directory to analyze');
+      throw new Error(
+        "CodeGraphService requires at least one directory to analyze",
+      );
     }
 
-    this.logger.info('Initializing CodeGraphService...', {
+    this.logger.info("Initializing CodeGraphService...", {
       directories: serviceConfig.directories,
       extensions: serviceConfig.extensions,
     });
@@ -107,17 +114,19 @@ export class CodeGraphService extends BaseService {
         database: serviceConfig.neo4j?.database,
       });
 
-      await this.neo4jClient.initializeDriver('CodeGraphService');
-      this.logger.info('Neo4j client initialized');
+      await this.neo4jClient.initializeDriver("CodeGraphService");
+      this.logger.info("Neo4j client initialized");
 
-      // 2. Initialize round-robin logger
-      this.roundRobinLogger = new RoundRobinLogger({
-        logDir: serviceConfig.logDir,
+      // 2. Initialize line tracking transport for this service
+      this.lineTrackingTransport = new LineTrackingTransport({
+        dirname: serviceConfig.logDir,
+        filename: "codegraph.log",
         maxFileSize: serviceConfig.maxLogFileSize,
         maxFiles: serviceConfig.maxLogFiles,
       });
-      await this.roundRobinLogger.initialize();
-      this.logger.info('Round-robin logger initialized', {
+      await this.lineTrackingTransport.initialize();
+      addTransport(this.lineTrackingTransport);
+      this.logger.info("Line tracking transport initialized", {
         logDir: serviceConfig.logDir,
       });
 
@@ -126,7 +135,7 @@ export class CodeGraphService extends BaseService {
         resourceDir: serviceConfig.resourceDir,
       });
       await this.resourceManager.initialize();
-      this.logger.info('Resource manager initialized', {
+      this.logger.info("Resource manager initialized", {
         resourceDir: serviceConfig.resourceDir,
       });
 
@@ -136,7 +145,7 @@ export class CodeGraphService extends BaseService {
         errorThreshold: 50,
         countWarningsInThreshold: true,
       });
-      this.logger.info('Error manager initialized');
+      this.logger.info("Error manager initialized");
 
       // 5. Initialize analyzer service
       const primaryDirectory = this.getPrimaryDirectory();
@@ -152,17 +161,17 @@ export class CodeGraphService extends BaseService {
           repository: this.config.name,
           repositoryPath: primaryDirectory,
           syncedAt: new Date().toISOString(),
-        }
+        },
       );
-      this.logger.info('Analyzer service initialized');
+      this.logger.info("Analyzer service initialized");
 
       // 6. Create service node in Neo4j
       await this.createServiceNode();
-      this.logger.info('Service node created in Neo4j');
+      this.logger.info("Service node created in Neo4j");
 
-      this.logger.info('CodeGraphService initialization complete');
+      this.logger.info("CodeGraphService initialization complete");
     } catch (error: any) {
-      this.logger.error('Failed to initialize CodeGraphService', {
+      this.logger.error("Failed to initialize CodeGraphService", {
         error: error.message,
         stack: error.stack,
       });
@@ -180,21 +189,16 @@ export class CodeGraphService extends BaseService {
 
     const startTime = Date.now();
 
-    this.logger.info('Starting initial code scan', {
+    this.logger.info("Starting initial code scan", {
       collectionId,
       directories: serviceConfig.directories,
     });
 
-    // Log scan start
-    await this.roundRobinLogger.write({
-      level: 'info',
-      message: 'Starting initial code scan',
-      serviceId: this.config.id,
-      metadata: {
-        collectionId,
-        directories: serviceConfig.directories,
-        extensions: serviceConfig.extensions,
-      },
+    // Log scan start (line tracking happens automatically via transport)
+    this.logger.info("Starting initial code scan", {
+      collectionId,
+      directories: serviceConfig.directories,
+      extensions: serviceConfig.extensions,
     });
 
     try {
@@ -204,7 +208,7 @@ export class CodeGraphService extends BaseService {
       const scanner = new FileScanner(
         absoluteDirectory,
         serviceConfig.extensions,
-        serviceConfig.ignore
+        serviceConfig.ignore,
       );
       const files = await scanner.scan();
       this.scannedFilesCount = files.length;
@@ -238,30 +242,25 @@ export class CodeGraphService extends BaseService {
       await this.createCollectionNode(collectionId, stats);
 
       // Link collection to log file
-      const logPath = this.roundRobinLogger.getCurrentFilePath();
-      const logLineRange = this.roundRobinLogger.getSessionLineRange();
+      const logPath = this.lineTrackingTransport.getCurrentFilePath();
+      const logLineRange = this.lineTrackingTransport.getSessionLineRange();
       await this.linkCollectionToLog(
         collectionId,
         logPath,
         logLineRange.startLine,
-        logLineRange.endLine
+        logLineRange.endLine,
       );
 
       // Log completion
-      await this.roundRobinLogger.write({
-        level: 'info',
-        message: 'Initial scan completed',
-        serviceId: this.config.id,
-        metadata: {
-          collectionId,
-          itemsProcessed: this.scannedFilesCount,
-          nodesCreated: estimatedNodesCreated,
-          relationshipsCreated: estimatedRelationshipsCreated,
-          duration: `${duration}ms`,
-        },
+      this.logger.info("Initial scan completed", {
+        collectionId,
+        itemsProcessed: this.scannedFilesCount,
+        nodesCreated: estimatedNodesCreated,
+        relationshipsCreated: estimatedRelationshipsCreated,
+        duration: `${duration}ms`,
       });
 
-      this.logger.info('Scan completed successfully', {
+      this.logger.info("Scan completed successfully", {
         collectionId,
         files: this.scannedFilesCount,
         nodes: estimatedNodesCreated,
@@ -273,25 +272,20 @@ export class CodeGraphService extends BaseService {
     } catch (error: any) {
       // Record error
       this.errorManager.recordError({
-        type: 'UNKNOWN_ERROR',
-        severity: 'error',
+        type: "UNKNOWN_ERROR",
+        severity: "error",
         message: error.message,
         stack: error.stack,
         collectionId,
       });
 
       // Log error
-      await this.roundRobinLogger.write({
-        level: 'error',
-        message: `Scan failed: ${error.message}`,
-        serviceId: this.config.id,
-        metadata: {
-          collectionId,
-          error: error.stack,
-        },
+      this.logger.error(`Scan failed: ${error.message}`, {
+        collectionId,
+        error: error.stack,
       });
 
-      this.logger.error('Scan failed', {
+      this.logger.error("Scan failed", {
         collectionId,
         error: error.message,
         stack: error.stack,
@@ -304,15 +298,17 @@ export class CodeGraphService extends BaseService {
   /**
    * Start file watcher - monitors for file changes.
    */
-  protected startWatcher(sendEvent: (event: BaseServiceEvent) => void): () => void {
+  protected startWatcher(
+    sendEvent: (event: BaseServiceEvent) => void,
+  ): () => void {
     const serviceConfig = this.config.config as CodeGraphServiceConfig;
 
     if (!serviceConfig.watch) {
-      this.logger.info('File watching disabled by configuration');
+      this.logger.info("File watching disabled by configuration");
       return () => {}; // No-op cleanup
     }
 
-    this.logger.info('Starting file watcher', {
+    this.logger.info("Starting file watcher", {
       directories: serviceConfig.directories,
       extensions: serviceConfig.extensions,
       ignore: serviceConfig.ignore,
@@ -329,34 +325,29 @@ export class CodeGraphService extends BaseService {
           return;
         }
 
-        this.logger.debug('File change detected', {
+        this.logger.debug("File change detected", {
           type: event.type,
           path: event.path,
         });
 
         // Send to state machine
         sendEvent({
-          type: 'FILE_CHANGED',
+          type: "FILE_CHANGED",
           path: event.path,
-          changeType: event.type as 'add' | 'change' | 'unlink',
+          changeType: event.type as "add" | "change" | "unlink",
         });
 
-        // Log to round-robin
-        await this.roundRobinLogger.write({
-          level: 'debug',
-          message: `File ${event.type}: ${event.path}`,
-          serviceId: this.config.id,
-          metadata: {
-            changeType: event.type,
-            path: event.path,
-          },
+        // Log file change
+        this.logger.debug(`File ${event.type}: ${event.path}`, {
+          changeType: event.type,
+          path: event.path,
         });
       },
     });
 
     // Start watching (async, but don't await)
     this.fileWatcher.start().catch((error) => {
-      this.logger.error('FileWatcher failed to start', {
+      this.logger.error("FileWatcher failed to start", {
         error: error.message,
         stack: error.stack,
       });
@@ -367,7 +358,7 @@ export class CodeGraphService extends BaseService {
       if (this.fileWatcher) {
         this.fileWatcher[Symbol.dispose]();
         this.fileWatcher = null;
-        this.logger.info('File watcher stopped');
+        this.logger.info("File watcher stopped");
       }
     };
   }
@@ -376,7 +367,11 @@ export class CodeGraphService extends BaseService {
    * Process file changes - runs incremental analysis.
    */
   protected async process(input: any): Promise<ServiceOutput> {
-    const event = input as { type: 'FILE_CHANGED'; path: string; changeType: string };
+    const event = input as {
+      type: "FILE_CHANGED";
+      path: string;
+      changeType: string;
+    };
     const serviceConfig = this.config.config as CodeGraphServiceConfig;
 
     const collectionId = randomUUID();
@@ -384,25 +379,20 @@ export class CodeGraphService extends BaseService {
 
     const startTime = Date.now();
 
-    this.logger.info('Processing file change', {
+    this.logger.info("Processing file change", {
       collectionId,
       path: event.path,
       changeType: event.changeType,
     });
 
     // Mark start of log session
-    this.roundRobinLogger.markSessionStart();
-    const logStartLine = this.roundRobinLogger.getCurrentLineCount() + 1;
+    this.lineTrackingTransport.markSessionStart();
+    const logStartLine = this.lineTrackingTransport.getCurrentLineCount() + 1;
 
-    await this.roundRobinLogger.write({
-      level: 'info',
-      message: `Processing ${event.changeType}: ${event.path}`,
-      serviceId: this.config.id,
-      metadata: {
-        collectionId,
-        changeType: event.changeType,
-        path: event.path,
-      },
+    this.logger.info(`Processing ${event.changeType}: ${event.path}`, {
+      collectionId,
+      changeType: event.changeType,
+      path: event.path,
     });
 
     try {
@@ -417,7 +407,7 @@ export class CodeGraphService extends BaseService {
       });
 
       const duration = Date.now() - startTime;
-      const logEndLine = this.roundRobinLogger.getCurrentLineCount();
+      const logEndLine = this.lineTrackingTransport.getCurrentLineCount();
 
       // Estimate stats for the changed file
       const estimatedNodesCreated = 15;
@@ -437,29 +427,29 @@ export class CodeGraphService extends BaseService {
       await this.createCollectionNode(collectionId, stats);
 
       // Link collection to log file
-      const logPath = this.roundRobinLogger.getCurrentFilePath();
-      await this.linkCollectionToLog(collectionId, logPath, logStartLine, logEndLine);
+      const logPath = this.lineTrackingTransport.getCurrentFilePath();
+      await this.linkCollectionToLog(
+        collectionId,
+        logPath,
+        logStartLine,
+        logEndLine,
+      );
 
       // Log completion
-      await this.roundRobinLogger.write({
-        level: 'info',
-        message: 'Processing completed',
-        serviceId: this.config.id,
-        metadata: {
-          collectionId,
-          path: event.path,
-          duration: `${duration}ms`,
-        },
+      this.logger.info("Processing completed", {
+        collectionId,
+        path: event.path,
+        duration: `${duration}ms`,
       });
 
-      this.logger.info('Processing completed successfully', {
+      this.logger.info("Processing completed successfully", {
         collectionId,
         path: event.path,
         duration: `${duration}ms`,
       });
 
       // Get current log file stats
-      const logFileSize = await this.roundRobinLogger.getCurrentFileSize();
+      const logFileSize = await this.lineTrackingTransport.getCurrentFileSize();
 
       // Return ServiceOutput
       const output: ServiceOutput = {
@@ -471,9 +461,9 @@ export class CodeGraphService extends BaseService {
         resources: [
           {
             id: randomUUID(),
-            type: 'logfile',
+            type: "logfile",
             path: logPath,
-            format: 'jsonl',
+            format: "jsonl",
             size: logFileSize,
             records: logEndLine - logStartLine + 1,
             lineRange: { start: logStartLine, end: logEndLine },
@@ -486,8 +476,8 @@ export class CodeGraphService extends BaseService {
     } catch (error: any) {
       // Record error
       this.errorManager.recordError({
-        type: 'UNKNOWN_ERROR',
-        severity: 'error',
+        type: "UNKNOWN_ERROR",
+        severity: "error",
         message: error.message,
         stack: error.stack,
         filePath: event.path,
@@ -495,18 +485,13 @@ export class CodeGraphService extends BaseService {
       });
 
       // Log error
-      await this.roundRobinLogger.write({
-        level: 'error',
-        message: `Processing failed: ${error.message}`,
-        serviceId: this.config.id,
-        metadata: {
-          collectionId,
-          path: event.path,
-          error: error.stack,
-        },
+      this.logger.error(`Processing failed: ${error.message}`, {
+        collectionId,
+        path: event.path,
+        error: error.stack,
       });
 
-      this.logger.error('Processing failed', {
+      this.logger.error("Processing failed", {
         collectionId,
         path: event.path,
         error: error.message,
@@ -521,26 +506,26 @@ export class CodeGraphService extends BaseService {
    * Cleanup resources - called on service stop.
    */
   protected async cleanup(): Promise<void> {
-    this.logger.info('Cleaning up CodeGraphService...');
+    this.logger.info("Cleaning up CodeGraphService...");
 
     try {
       // 1. Stop file watcher
       if (this.fileWatcher) {
         this.fileWatcher[Symbol.dispose]();
         this.fileWatcher = null;
-        this.logger.info('File watcher stopped');
+        this.logger.info("File watcher stopped");
       }
 
-      // 2. Close round-robin logger
-      if (this.roundRobinLogger) {
-        this.roundRobinLogger[Symbol.dispose]();
-        this.logger.info('Round-robin logger closed');
+      // 2. Remove line tracking transport
+      if (this.lineTrackingTransport) {
+        removeTransport(this.lineTrackingTransport);
+        this.logger.info("Line tracking transport removed");
       }
 
       // 3. Close resource manager
       if (this.resourceManager) {
         this.resourceManager[Symbol.dispose]();
-        this.logger.info('Resource manager closed');
+        this.logger.info("Resource manager closed");
       }
 
       // 4. Update service status in Neo4j
@@ -556,19 +541,19 @@ export class CodeGraphService extends BaseService {
             serviceId: this.config.id,
             stoppedAt: new Date().toISOString(),
           },
-          'WRITE',
-          'CodeGraphService:UpdateServiceStatus'
+          "WRITE",
+          "CodeGraphService:UpdateServiceStatus",
         );
-        this.logger.info('Service status updated in Neo4j');
+        this.logger.info("Service status updated in Neo4j");
 
         // 5. Close Neo4j connection
-        await this.neo4jClient.closeDriver('CodeGraphService');
-        this.logger.info('Neo4j connection closed');
+        await this.neo4jClient.closeDriver("CodeGraphService");
+        this.logger.info("Neo4j connection closed");
       }
 
-      this.logger.info('CodeGraphService cleanup complete');
+      this.logger.info("CodeGraphService cleanup complete");
     } catch (error: any) {
-      this.logger.error('Error during cleanup', {
+      this.logger.error("Error during cleanup", {
         error: error.message,
         stack: error.stack,
       });
@@ -587,7 +572,7 @@ export class CodeGraphService extends BaseService {
     const serviceConfig = this.config.config as CodeGraphServiceConfig;
     const directory = serviceConfig.directories[0];
     if (!directory) {
-      throw new Error('No directories configured for analysis');
+      throw new Error("No directories configured for analysis");
     }
     return directory;
   }
@@ -611,10 +596,10 @@ export class CodeGraphService extends BaseService {
         name: this.config.name,
         type: this.config.type,
         startedAt: new Date().toISOString(),
-        version: '1.0.0',
+        version: "1.0.0",
       },
-      'WRITE',
-      'CodeGraphService:CreateServiceNode'
+      "WRITE",
+      "CodeGraphService:CreateServiceNode",
     );
   }
 
@@ -623,7 +608,7 @@ export class CodeGraphService extends BaseService {
    */
   private async createCollectionNode(
     collectionId: string,
-    stats: CollectionStats
+    stats: CollectionStats,
   ): Promise<void> {
     await this.neo4jClient.runTransaction(
       `
@@ -653,8 +638,8 @@ export class CodeGraphService extends BaseService {
         errors: stats.errors,
         warnings: stats.warnings,
       },
-      'WRITE',
-      'CodeGraphService:CreateCollection'
+      "WRITE",
+      "CodeGraphService:CreateCollection",
     );
   }
 
@@ -665,7 +650,7 @@ export class CodeGraphService extends BaseService {
     collectionId: string,
     logPath: string,
     startLine: number,
-    endLine: number
+    endLine: number,
   ): Promise<void> {
     await this.neo4jClient.runTransaction(
       `
@@ -679,8 +664,8 @@ export class CodeGraphService extends BaseService {
       RETURN c, log
       `,
       { collectionId, logPath, startLine, endLine },
-      'WRITE',
-      'CodeGraphService:LinkCollectionToLog'
+      "WRITE",
+      "CodeGraphService:LinkCollectionToLog",
     );
   }
 }

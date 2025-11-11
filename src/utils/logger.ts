@@ -1,4 +1,5 @@
 import winston from "winston";
+import Transport from "winston-transport";
 import path from "path";
 import config from "../config/index.js";
 
@@ -121,6 +122,23 @@ const logger = winston.createLogger({
 export const createContextLogger = (context: string): winston.Logger => {
   return logger.child({ context });
 };
+
+/**
+ * Add a custom transport to the logger.
+ * Useful for adding service-specific transports like LineTrackingTransport.
+ * @param transport - Winston transport to add
+ */
+export function addTransport(transport: Transport): void {
+  logger.add(transport);
+}
+
+/**
+ * Remove a transport from the logger.
+ * @param transport - Winston transport to remove
+ */
+export function removeTransport(transport: Transport): void {
+  logger.remove(transport);
+}
 
 /**
  * Updates the logger level based on current verbosity setting.

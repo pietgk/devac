@@ -80,15 +80,20 @@ describe("Frontend Integration Tests", () => {
       await page.goto(`file://${demoPath}`);
 
       // Wait for services to load
-      await page.waitForSelector("[data-testid=\"service-card\"]", { timeout: 5000 });
+      await page.waitForSelector('[data-testid="service-card"]', {
+        timeout: 5000,
+      });
 
       // Check that services are displayed
-      const serviceCards = await page.$$("[data-testid=\"service-card\"]");
+      const serviceCards = await page.$$('[data-testid="service-card"]');
       expect(serviceCards.length).toBeGreaterThan(0);
 
       // Check service card content
       const firstCard = serviceCards[0];
-      const serviceName = await firstCard.$eval("[data-testid=\"service-name\"]", (el) => el.textContent);
+      const serviceName = await firstCard.$eval(
+        '[data-testid="service-name"]',
+        (el) => el.textContent,
+      );
       expect(serviceName).toBeTruthy();
     });
 
@@ -97,11 +102,13 @@ describe("Frontend Integration Tests", () => {
       await page.goto(`file://${demoPath}`);
 
       // Wait for SSE connection indicator
-      await page.waitForSelector("[data-testid=\"sse-status\"]", { timeout: 5000 });
+      await page.waitForSelector('[data-testid="sse-status"]', {
+        timeout: 5000,
+      });
 
       const sseStatus = await page.$eval(
-        "[data-testid=\"sse-status\"]",
-        (el) => el.textContent
+        '[data-testid="sse-status"]',
+        (el) => el.textContent,
       );
 
       expect(sseStatus).toContain("Connected");
@@ -110,7 +117,8 @@ describe("Frontend Integration Tests", () => {
 
   describe("API Client Direct Testing", () => {
     it("should successfully fetch health check", async () => {
-      await page.goto("about:blank");
+      // Navigate to server to establish same-origin context
+      await page.goto(baseURL);
 
       const response = await page.evaluate(async (url) => {
         const res = await fetch(`${url}/health`);
@@ -122,7 +130,7 @@ describe("Frontend Integration Tests", () => {
     });
 
     it("should successfully fetch services list", async () => {
-      await page.goto("about:blank");
+      await page.goto(baseURL);
 
       const services = await page.evaluate(async (url) => {
         const res = await fetch(`${url}/api/services`);
@@ -140,7 +148,7 @@ describe("Frontend Integration Tests", () => {
     });
 
     it("should successfully start a service via API", async () => {
-      await page.goto("about:blank");
+      await page.goto(baseURL);
 
       const result = await page.evaluate(async (url) => {
         const res = await fetch(`${url}/api/services/test-service-1/start`, {
@@ -156,28 +164,27 @@ describe("Frontend Integration Tests", () => {
     });
 
     it("should handle API errors gracefully", async () => {
-      await page.goto("about:blank");
+      await page.goto(baseURL);
 
       const result = await page.evaluate(async (url) => {
-        try {
-          const res = await fetch(`${url}/api/services/nonexistent/start`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-          });
-          return { status: res.status, body: await res.json() };
-        } catch (error: any) {
-          return { error: error.message };
-        }
+        const res = await fetch(`${url}/api/services/nonexistent/start`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+        const body = await res.json();
+        return { status: res.status, body };
       }, baseURL);
 
+      expect(result).toHaveProperty("status");
       expect(result.status).toBe(404);
+      expect(result).toHaveProperty("body");
       expect(result.body).toHaveProperty("error");
     });
   });
 
   describe("SSE Connection Testing", () => {
     it("should establish EventSource connection", async () => {
-      await page.goto("about:blank");
+      await page.goto(baseURL);
 
       const connectionResult = await page.evaluate(async (url) => {
         return new Promise((resolve) => {
@@ -206,7 +213,7 @@ describe("Frontend Integration Tests", () => {
     });
 
     it("should receive connection event on SSE connect", async () => {
-      await page.goto("about:blank");
+      await page.goto(baseURL);
 
       const events = await page.evaluate(async (url) => {
         return new Promise<any[]>((resolve) => {
@@ -219,7 +226,10 @@ describe("Frontend Integration Tests", () => {
           }, 3000);
 
           eventSource.addEventListener("connection", (e: MessageEvent) => {
-            receivedEvents.push({ type: "connection", data: JSON.parse(e.data) });
+            receivedEvents.push({
+              type: "connection",
+              data: JSON.parse(e.data),
+            });
           });
 
           eventSource.addEventListener("event", (e: MessageEvent) => {
@@ -234,7 +244,8 @@ describe("Frontend Integration Tests", () => {
       const connectionEvent = events.find((e) => e.type === "connection");
       expect(connectionEvent).toBeDefined();
       expect(connectionEvent?.data).toHaveProperty("clientId");
-      expect(connectionEvent?.data).toHaveProperty("message", "Connected");
+      expect(connectionEvent?.data).toHaveProperty("message");
+      expect(connectionEvent?.data.message).toContain("Connected");
     });
   });
 });

@@ -21,8 +21,9 @@
 
 ## 📚 Documentation
 
-- **[Quick Start Guide](docs/QUICK_START.md)** - Get up and running in minutes with installation, basic usage, and C4 diagram queries
-- **[Architecture Documentation](docs/architecture/ARCHITECTURE.md)** - Complete technical architecture, entity ID system, parsing pipeline, and validation
+- **[Quick Start Guide](docs/guides/quick-start.md)** - Get up and running in minutes with installation, basic usage, and C4 diagram queries
+- **[Architecture Documentation](docs/architecture/codegraph-architecture.md)** - Complete technical architecture, entity ID system, parsing pipeline, and validation
+- **[Full Documentation](docs/README.md)** - Complete documentation index with guides, API reference, and examples
 - **[Testing Guide](TEST_SETUP.md)** - Universal database testing with automatic strategy selection (Service/Native/Container)
 - **[JAR Distribution Guide](JAR_DISTRIBUTION.md)** - How test dependencies are distributed via GitHub releases
 - **[MCP Setup Guide](MCP_SETUP.md)** - Step-by-step setup for Model Context Protocol integration

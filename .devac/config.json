@@ -3,7 +3,7 @@
   "neo4j": {
     "uri": "bolt://localhost:7687",
     "username": "neo4j",
-    "password": "password",
+    "password": "test1234",
     "database": "devac"
   },
   "web": {
@@ -13,18 +13,9 @@
   },
   "services": {
     "codegraph": {
-      "enabled": false,
-      "extensions": [
-        ".ts",
-        ".js",
-        ".py",
-        ".java",
-        ".go"
-      ],
-      "ignore": [
-        "**/node_modules/**",
-        "**/.git/**"
-      ],
+      "enabled": true,
+      "extensions": [".ts", ".js", ".py", ".java", ".go"],
+      "ignore": ["**/node_modules/**", "**/.git/**"],
       "watch": true
     },
     "git": {

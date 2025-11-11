@@ -12,9 +12,12 @@ import { fileURLToPath } from "url";
 import { createSSEManager, type SSEManager } from "./sse-manager.js";
 import { createServicesRouter } from "./routes/services.js";
 import { createEventsRouter } from "./routes/events.js";
+import { createLogsRouter } from "./routes/logs.js";
 import type { ServiceRegistry } from "../orchestrator/service-registry.js";
 import type { EventBus } from "../orchestrator/event-bus.js";
 import { createContextLogger } from "../../utils/logger.js";
+import { EventBusTransport } from "./eventbus-transport.js";
+import { addTransport } from "../../utils/logger.js";
 import type { Server } from "http";
 
 const logger = createContextLogger("WebServer");
@@ -115,6 +118,15 @@ export async function createWebServer(
     sseManager.sendHeartbeat();
   }, 30000);
 
+  // Add EventBusTransport to Winston for log streaming to UI
+  const eventBusTransport = new EventBusTransport({
+    eventBus,
+    levelsToForward: ["warn", "error"], // Only stream warnings and errors
+  });
+  addTransport(eventBusTransport);
+
+  logger.info("EventBus transport added to Winston logger");
+
   // Health check endpoint
   app.get("/health", (req: Request, res: Response) => {
     const orchestratorStatus = orchestrator.getStatus();
@@ -130,6 +142,13 @@ export async function createWebServer(
   // API routes
   app.use("/api/services", createServicesRouter(registry));
   app.use("/api/events", createEventsRouter(sseManager));
+  app.use(
+    "/api/logs",
+    createLogsRouter({
+      eventBus,
+      logDir: path.resolve(process.cwd(), "logs"),
+    }),
+  );
 
   // Serve static files from frontend directory
   const frontendDir = path.join(__dirname, "frontend");

@@ -137,7 +137,7 @@ describe("CodeGraphService - Integration Tests (Trophy Bulk)", () => {
       // Assert: Real log file created
       const logFiles = await fs.readdir(path.join(tempDir, "logs"));
       expect(logFiles).toHaveLength(1);
-      expect(logFiles[0]).toMatch(/^\d{3}\.log$/);
+      expect(logFiles[0]).toMatch(/^codegraph-\d{3}\.log$/);
 
       // Assert: Log contains scan messages
       const logContent = await fs.readFile(
@@ -195,14 +195,27 @@ describe("CodeGraphService - Integration Tests (Trophy Bulk)", () => {
       // Act & Assert: Should throw
       await expect(service["scan"]()).rejects.toThrow("Parser failed");
 
+      // Wait for async logs to flush to disk
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
       // Assert: Error logged
       const logFiles = await fs.readdir(path.join(tempDir, "logs"));
       const logContent = await fs.readFile(
         path.join(tempDir, "logs", logFiles[0]),
         "utf-8",
       );
-      expect(logContent).toContain("Scan failed");
-      expect(logContent).toContain("Parser failed");
+      // Parse JSONL format - each line is a JSON object
+      const logLines = logContent.split("\n").filter((line) => line.trim());
+      const logMessages = logLines.map((line) => {
+        try {
+          return JSON.parse(line).message;
+        } catch {
+          return "";
+        }
+      });
+      const allMessages = logMessages.join(" ");
+      expect(allMessages).toContain("Scan failed");
+      expect(allMessages).toContain("Parser failed");
 
       // Cleanup
       await service["cleanup"]();
@@ -379,13 +392,26 @@ describe("CodeGraphService - Integration Tests (Trophy Bulk)", () => {
         }),
       ).rejects.toThrow("Analysis failed");
 
+      // Wait for async logs to flush to disk
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
       // Assert: Error logged
       const logFiles = await fs.readdir(path.join(tempDir, "logs"));
       const logContent = await fs.readFile(
         path.join(tempDir, "logs", logFiles[0]),
         "utf-8",
       );
-      expect(logContent).toContain("Processing failed");
+      // Parse JSONL format - each line is a JSON object
+      const logLines = logContent.split("\n").filter((line) => line.trim());
+      const logMessages = logLines.map((line) => {
+        try {
+          return JSON.parse(line).message;
+        } catch {
+          return "";
+        }
+      });
+      const allMessages = logMessages.join(" ");
+      expect(allMessages).toContain("Processing failed");
 
       // Cleanup
       await service["cleanup"]();
