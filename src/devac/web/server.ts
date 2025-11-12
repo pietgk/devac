@@ -109,14 +109,9 @@ export async function createWebServer(
     throw new Error("Event bus not available from orchestrator");
   }
 
-  // Create and start SSE manager
-  const sseManager = createSSEManager(eventBus);
+  // Create and start SSE manager with registry for status snapshots
+  const sseManager = createSSEManager(eventBus, registry);
   sseManager.start();
-
-  // Set up heartbeat for SSE connections (every 30 seconds)
-  const heartbeatInterval = setInterval(() => {
-    sseManager.sendHeartbeat();
-  }, 30000);
 
   // Add EventBusTransport to Winston for log streaming to UI
   const eventBusTransport = new EventBusTransport({
@@ -209,7 +204,6 @@ export async function createWebServer(
   // Cleanup on server close
   server.on("close", () => {
     logger.info("Web server closing...");
-    clearInterval(heartbeatInterval);
     sseManager.stop();
   });
 

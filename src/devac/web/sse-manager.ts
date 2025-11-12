@@ -2,6 +2,7 @@
 
 import type { Response } from "express";
 import type { EventBus } from "../orchestrator/event-bus.js";
+import type { ServiceRegistry } from "../orchestrator/service-registry.js";
 import type { EventEnvelope } from "../types/index.js";
 import { createContextLogger } from "../../utils/logger.js";
 
@@ -24,10 +25,14 @@ interface SSEClient {
 export class SSEManager {
   private clients: Map<string, SSEClient> = new Map();
   private eventBus: EventBus;
+  private registry?: ServiceRegistry;
   private unsubscribe?: () => void;
+  private heartbeatInterval?: NodeJS.Timeout;
+  private statusSnapshotInterval?: NodeJS.Timeout;
 
-  constructor(eventBus: EventBus) {
+  constructor(eventBus: EventBus, registry?: ServiceRegistry) {
     this.eventBus = eventBus;
+    this.registry = registry;
   }
 
   /**
@@ -42,9 +47,24 @@ export class SSEManager {
     logger.info("Starting SSE Manager...");
 
     // Subscribe to all events on the bus
-    this.unsubscribe = this.eventBus.subscribe("*", (envelope: EventEnvelope) => {
-      this.broadcastEvent(envelope);
-    });
+    this.unsubscribe = this.eventBus.subscribe(
+      "*",
+      (envelope: EventEnvelope) => {
+        this.broadcastEvent(envelope);
+      },
+    );
+
+    // Start heartbeat interval (every 30 seconds)
+    this.heartbeatInterval = setInterval(() => {
+      this.sendHeartbeat();
+    }, 30000);
+
+    // Start status snapshot interval (every 5 seconds)
+    if (this.registry) {
+      this.statusSnapshotInterval = setInterval(() => {
+        this.broadcastStatusSnapshot();
+      }, 5000);
+    }
 
     logger.info("SSE Manager started, listening to event bus");
   }
@@ -59,6 +79,17 @@ export class SSEManager {
     if (this.unsubscribe) {
       this.unsubscribe();
       this.unsubscribe = undefined;
+    }
+
+    // Clear intervals
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = undefined;
+    }
+
+    if (this.statusSnapshotInterval) {
+      clearInterval(this.statusSnapshotInterval);
+      this.statusSnapshotInterval = undefined;
     }
 
     // Close all client connections
@@ -160,7 +191,10 @@ export class SSEManager {
   /**
    * Send event to specific client
    */
-  private sendToClient(clientId: string, event: { type: string; data: any }): void {
+  private sendToClient(
+    clientId: string,
+    event: { type: string; data: any },
+  ): void {
     const client = this.clients.get(clientId);
 
     if (!client) {
@@ -175,7 +209,9 @@ export class SSEManager {
       client.response.write(sseMessage);
       client.eventsSent++;
     } catch (error: any) {
-      logger.error(`Error sending SSE event to client ${clientId}: ${error.message}`);
+      logger.error(
+        `Error sending SSE event to client ${clientId}: ${error.message}`,
+      );
       this.removeClient(clientId);
     }
   }
@@ -214,7 +250,10 @@ export class SSEManager {
       duration: Date.now() - client.connectedAt,
     }));
 
-    const totalEventsSent = clients.reduce((sum, client) => sum + client.eventsSent, 0);
+    const totalEventsSent = clients.reduce(
+      (sum, client) => sum + client.eventsSent,
+      0,
+    );
 
     return {
       connectedClients: this.clients.size,
@@ -234,11 +273,127 @@ export class SSEManager {
       });
     }
   }
+
+  /**
+   * Broadcast status snapshot to all clients
+   * Provides periodic full status updates for UI synchronization
+   */
+  private broadcastStatusSnapshot(): void {
+    if (!this.registry) {
+      return;
+    }
+
+    try {
+      // Get all service metadata
+      const metadata = this.registry.getAllMetadata();
+      const services = Array.from(metadata.entries()).map(([id, meta]) => {
+        // Calculate uptime if service is started
+        const uptime = meta.startedAt
+          ? Date.now() - new Date(meta.startedAt).getTime()
+          : 0;
+
+        return {
+          id,
+          name: meta.config.name || id,
+          type: meta.config.type,
+          status: meta.status,
+          health: meta.health,
+          enabled: meta.config.enabled,
+          version: meta.version,
+          startedAt: meta.startedAt,
+          uptime, // in milliseconds
+          stats: {
+            ...meta.stats,
+            // Add derived metrics
+            errorRate:
+              meta.stats.itemsProcessed > 0
+                ? (meta.stats.errors / meta.stats.itemsProcessed) * 100
+                : 0,
+            warningRate:
+              meta.stats.itemsProcessed > 0
+                ? (meta.stats.warnings / meta.stats.itemsProcessed) * 100
+                : 0,
+          },
+          lastError: meta.lastError,
+        };
+      });
+
+      // Calculate summary with aggregate statistics
+      const totalItems = services.reduce(
+        (sum, s) => sum + s.stats.itemsProcessed,
+        0,
+      );
+      const totalErrors = services.reduce((sum, s) => sum + s.stats.errors, 0);
+      const totalWarnings = services.reduce(
+        (sum, s) => sum + s.stats.warnings,
+        0,
+      );
+      const totalNodes = services.reduce(
+        (sum, s) => sum + s.stats.nodesCreated,
+        0,
+      );
+      const totalRelationships = services.reduce(
+        (sum, s) => sum + s.stats.relationshipsCreated,
+        0,
+      );
+
+      const summary = {
+        // Service counts by status
+        total: services.length,
+        active: services.filter(
+          (s) =>
+            s.status === "watching" ||
+            s.status === "processing" ||
+            s.status === "initializing",
+        ).length,
+        stopped: services.filter(
+          (s) => s.status === "stopped" || s.status === "idle",
+        ).length,
+        error: services.filter((s) => s.status === "error").length,
+
+        // Service counts by health
+        healthy: services.filter((s) => s.health === "healthy").length,
+        unhealthy: services.filter(
+          (s) => s.health === "degraded" || s.health === "error",
+        ).length,
+
+        // Aggregate statistics across all services
+        aggregate: {
+          itemsProcessed: totalItems,
+          errors: totalErrors,
+          warnings: totalWarnings,
+          nodesCreated: totalNodes,
+          relationshipsCreated: totalRelationships,
+          averageErrorRate:
+            totalItems > 0 ? (totalErrors / totalItems) * 100 : 0,
+          averageWarningRate:
+            totalItems > 0 ? (totalWarnings / totalItems) * 100 : 0,
+        },
+      };
+
+      // Broadcast to all clients
+      for (const clientId of this.clients.keys()) {
+        this.sendToClient(clientId, {
+          type: "status",
+          data: {
+            services,
+            summary,
+            timestamp: new Date().toISOString(),
+          },
+        });
+      }
+    } catch (error: any) {
+      logger.error(`Error broadcasting status snapshot: ${error.message}`);
+    }
+  }
 }
 
 /**
  * Create SSE manager instance
  */
-export function createSSEManager(eventBus: EventBus): SSEManager {
-  return new SSEManager(eventBus);
+export function createSSEManager(
+  eventBus: EventBus,
+  registry?: ServiceRegistry,
+): SSEManager {
+  return new SSEManager(eventBus, registry);
 }

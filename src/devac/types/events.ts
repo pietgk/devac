@@ -76,13 +76,66 @@ export type HealthEvent =
   | { type: "RETRY"; serviceId: string; attemptNumber: number };
 
 /**
+ * Status snapshot events (for UI synchronization)
+ */
+export type StatusEvent = {
+  type: "STATUS_SNAPSHOT";
+  services: Array<{
+    id: string;
+    name: string;
+    type: string;
+    status: string;
+    health: string;
+    enabled: boolean;
+    version: string;
+    startedAt?: string;
+    uptime: number;
+    stats: {
+      itemsProcessed: number;
+      nodesCreated: number;
+      relationshipsCreated: number;
+      duration: number;
+      errors: number;
+      warnings: number;
+      lastCollectionAt?: string;
+      errorRate: number;
+      warningRate: number;
+    };
+    lastError?: {
+      message: string;
+      timestamp: string;
+      stack?: string;
+    };
+  }>;
+  summary: {
+    total: number;
+    active: number;
+    stopped: number;
+    error: number;
+    healthy: number;
+    unhealthy: number;
+    aggregate: {
+      itemsProcessed: number;
+      errors: number;
+      warnings: number;
+      nodesCreated: number;
+      relationshipsCreated: number;
+      averageErrorRate: number;
+      averageWarningRate: number;
+    };
+  };
+  timestamp: string;
+};
+
+/**
  * All event types
  */
 export type DevACEvent =
   | OrchestratorEvent
   | ServiceLifecycleEvent
   | ServiceOperationEvent
-  | HealthEvent;
+  | HealthEvent
+  | StatusEvent;
 
 /**
  * Event payload with metadata

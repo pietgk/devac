@@ -372,6 +372,11 @@
           : window.location.origin);
       let services = [];
       let eventSource = null;
+      let sseConnectionState = "connecting"; // connecting, connected, disconnected, error
+      let sseReconnectAttempts = 0;
+      let sseReconnectTimer = null;
+      const MAX_RECONNECT_ATTEMPTS = 5;
+      const RECONNECT_DELAY = 3000; // 3 seconds
 
       // Load services
       async function loadServices() {
@@ -409,42 +414,139 @@
         }
       }
 
-      // Connect to SSE
+      // Connect to SSE with reconnection logic
       function connectSSE() {
+        // Clear any existing reconnection timer
+        if (sseReconnectTimer) {
+          clearTimeout(sseReconnectTimer);
+          sseReconnectTimer = null;
+        }
+
+        // Close existing connection if any
         if (eventSource) {
           eventSource.close();
         }
 
-        eventSource = new EventSource(`${API_BASE_URL}/api/events`);
+        // Update connection state
+        sseConnectionState = "connecting";
+        updateConnectionStatus();
 
-        eventSource.addEventListener("connection", (e) => {
-          console.log("SSE connected:", JSON.parse(e.data));
-        });
+        try {
+          eventSource = new EventSource(`${API_BASE_URL}/api/events`);
 
-        eventSource.addEventListener("event", (e) => {
-          const event = JSON.parse(e.data);
-          console.log("SSE event:", event);
-          if (
-            event.type.includes("SERVICE") ||
-            event.type === "START" ||
-            event.type === "STOP"
-          ) {
-            loadServices();
+          eventSource.addEventListener("connection", (e) => {
+            console.log("SSE connected:", JSON.parse(e.data));
+            sseConnectionState = "connected";
+            sseReconnectAttempts = 0; // Reset reconnect attempts on successful connection
+            updateConnectionStatus();
+          });
+
+          eventSource.addEventListener("event", (e) => {
+            const event = JSON.parse(e.data);
+            console.log("SSE event:", event);
+            if (
+              event.type.includes("SERVICE") ||
+              event.type === "START" ||
+              event.type === "STOP"
+            ) {
+              loadServices();
+            }
+          });
+
+          // Listen for status snapshot events
+          eventSource.addEventListener("status", (e) => {
+            const statusData = JSON.parse(e.data);
+            console.log("Status snapshot:", statusData);
+            // Update services from status snapshot
+            if (statusData.services) {
+              services = statusData.services;
+              renderCommandCenter();
+            }
+          });
+
+          // Listen for heartbeat events
+          eventSource.addEventListener("heartbeat", (e) => {
+            console.log("Heartbeat received");
+            // Reset connection state to connected on heartbeat
+            if (sseConnectionState !== "connected") {
+              sseConnectionState = "connected";
+              updateConnectionStatus();
+            }
+          });
+
+          eventSource.onerror = (e) => {
+            console.error("SSE error:", e);
+
+            // Only attempt reconnection if not at max attempts
+            if (eventSource.readyState === EventSource.CLOSED) {
+              sseConnectionState = "disconnected";
+              updateConnectionStatus();
+
+              if (sseReconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                sseReconnectAttempts++;
+                console.log(
+                  `Reconnecting in ${RECONNECT_DELAY}ms (attempt ${sseReconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`,
+                );
+                sseReconnectTimer = setTimeout(() => {
+                  connectSSE();
+                }, RECONNECT_DELAY);
+              } else {
+                sseConnectionState = "error";
+                updateConnectionStatus();
+                console.error("Max reconnection attempts reached");
+              }
+            }
+          };
+        } catch (error) {
+          console.error("Failed to create EventSource:", error);
+          sseConnectionState = "error";
+          updateConnectionStatus();
+        }
+      }
+
+      // Update connection status display
+      function updateConnectionStatus() {
+        const statusElements = document.querySelectorAll(
+          '[data-testid="sse-status"]',
+        );
+        statusElements.forEach((element) => {
+          switch (sseConnectionState) {
+            case "connected":
+              element.className = "badge success";
+              element.textContent = "Connected";
+              break;
+            case "connecting":
+              element.className = "badge warning";
+              element.textContent = "Connecting...";
+              break;
+            case "disconnected":
+              element.className = "badge warning";
+              element.textContent = `Reconnecting (${sseReconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`;
+              break;
+            case "error":
+              element.className = "badge error";
+              element.textContent = "Connection Failed";
+              break;
           }
         });
+      }
 
-        eventSource.onerror = (e) => {
-          console.error("SSE error:", e);
-        };
+      // Manual reconnection function (can be called from UI)
+      function reconnectSSE() {
+        sseReconnectAttempts = 0; // Reset attempts
+        connectSSE();
       }
 
       // Render Command Center
       function renderCommandCenter() {
-        const runningCount = services.filter(
-          (s) => s.status === "running",
+        const activeCount = services.filter(
+          (s) =>
+            s.status === "watching" ||
+            s.status === "processing" ||
+            s.status === "initializing",
         ).length;
         const stoppedCount = services.filter(
-          (s) => s.status === "stopped",
+          (s) => s.status === "stopped" || s.status === "idle",
         ).length;
         const errorCount = services.filter((s) => s.status === "error").length;
 
@@ -456,10 +558,12 @@
               <p>${services.length} service${services.length !== 1 ? "s" : ""} registered</p>
             </div>
             <div class="status-badges">
-              <span class="badge success">${runningCount} running</span>
+              <span class="badge success">${activeCount} active</span>
               <span class="badge default">${stoppedCount} stopped</span>
               ${errorCount > 0 ? `<span class="badge error">${errorCount} error</span>` : ""}
-              <span class="badge success" data-testid="sse-status">Connected</span>
+              <span class="badge ${sseConnectionState === "connected" ? "success" : "warning"}" data-testid="sse-status">
+                ${sseConnectionState === "connected" ? "Connected" : "Connecting..."}
+              </span>
             </div>
           </div>
 
@@ -499,7 +603,9 @@
                       : ""
                   }
                   ${
-                    service.status === "running"
+                    service.status === "watching" ||
+                    service.status === "processing" ||
+                    service.status === "initializing"
                       ? `<button class="button outlined" onclick="stopService('${service.id}')">Stop</button>`
                       : ""
                   }
@@ -524,15 +630,21 @@
       }
 
       function getStatusClass(status) {
-        if (status === "running") return "success";
+        if (status === "watching" || status === "processing") return "success";
         if (status === "error") return "error";
-        if (status === "starting" || status === "stopping") return "warning";
+        if (
+          status === "initializing" ||
+          status === "stopping" ||
+          status === "degraded"
+        )
+          return "warning";
         return "default";
       }
 
       function getHealthClass(health) {
         if (health === "healthy") return "success";
-        if (health === "unhealthy") return "error";
+        if (health === "error") return "error";
+        if (health === "degraded") return "warning";
         return "default";
       }
 
