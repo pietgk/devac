@@ -1,6 +1,6 @@
 // src/devac/types/config.ts
 
-import { ServiceType } from './service.js';
+import { ServiceType } from "./service.js";
 
 /**
  * DevAC configuration structure
@@ -58,8 +58,12 @@ export interface ServicesConfig {
   git?: GitServiceConfig;
   /** Build service config */
   build?: BuildServiceConfig;
-  /** Test service config */
-  test?: TestServiceConfig;
+  /** TypeCheck service config (workspace-aware) */
+  typecheck?: TypeCheckServiceConfig;
+  /** Lint service config (workspace-aware) */
+  lint?: LintServiceConfig;
+  /** Test service config (workspace-aware) */
+  test?: TestServiceConfigV2;
   /** Custom services */
   custom?: Record<string, CustomServiceConfig>;
 }
@@ -123,6 +127,64 @@ export interface TestServiceConfig extends BaseServiceConfig {
 }
 
 /**
+ * Repository configuration for workspace-aware services
+ */
+export interface RepositoryConfig {
+  /** Repository path */
+  path: string;
+  /** Execution strategy */
+  strategy: "aggregate" | "per-package" | "turborepo" | "single";
+  /** Command to run */
+  command: string;
+  /** Working directory (relative to repository path) */
+  workingDirectory?: string;
+  /** Watch for changes */
+  watch?: boolean;
+  /** Per-package configurations (for per-package strategy) */
+  packages?: PackageConfig[];
+}
+
+/**
+ * Package configuration for per-package strategy
+ */
+export interface PackageConfig {
+  /** Package name */
+  name: string;
+  /** Command to run */
+  command: string;
+  /** Whether this package is enabled */
+  enabled: boolean;
+  /** Working directory (relative to repository path) */
+  workingDirectory?: string;
+}
+
+/**
+ * TypeCheck service configuration (workspace-aware)
+ */
+export interface TypeCheckServiceConfig extends BaseServiceConfig {
+  /** Repository configurations */
+  repositories: RepositoryConfig[];
+}
+
+/**
+ * Lint service configuration (workspace-aware)
+ */
+export interface LintServiceConfig extends BaseServiceConfig {
+  /** Repository configurations */
+  repositories: RepositoryConfig[];
+  /** Whether to include code snippets (±5 lines) */
+  includeSnippets?: boolean;
+}
+
+/**
+ * Test service configuration V2 (workspace-aware)
+ */
+export interface TestServiceConfigV2 extends BaseServiceConfig {
+  /** Repository configurations */
+  repositories: RepositoryConfig[];
+}
+
+/**
  * Custom service configuration
  */
 export interface CustomServiceConfig extends BaseServiceConfig {
@@ -137,7 +199,7 @@ export interface CustomServiceConfig extends BaseServiceConfig {
  */
 export interface LoggingConfig {
   /** Log level */
-  level: 'debug' | 'info' | 'warn' | 'error';
+  level: "debug" | "info" | "warn" | "error";
   /** Maximum log file size (in bytes or human-readable like "10MB") */
   maxFileSize: string;
   /** Maximum number of log files to keep */
@@ -164,23 +226,23 @@ export interface WorkspaceSettings {
  * Default DevAC configuration
  */
 export const DEFAULT_DEVAC_CONFIG: DevACConfig = {
-  version: '1.0.0',
+  version: "1.0.0",
   neo4j: {
-    uri: 'bolt://localhost:7687',
-    username: 'neo4j',
-    password: 'password',
-    database: 'devac',
+    uri: "bolt://localhost:7687",
+    username: "neo4j",
+    password: "password",
+    database: "devac",
   },
   web: {
     port: 3000,
-    host: 'localhost',
+    host: "localhost",
     cors: true,
   },
   services: {
     codegraph: {
       enabled: false,
-      extensions: ['.ts', '.js', '.py', '.java', '.go'],
-      ignore: ['**/node_modules/**', '**/.git/**'],
+      extensions: [".ts", ".js", ".py", ".java", ".go"],
+      ignore: ["**/node_modules/**", "**/.git/**"],
       watch: true,
     },
     git: {
@@ -194,12 +256,12 @@ export const DEFAULT_DEVAC_CONFIG: DevACConfig = {
     },
     test: {
       enabled: false,
-      watch: true,
+      repositories: [],
     },
   },
   logging: {
-    level: 'info',
-    maxFileSize: '10MB',
+    level: "info",
+    maxFileSize: "10MB",
     maxFiles: 10,
   },
   workspace: {

@@ -1,62 +1,109 @@
 // src/devac/types/workspace.ts
 
 /**
- * Workspace configuration
+ * Workspace discovery types for package-aware service configuration
  */
-export interface WorkspaceConfig {
-  /** Workspace unique identifier */
-  id: string;
-  /** Workspace name */
-  name: string;
-  /** Workspace root directory */
-  rootPath: string;
-  /** Neo4j database name for this workspace */
-  database: string;
-  /** Services enabled in this workspace */
-  services: Record<string, any>;
-  /** Created timestamp */
-  createdAt: string;
-  /** Last updated timestamp */
-  updatedAt: string;
-  /** Workspace metadata */
-  metadata?: {
-    /** Git branch (if applicable) */
-    branch?: string;
-    /** Environment stage (dev, staging, prod) */
-    stage?: string;
-    /** Tags */
-    tags?: string[];
+
+export type WorkspaceType = "npm" | "pnpm" | "yarn" | "single" | "unknown";
+export type BuildSystem = "turborepo" | "lerna" | "nx" | "none";
+export type ServiceStrategy =
+  | "aggregate"
+  | "per-package"
+  | "turborepo"
+  | "single";
+
+/**
+ * Workspace discovery result for a single repository
+ */
+export interface WorkspaceDiscovery {
+  repository: {
+    path: string;
+    name: string;
   };
+
+  // Workspace metadata
+  workspaceType: WorkspaceType;
+  packageManager: string; // npm, pnpm, yarn
+  packageManagerVersion?: string;
+
+  // Root package.json
+  rootPackage: {
+    name: string;
+    scripts: Record<string, string>;
+    workspaces?: string[];
+  };
+
+  // Discovered packages/workspaces
+  packages: PackageDiscovery[];
+
+  // Build system (if monorepo)
+  buildSystem?: BuildSystem;
+
+  // Node version requirement
+  nodeVersion?: string; // From .nvmrc, volta, or package.json engines
 }
 
 /**
- * Repository discovery result
+ * Individual package discovery within a workspace
  */
-export interface DiscoveredRepository {
-  /** Repository name */
+export interface PackageDiscovery {
   name: string;
-  /** Full path to repository */
-  path: string;
-  /** Whether it's a git repository */
-  isGitRepo: boolean;
-  /** Git remote URL if available */
-  remoteUrl?: string;
-  /** Current branch */
-  branch?: string;
-  /** Last commit hash */
-  lastCommit?: string;
-  /** Primary language detected */
-  primaryLanguage?: string;
+  path: string; // Relative to repo root
+  packageJson: {
+    name: string;
+    scripts: Record<string, string>;
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  };
+
+  // Detected capabilities
+  hasTests: boolean;
+  hasLint: boolean;
+  hasTypeCheck: boolean;
+
+  // Script names found
+  testScript?: string; // 'test', 'test:unit', 'test:integration', etc.
+  lintScript?: string; // 'lint', 'lint:check', etc.
+  typeCheckScript?: string; // 'typecheck', 'type-check', 'tsc', etc.
+
+  // TypeScript config
+  tsConfigPath?: string; // Path to tsconfig.json
+
+  // ESLint config
+  eslintConfigPath?: string; // Path to .eslintrc.* or eslintConfig in package.json
 }
 
 /**
- * Workspace state for persistence
+ * LLM-generated configuration recommendation
  */
-export interface WorkspaceState {
-  /** Workspace configuration */
-  config: WorkspaceConfig;
-  /** Service states */
-  services: Record<string, any>;
-  /** Last snapshot timestamp */
-  snapshotAt: string;
+export interface ServiceRecommendation {
+  strategy: ServiceStrategy;
+  command: string;
+  workingDirectory: string;
+  rationale: string;
+  watch?: boolean;
+  enabled?: boolean;
+
+  // For per-package strategy
+  packages?: PackageRecommendation[];
+}
+
+export interface PackageRecommendation {
+  name: string;
+  command: string;
+  workingDirectory: string;
+  enabled: boolean;
+  watch?: boolean;
+}
+
+/**
+ * Complete LLM recommendation response
+ */
+export interface ConfigurationRecommendation {
+  recommendations: {
+    typecheck?: ServiceRecommendation;
+    lint?: ServiceRecommendation;
+    test?: ServiceRecommendation;
+  };
+  rationale: string;
 }

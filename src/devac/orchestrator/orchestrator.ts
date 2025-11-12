@@ -1,20 +1,26 @@
 // src/devac/orchestrator/orchestrator.ts
 
-import { setup, assign, fromPromise, createActor, type ActorRefFrom } from 'xstate';
-import { ServiceRegistry } from './service-registry.js';
-import { EventBus } from './event-bus.js';
-import { createContextLogger } from '../../utils/logger.js';
-import type { DevACConfig, WorkspaceConfig } from '../types/index.js';
-import type { ServiceActorRef } from '../services/base-service.js';
+import {
+  setup,
+  assign,
+  fromPromise,
+  createActor,
+  type ActorRefFrom,
+} from "xstate";
+import { ServiceRegistry } from "./service-registry.js";
+import { EventBus } from "./event-bus.js";
+import { createContextLogger } from "../../utils/logger.js";
+import type { DevACConfig, WorkspaceSettings } from "../types/index.js";
+import type { ServiceActorRef } from "../services/base-service.js";
 
-const logger = createContextLogger('Orchestrator');
+const logger = createContextLogger("Orchestrator");
 
 /**
  * Orchestrator context
  */
 export interface OrchestratorContext {
   config: DevACConfig;
-  workspace?: WorkspaceConfig;
+  workspace?: WorkspaceSettings;
   registry: ServiceRegistry;
   eventBus: EventBus;
   startedAt?: string;
@@ -25,21 +31,21 @@ export interface OrchestratorContext {
  * Orchestrator events
  */
 export type OrchestratorEvent =
-  | { type: 'START' }
-  | { type: 'STOP'; graceful?: boolean }
-  | { type: 'LOAD_WORKSPACE'; workspace: WorkspaceConfig }
-  | { type: 'START_SERVICE'; serviceId: string }
-  | { type: 'STOP_SERVICE'; serviceId: string }
-  | { type: 'RESTART_SERVICE'; serviceId: string }
-  | { type: 'SERVICE_FAILED'; serviceId: string; error: Error }
-  | { type: 'ERROR'; error: Error };
+  | { type: "START" }
+  | { type: "STOP"; graceful?: boolean }
+  | { type: "LOAD_WORKSPACE"; workspace: WorkspaceSettings }
+  | { type: "START_SERVICE"; serviceId: string }
+  | { type: "STOP_SERVICE"; serviceId: string }
+  | { type: "RESTART_SERVICE"; serviceId: string }
+  | { type: "SERVICE_FAILED"; serviceId: string; error: Error }
+  | { type: "ERROR"; error: Error };
 
 /**
  * Orchestrator actor input
  */
 export interface OrchestratorInput {
   config: DevACConfig;
-  workspace?: WorkspaceConfig;
+  workspace?: WorkspaceSettings;
 }
 
 /**
@@ -53,98 +59,122 @@ export function createOrchestratorMachine() {
       input: {} as OrchestratorInput,
     },
     actors: {
-      initializer: fromPromise(async ({ input }: { input: OrchestratorContext }) => {
-        logger.info('Initializing orchestrator...');
+      initializer: fromPromise(
+        async ({ input }: { input: OrchestratorContext }) => {
+          logger.info("Initializing orchestrator...");
 
-        // Set up event bus subscriptions
-        input.eventBus.subscribe('*', (envelope) => {
-          logger.debug(`Event received: ${envelope.event.type}`, {
-            source: envelope.source,
-            target: envelope.target,
+          // Set up event bus subscriptions
+          input.eventBus.subscribe("*", (envelope) => {
+            logger.debug(`Event received: ${envelope.event.type}`, {
+              source: envelope.source,
+              target: envelope.target,
+            });
           });
-        });
 
-        logger.info('Orchestrator initialized');
-        return input;
-      }),
-      serviceStarter: fromPromise(async ({ input }: { input: { serviceId: string; registry: ServiceRegistry } }) => {
-        const { serviceId, registry } = input;
-        const service = registry.get(serviceId);
+          logger.info("Orchestrator initialized");
+          return input;
+        },
+      ),
+      serviceStarter: fromPromise(
+        async ({
+          input,
+        }: {
+          input: { serviceId: string; registry: ServiceRegistry };
+        }) => {
+          const { serviceId, registry } = input;
+          const service = registry.get(serviceId);
 
-        if (!service) {
-          throw new Error(`Service ${serviceId} not found in registry`);
-        }
+          if (!service) {
+            throw new Error(`Service ${serviceId} not found in registry`);
+          }
 
-        logger.info(`Starting service: ${serviceId}`);
-        service.send({ type: 'START' });
+          logger.info(`Starting service: ${serviceId}`);
+          service.send({ type: "START" });
 
-        return { serviceId };
-      }),
-      serviceStopper: fromPromise(async ({ input }: { input: { serviceId: string; registry: ServiceRegistry; graceful?: boolean } }) => {
-        const { serviceId, registry, graceful = true } = input;
-        const service = registry.get(serviceId);
+          return { serviceId };
+        },
+      ),
+      serviceStopper: fromPromise(
+        async ({
+          input,
+        }: {
+          input: {
+            serviceId: string;
+            registry: ServiceRegistry;
+            graceful?: boolean;
+          };
+        }) => {
+          const { serviceId, registry, graceful = true } = input;
+          const service = registry.get(serviceId);
 
-        if (!service) {
-          throw new Error(`Service ${serviceId} not found in registry`);
-        }
+          if (!service) {
+            throw new Error(`Service ${serviceId} not found in registry`);
+          }
 
-        logger.info(`Stopping service: ${serviceId}${graceful ? ' (graceful)' : ''}`);
-        service.send({ type: 'STOP', graceful });
+          logger.info(
+            `Stopping service: ${serviceId}${graceful ? " (graceful)" : ""}`,
+          );
+          service.send({ type: "STOP", graceful });
 
-        return { serviceId };
-      }),
-      cleanup: fromPromise(async ({ input }: { input: OrchestratorContext }) => {
-        logger.info('Cleaning up orchestrator...');
+          return { serviceId };
+        },
+      ),
+      cleanup: fromPromise(
+        async ({ input }: { input: OrchestratorContext }) => {
+          logger.info("Cleaning up orchestrator...");
 
-        // Stop all services
-        const serviceIds = input.registry.getServiceIds();
+          // Stop all services
+          const serviceIds = input.registry.getServiceIds();
 
-        for (const serviceId of serviceIds) {
-          const service = input.registry.get(serviceId);
-          if (service) {
-            try {
-              logger.debug(`Stopping service: ${serviceId}`);
-              service.send({ type: 'STOP', graceful: true });
+          for (const serviceId of serviceIds) {
+            const service = input.registry.get(serviceId);
+            if (service) {
+              try {
+                logger.debug(`Stopping service: ${serviceId}`);
+                service.send({ type: "STOP", graceful: true });
 
-              // Wait a bit for graceful shutdown
-              await new Promise((resolve) => setTimeout(resolve, 1000));
-            } catch (error: any) {
-              logger.error(`Error stopping service ${serviceId}: ${error.message}`);
+                // Wait a bit for graceful shutdown
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+              } catch (error: any) {
+                logger.error(
+                  `Error stopping service ${serviceId}: ${error.message}`,
+                );
+              }
             }
           }
-        }
 
-        // Clear registry
-        input.registry.clear();
+          // Clear registry
+          input.registry.clear();
 
-        // Clear event bus
-        input.eventBus.removeAllListeners();
-        input.eventBus.clearHistory();
+          // Clear event bus
+          input.eventBus.removeAllListeners();
+          input.eventBus.clearHistory();
 
-        logger.info('Orchestrator cleanup complete');
-      }),
+          logger.info("Orchestrator cleanup complete");
+        },
+      ),
     },
     actions: {
       logStart: () => {
-        logger.info('Orchestrator starting...');
+        logger.info("Orchestrator starting...");
       },
       logStop: () => {
-        logger.info('Orchestrator stopping...');
+        logger.info("Orchestrator stopping...");
       },
       logError: ({ event }) => {
-        if ('error' in event) {
+        if ("error" in event) {
           logger.error(`Orchestrator error: ${event.error.message}`, {
             stack: event.error.stack,
           });
         }
       },
       publishEvent: ({ context, event }) => {
-        context.eventBus.publish(event as any, 'orchestrator');
+        context.eventBus.publish(event as any, "orchestrator");
       },
     },
   }).createMachine({
-    id: 'orchestrator',
-    initial: 'idle',
+    id: "orchestrator",
+    initial: "idle",
     context: ({ input }: { input: OrchestratorInput }) => ({
       config: input.config,
       workspace: input.workspace,
@@ -154,29 +184,32 @@ export function createOrchestratorMachine() {
     states: {
       idle: {
         on: {
-          START: 'initializing',
+          START: "initializing",
         },
       },
       initializing: {
-        entry: 'logStart',
+        entry: "logStart",
         invoke: {
-          src: 'initializer',
+          src: "initializer",
           input: ({ context }) => context,
           onDone: {
-            target: 'running',
+            target: "running",
             actions: assign({
               startedAt: () => new Date().toISOString(),
             }),
           },
           onError: {
-            target: 'error',
-            actions: ['logError', assign({ error: ({ event }) => event.error as Error })],
+            target: "error",
+            actions: [
+              "logError",
+              assign({ error: ({ event }) => event.error as Error }),
+            ],
           },
         },
       },
       running: {
         on: {
-          STOP: 'stopping',
+          STOP: "stopping",
           LOAD_WORKSPACE: {
             actions: assign({
               workspace: ({ event }) => event.workspace,
@@ -185,56 +218,63 @@ export function createOrchestratorMachine() {
           START_SERVICE: {
             actions: ({ context, event }) => {
               context.eventBus.publish(
-                { type: 'START_SERVICE', serviceId: event.serviceId },
-                'orchestrator'
+                { type: "START_SERVICE", serviceId: event.serviceId },
+                "orchestrator",
               );
             },
           },
           STOP_SERVICE: {
             actions: ({ context, event }) => {
               context.eventBus.publish(
-                { type: 'STOP_SERVICE', serviceId: event.serviceId, graceful: true },
-                'orchestrator'
+                {
+                  type: "STOP_SERVICE",
+                  serviceId: event.serviceId,
+                  graceful: true,
+                },
+                "orchestrator",
               );
             },
           },
           RESTART_SERVICE: {
             actions: ({ context, event }) => {
               context.eventBus.publish(
-                { type: 'RESTART_SERVICE', serviceId: event.serviceId },
-                'orchestrator'
+                { type: "RESTART_SERVICE", serviceId: event.serviceId },
+                "orchestrator",
               );
             },
           },
           SERVICE_FAILED: {
-            actions: ['logError', 'publishEvent'],
+            actions: ["logError", "publishEvent"],
           },
           ERROR: {
-            target: 'error',
-            actions: ['logError', assign({ error: ({ event }) => event.error })],
+            target: "error",
+            actions: [
+              "logError",
+              assign({ error: ({ event }) => event.error }),
+            ],
           },
         },
       },
       error: {
         on: {
-          START: 'initializing',
-          STOP: 'stopping',
+          START: "initializing",
+          STOP: "stopping",
         },
       },
       stopping: {
-        entry: 'logStop',
+        entry: "logStop",
         invoke: {
-          src: 'cleanup',
+          src: "cleanup",
           input: ({ context }) => context,
-          onDone: 'stopped',
+          onDone: "stopped",
           onError: {
-            target: 'stopped',
-            actions: 'logError',
+            target: "stopped",
+            actions: "logError",
           },
         },
       },
       stopped: {
-        type: 'final',
+        type: "final",
       },
     },
   });
@@ -244,12 +284,14 @@ export function createOrchestratorMachine() {
  * Orchestrator class providing high-level API
  */
 export class Orchestrator {
-  private actor: ActorRefFrom<ReturnType<typeof createOrchestratorMachine>> | null = null;
-  private logger = createContextLogger('Orchestrator');
+  private actor: ActorRefFrom<
+    ReturnType<typeof createOrchestratorMachine>
+  > | null = null;
+  private logger = createContextLogger("Orchestrator");
 
   constructor(
     private config: DevACConfig,
-    private workspace?: WorkspaceConfig
+    private workspace?: WorkspaceSettings,
   ) {}
 
   /**
@@ -257,11 +299,11 @@ export class Orchestrator {
    */
   start(): void {
     if (this.actor) {
-      this.logger.warn('Orchestrator already started');
+      this.logger.warn("Orchestrator already started");
       return;
     }
 
-    this.logger.info('Creating orchestrator actor...');
+    this.logger.info("Creating orchestrator actor...");
 
     const machine = createOrchestratorMachine();
 
@@ -273,9 +315,9 @@ export class Orchestrator {
     });
 
     this.actor.start();
-    this.actor.send({ type: 'START' });
+    this.actor.send({ type: "START" });
 
-    this.logger.info('Orchestrator started');
+    this.logger.info("Orchestrator started");
   }
 
   /**
@@ -283,17 +325,19 @@ export class Orchestrator {
    */
   async stop(graceful = true): Promise<void> {
     if (!this.actor) {
-      this.logger.warn('Orchestrator not started');
+      this.logger.warn("Orchestrator not started");
       return;
     }
 
-    this.logger.info(`Stopping orchestrator${graceful ? ' (graceful)' : ''}...`);
-    this.actor.send({ type: 'STOP', graceful });
+    this.logger.info(
+      `Stopping orchestrator${graceful ? " (graceful)" : ""}...`,
+    );
+    this.actor.send({ type: "STOP", graceful });
 
     // Wait for stopped state
     await new Promise<void>((resolve) => {
       const subscription = this.actor!.subscribe((snapshot) => {
-        if (snapshot.matches('stopped')) {
+        if (snapshot.matches("stopped")) {
           subscription.unsubscribe();
           resolve();
         }
@@ -303,7 +347,7 @@ export class Orchestrator {
     this.actor.stop();
     this.actor = null;
 
-    this.logger.info('Orchestrator stopped');
+    this.logger.info("Orchestrator stopped");
   }
 
   /**
@@ -324,7 +368,7 @@ export class Orchestrator {
    * Check if orchestrator is running
    */
   isRunning(): boolean {
-    return this.actor?.getSnapshot().matches('running') ?? false;
+    return this.actor?.getSnapshot().matches("running") ?? false;
   }
 
   /**
@@ -338,7 +382,7 @@ export class Orchestrator {
   } {
     if (!this.actor) {
       return {
-        status: 'not_started',
+        status: "not_started",
         serviceCount: 0,
       };
     }
@@ -361,10 +405,14 @@ export class Orchestrator {
   /**
    * Register a service actor
    */
-  registerService(serviceId: string, actor: ServiceActorRef, config: any): void {
+  registerService(
+    serviceId: string,
+    actor: ServiceActorRef,
+    config: any,
+  ): void {
     const registry = this.getRegistry();
     if (!registry) {
-      throw new Error('Orchestrator not started');
+      throw new Error("Orchestrator not started");
     }
 
     registry.register(serviceId, actor, config);
@@ -377,10 +425,10 @@ export class Orchestrator {
    */
   startService(serviceId: string): void {
     if (!this.actor) {
-      throw new Error('Orchestrator not started');
+      throw new Error("Orchestrator not started");
     }
 
-    this.actor.send({ type: 'START_SERVICE', serviceId });
+    this.actor.send({ type: "START_SERVICE", serviceId });
   }
 
   /**
@@ -388,10 +436,10 @@ export class Orchestrator {
    */
   stopService(serviceId: string): void {
     if (!this.actor) {
-      throw new Error('Orchestrator not started');
+      throw new Error("Orchestrator not started");
     }
 
-    this.actor.send({ type: 'STOP_SERVICE', serviceId });
+    this.actor.send({ type: "STOP_SERVICE", serviceId });
   }
 
   /**
@@ -399,9 +447,9 @@ export class Orchestrator {
    */
   restartService(serviceId: string): void {
     if (!this.actor) {
-      throw new Error('Orchestrator not started');
+      throw new Error("Orchestrator not started");
     }
 
-    this.actor.send({ type: 'RESTART_SERVICE', serviceId });
+    this.actor.send({ type: "RESTART_SERVICE", serviceId });
   }
 }
