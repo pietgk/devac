@@ -202,24 +202,33 @@ export class CodeGraphService extends BaseService {
     });
 
     try {
-      // First, scan to count files (AnalyzerService doesn't return stats)
-      const primaryDirectory = this.getPrimaryDirectory();
-      const absoluteDirectory = path.resolve(primaryDirectory);
-      const scanner = new FileScanner(
-        absoluteDirectory,
-        serviceConfig.extensions,
-        serviceConfig.ignore,
-      );
-      const files = await scanner.scan();
-      this.scannedFilesCount = files.length;
+      // Scan and analyze all directories
+      this.scannedFilesCount = 0;
 
-      this.logger.info(`Found ${files.length} files to analyze`);
+      for (const directory of serviceConfig.directories) {
+        const absoluteDirectory = path.resolve(directory);
 
-      // Run full analysis (writes directly to Neo4j, returns void)
-      await this.analyzerService.analyze(primaryDirectory, {
-        ignorePatterns: serviceConfig.ignore,
-        supportedExtensions: serviceConfig.extensions,
-      });
+        // Scan directory to count files
+        const scanner = new FileScanner(
+          absoluteDirectory,
+          serviceConfig.extensions,
+          serviceConfig.ignore,
+        );
+        const files = await scanner.scan();
+        this.scannedFilesCount += files.length;
+
+        this.logger.info(`Found ${files.length} files in ${directory}`);
+
+        // Run full analysis (writes directly to Neo4j, returns void)
+        await this.analyzerService.analyze(absoluteDirectory, {
+          ignorePatterns: serviceConfig.ignore,
+          supportedExtensions: serviceConfig.extensions,
+        });
+
+        this.logger.info(`Completed analysis of ${directory}`);
+      }
+
+      this.logger.info(`Total files analyzed: ${this.scannedFilesCount}`);
 
       const duration = Date.now() - startTime;
 

@@ -14,6 +14,14 @@
   "services": {
     "codegraph": {
       "enabled": true,
+      "directories": [
+        "/Users/grop/ws/CodeGraph",
+        "/Users/grop/ws/monorepo-3.0",
+        "/Users/grop/ws/app",
+        "/Users/grop/ws/frontend-monorepo",
+        "/Users/grop/ws/public-website-3",
+        "/Users/grop/ws/npm-private-packages"
+      ],
       "extensions": [".ts", ".js", ".py", ".java", ".go"],
       "ignore": ["**/node_modules/**", "**/.git/**"],
       "watch": true

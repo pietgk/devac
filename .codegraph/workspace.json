@@ -48,7 +48,7 @@
       "enabled": true,
       "metadata": {
         "type": "monorepo",
-        "description": "Re-enabled after fixes: .d.ts filtering, timeout protection, adaptive batching"
+        "description": "backend micro-services"
       }
     },
     {
