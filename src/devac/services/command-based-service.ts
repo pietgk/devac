@@ -17,6 +17,12 @@ export interface CommandResult {
   duration: number;
 }
 
+export interface SnippetLine {
+  line: number;
+  text: string;
+  highlight?: boolean;
+}
+
 export interface CommandError {
   file: string;
   line?: number;
@@ -24,7 +30,7 @@ export interface CommandError {
   message: string;
   severity: "error" | "warning" | "info";
   code?: string;
-  snippet?: string; // ±5 lines of code (for lint only)
+  snippet?: SnippetLine[]; // ±5 lines of code (for lint only) - structured format per spec v1.4.0
 }
 
 export abstract class CommandBasedService {

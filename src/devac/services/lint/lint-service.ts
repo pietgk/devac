@@ -8,6 +8,7 @@ import {
 } from "../command-based-service.js";
 import type { LintServiceConfig } from "../../types/index.js";
 import { EventBus } from "../../orchestrator/event-bus.js";
+import { CodeExtractor } from "./code-extractor.js";
 
 /**
  * Lint Service
@@ -24,11 +25,13 @@ export class LintService extends CommandBasedService {
   private config: LintServiceConfig;
   private eventBus: EventBus;
   private watchers: Map<string, any> = new Map();
+  private codeExtractor: CodeExtractor;
 
   constructor(config: LintServiceConfig, eventBus: EventBus) {
     super("LintService");
     this.config = config;
     this.eventBus = eventBus;
+    this.codeExtractor = new CodeExtractor();
   }
 
   /**
@@ -118,11 +121,16 @@ export class LintService extends CommandBasedService {
 
   /**
    * Add code snippets to errors (±5 lines)
+   * Per spec v1.4.0: Extract surrounding code context for LLM consumption
    */
   private async addSnippetsToErrors(errors: CommandError[]): Promise<void> {
     for (const error of errors) {
       if (error.line && error.file) {
-        const snippet = await this.extractSnippet(error.file, error.line, 5);
+        const snippet = await this.codeExtractor.extractSnippet(
+          error.file,
+          error.line,
+          5, // ±5 lines as specified
+        );
         if (snippet) {
           error.snippet = snippet;
         }
