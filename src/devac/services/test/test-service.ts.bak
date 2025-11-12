@@ -1,0 +1,334 @@
+// src/devac/services/test/test-service.ts
+
+import path from "path";
+import {
+  CommandBasedService,
+  type CommandResult,
+  type CommandError,
+} from "../command-based-service.js";
+import type { TestServiceConfigV2 } from "../../types/index.js";
+import { EventBus } from "../../orchestrator/event-bus.js";
+
+/**
+ * Test Service
+ *
+ * Runs tests across configured repositories.
+ * Supports workspace-aware execution strategies.
+ *
+ * Per spec v1.3.0:
+ * - Does NOT include code snippets initially (file/line only)
+ * - Test diffs are more valuable than snippets
+ * - Parses Jest, Vitest, and other test framework output
+ * - Supports watch mode via jest --watch or similar
+ */
+export class TestService extends CommandBasedService {
+  private config: TestServiceConfigV2;
+  private eventBus: EventBus;
+  private watchers: Map<string, any> = new Map();
+
+  constructor(config: TestServiceConfigV2, eventBus: EventBus) {
+    super("TestService");
+    this.config = config;
+    this.eventBus = eventBus;
+  }
+
+  /**
+   * Start the Test service
+   */
+  async start(): Promise<void> {
+    if (!this.config.enabled) {
+      this.logger.info("Test service is disabled");
+      return;
+    }
+
+    this.logger.info(
+      `Starting Test service with ${this.config.repositories.length} repositories`,
+    );
+
+    // Run initial tests for all repositories
+    for (const repo of this.config.repositories) {
+      await this.testRepository(repo.path);
+
+      // Start watcher if enabled
+      if (repo.watch) {
+        await this.startWatcher(repo.path);
+      }
+    }
+
+    this.emitStatus("running", "Test service is running");
+  }
+
+  /**
+   * Stop the Test service
+   */
+  async stop(): Promise<void> {
+    this.logger.info("Stopping Test service");
+
+    // Stop all watchers
+    for (const [repoPath, watcher] of this.watchers) {
+      this.logger.info(`Stopping watcher for ${repoPath}`);
+      // TODO: Implement watcher stop when we add watch mode
+    }
+    this.watchers.clear();
+
+    // Kill all running processes
+    this.killAllProcesses();
+
+    this.emitStatus("stopped", "Test service stopped");
+  }
+
+  /**
+   * Run tests for a specific repository
+   */
+  async testRepository(repositoryPath: string): Promise<void> {
+    const repoConfig = this.config.repositories.find(
+      (r) => r.path === repositoryPath,
+    );
+
+    if (!repoConfig) {
+      this.logger.warn(`No configuration found for repository: ${repositoryPath}`);
+      return;
+    }
+
+    this.emitStatus("processing", `Testing ${repositoryPath}`);
+
+    try {
+      const { errors, result } = await this.runRepository(repoConfig);
+
+      // Parse test summary from output
+      const summary = this.parseTestSummary(result.stdout + result.stderr);
+
+      if (errors.length === 0) {
+        this.logger.info(`All tests passed in ${repositoryPath}`);
+        this.emitTestSuccess(repositoryPath, result, summary);
+      } else {
+        this.logger.warn(`${errors.length} test failures in ${repositoryPath}`);
+        this.emitTestFailures(repositoryPath, errors, result, summary);
+      }
+    } catch (error) {
+      this.logger.error(`Test run failed for ${repositoryPath}`, { error });
+      this.emitStatus("error", `Test run failed: ${error}`);
+    }
+  }
+
+  /**
+   * Start file watcher for a repository
+   */
+  private async startWatcher(repositoryPath: string): Promise<void> {
+    // TODO: Implement watch mode in future iteration
+    this.logger.info(
+      `Watch mode would be enabled for ${repositoryPath} (not implemented yet)`,
+    );
+  }
+
+  /**
+   * Parse test failures
+   *
+   * Supports multiple test frameworks:
+   * - Jest: "FAIL src/utils.test.ts"
+   * - Vitest: "❯ src/utils.test.ts > add function > should add numbers"
+   * - Generic: Look for FAIL, ERROR, ✗, ✕, etc.
+   */
+  protected parseErrors(
+    result: CommandResult,
+    repositoryPath: string,
+  ): CommandError[] {
+    const errors: CommandError[] = [];
+    const output = result.stdout + result.stderr;
+
+    // Jest pattern: "  ● TestSuite › TestName"
+    // followed by error details
+    const jestFailRegex = /●\s+(.+?)\s+›\s+(.+?)$/gm;
+
+    // Vitest pattern: "❯ src/file.test.ts > suite > test name"
+    const vitestFailRegex = /❯\s+(.+?)\s+>\s+(.+?)$/gm;
+
+    // Generic FAIL pattern: "FAIL src/utils.test.ts"
+    const failFileRegex = /FAIL\s+(.+?\.(test|spec)\.[jt]sx?)$/gm;
+
+    // Current test file being processed
+    let currentFile = "";
+    let currentTestName = "";
+
+    const lines = output.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      // Check for FAIL file marker
+      const failMatch = failFileRegex.exec(line);
+      if (failMatch) {
+        currentFile = path.isAbsolute(failMatch[1])
+          ? failMatch[1]
+          : path.join(repositoryPath, failMatch[1]);
+        continue;
+      }
+
+      // Check for Jest test failure
+      const jestMatch = jestFailRegex.exec(line);
+      if (jestMatch) {
+        const [, suite, testName] = jestMatch;
+        currentTestName = `${suite} › ${testName}`;
+
+        // Look ahead for error message
+        let errorMessage = "";
+        for (let j = i + 1; j < Math.min(i + 10, lines.length); j++) {
+          const nextLine = lines[j].trim();
+          if (nextLine && !nextLine.startsWith("●") && !nextLine.startsWith("at ")) {
+            errorMessage = nextLine;
+            break;
+          }
+        }
+
+        errors.push({
+          file: currentFile || "unknown",
+          line: undefined, // Jest doesn't always provide line numbers in summary
+          message: `${currentTestName}: ${errorMessage}`,
+          severity: "error",
+        });
+        continue;
+      }
+
+      // Check for Vitest test failure
+      const vitestMatch = vitestFailRegex.exec(line);
+      if (vitestMatch) {
+        const [, file, testPath] = vitestMatch;
+        currentFile = path.isAbsolute(file)
+          ? file
+          : path.join(repositoryPath, file);
+        currentTestName = testPath;
+
+        // Look ahead for error message
+        let errorMessage = "";
+        for (let j = i + 1; j < Math.min(i + 10, lines.length); j++) {
+          const nextLine = lines[j].trim();
+          if (nextLine && !nextLine.startsWith("❯") && !nextLine.startsWith("⎯")) {
+            errorMessage = nextLine;
+            break;
+          }
+        }
+
+        errors.push({
+          file: currentFile,
+          line: undefined,
+          message: `${currentTestName}: ${errorMessage}`,
+          severity: "error",
+        });
+      }
+    }
+
+    return errors;
+  }
+
+  /**
+   * Parse test summary statistics
+   *
+   * Extracts: total tests, passed, failed, skipped, duration
+   */
+  private parseTestSummary(output: string): {
+    total?: number;
+    passed?: number;
+    failed?: number;
+    skipped?: number;
+    duration?: number;
+  } {
+    const summary: any = {};
+
+    // Jest summary: "Tests:       2 failed, 5 passed, 7 total"
+    const jestSummaryRegex = /Tests:\s+(?:(\d+)\s+failed,?\s*)?(?:(\d+)\s+passed,?\s*)?(\d+)\s+total/;
+    const jestMatch = jestSummaryRegex.exec(output);
+    if (jestMatch) {
+      summary.failed = jestMatch[1] ? parseInt(jestMatch[1], 10) : 0;
+      summary.passed = jestMatch[2] ? parseInt(jestMatch[2], 10) : 0;
+      summary.total = parseInt(jestMatch[3], 10);
+    }
+
+    // Vitest summary: "Test Files  2 failed | 5 passed (7)"
+    const vitestSummaryRegex = /Test Files\s+(?:(\d+)\s+failed\s*\|?\s*)?(?:(\d+)\s+passed)?\s*\((\d+)\)/;
+    const vitestMatch = vitestSummaryRegex.exec(output);
+    if (vitestMatch) {
+      summary.failed = vitestMatch[1] ? parseInt(vitestMatch[1], 10) : 0;
+      summary.passed = vitestMatch[2] ? parseInt(vitestMatch[2], 10) : 0;
+      summary.total = parseInt(vitestMatch[3], 10);
+    }
+
+    // Duration: "Time:        2.5 s" or "Duration  2500ms"
+    const durationRegex = /(?:Time|Duration)\s*[:\s]+(\d+(?:\.\d+)?)\s*(s|ms)/;
+    const durationMatch = durationRegex.exec(output);
+    if (durationMatch) {
+      const value = parseFloat(durationMatch[1]);
+      const unit = durationMatch[2];
+      summary.duration = unit === "s" ? value * 1000 : value;
+    }
+
+    return summary;
+  }
+
+  /**
+   * Emit status update event
+   */
+  private emitStatus(
+    status: "idle" | "running" | "processing" | "error" | "stopped",
+    message: string,
+  ): void {
+    this.eventBus.emit({
+      type: "SERVICE_STATE_CHANGED",
+      service: "test",
+      state: status,
+      timestamp: new Date().toISOString(),
+      metadata: { message },
+    });
+  }
+
+  /**
+   * Emit successful test run event
+   */
+  private emitTestSuccess(
+    repositoryPath: string,
+    result: CommandResult,
+    summary: any,
+  ): void {
+    this.eventBus.emit({
+      type: "SERVICE_STATE_CHANGED",
+      service: "test",
+      state: "running",
+      timestamp: new Date().toISOString(),
+      metadata: {
+        repository: repositoryPath,
+        success: true,
+        duration: result.duration,
+        failureCount: 0,
+        summary,
+      },
+    });
+  }
+
+  /**
+   * Emit test failures event
+   */
+  private emitTestFailures(
+    repositoryPath: string,
+    errors: CommandError[],
+    result: CommandResult,
+    summary: any,
+  ): void {
+    this.eventBus.emit({
+      type: "SERVICE_STATE_CHANGED",
+      service: "test",
+      state: "running",
+      timestamp: new Date().toISOString(),
+      metadata: {
+        repository: repositoryPath,
+        success: false,
+        duration: result.duration,
+        failureCount: errors.length,
+        summary,
+        failures: errors.map((e) => ({
+          file: e.file,
+          line: e.line,
+          message: e.message,
+          // No snippet for test service per spec v1.3.0
+        })),
+      },
+    });
+  }
+}

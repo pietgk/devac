@@ -14,25 +14,21 @@
   "services": {
     "codegraph": {
       "enabled": true,
-      "directories": [
-        "/Users/grop/ws/CodeGraph"
-      ],
-      "extensions": [
-        ".ts",
-        ".js",
-        ".py",
-        ".java",
-        ".go"
-      ],
-      "ignore": [
-        "**/node_modules/**",
-        "**/.git/**"
-      ],
+      "directories": ["/Users/grop/ws/CodeGraph"],
+      "extensions": [".ts", ".js", ".py", ".java", ".go"],
+      "ignore": ["**/node_modules/**", "**/.git/**"],
       "watch": true
     },
     "typecheck": {
-      "enabled": false,
-      "repositories": []
+      "enabled": true,
+      "repositories": [
+        {
+          "path": "/Users/grop/ws/CodeGraph",
+          "strategy": "single",
+          "command": "npx tsc --noEmit",
+          "watch": true
+        }
+      ]
     },
     "lint": {
       "enabled": true,

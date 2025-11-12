@@ -1,0 +1,360 @@
+// src/devac/services/lint/lint-service.ts
+
+import path from "path";
+import {
+  CommandBasedService,
+  type CommandResult,
+  type CommandError,
+} from "../command-based-service.js";
+import type { LintServiceConfig } from "../../types/index.js";
+import { EventBus } from "../../orchestrator/event-bus.js";
+
+/**
+ * Lint Service
+ *
+ * Runs linting across configured repositories.
+ * Supports workspace-aware execution strategies.
+ *
+ * Per spec v1.3.0:
+ * - INCLUDES code snippets (±5 lines around error)
+ * - Parses ESLint output (and other linters)
+ * - Supports watch mode via eslint --watch or similar
+ */
+export class LintService extends CommandBasedService {
+  private config: LintServiceConfig;
+  private eventBus: EventBus;
+  private watchers: Map<string, any> = new Map();
+
+  constructor(config: LintServiceConfig, eventBus: EventBus) {
+    super("LintService");
+    this.config = config;
+    this.eventBus = eventBus;
+  }
+
+  /**
+   * Start the Lint service
+   */
+  async start(): Promise<void> {
+    if (!this.config.enabled) {
+      this.logger.info("Lint service is disabled");
+      return;
+    }
+
+    this.logger.info(
+      `Starting Lint service with ${this.config.repositories.length} repositories`,
+    );
+
+    // Run initial lint for all repositories
+    for (const repo of this.config.repositories) {
+      await this.lintRepository(repo.path);
+
+      // Start watcher if enabled
+      if (repo.watch) {
+        await this.startWatcher(repo.path);
+      }
+    }
+
+    this.emitStatus("running", "Lint service is running");
+  }
+
+  /**
+   * Stop the Lint service
+   */
+  async stop(): Promise<void> {
+    this.logger.info("Stopping Lint service");
+
+    // Stop all watchers
+    for (const [repoPath, watcher] of this.watchers) {
+      this.logger.info(`Stopping watcher for ${repoPath}`);
+      // TODO: Implement watcher stop when we add watch mode
+    }
+    this.watchers.clear();
+
+    // Kill all running processes
+    this.killAllProcesses();
+
+    this.emitStatus("stopped", "Lint service stopped");
+  }
+
+  /**
+   * Run lint for a specific repository
+   */
+  async lintRepository(repositoryPath: string): Promise<void> {
+    const repoConfig = this.config.repositories.find(
+      (r) => r.path === repositoryPath,
+    );
+
+    if (!repoConfig) {
+      this.logger.warn(
+        `No configuration found for repository: ${repositoryPath}`,
+      );
+      return;
+    }
+
+    this.emitStatus("processing", `Linting ${repositoryPath}`);
+
+    try {
+      const { errors, result } = await this.runRepository(repoConfig);
+
+      // Extract snippets if enabled (default true per spec)
+      if (this.config.includeSnippets !== false) {
+        await this.addSnippetsToErrors(errors);
+      }
+
+      if (errors.length === 0) {
+        this.logger.info(`No lint errors in ${repositoryPath}`);
+        this.emitLintSuccess(repositoryPath, result);
+      } else {
+        this.logger.warn(
+          `Found ${errors.length} lint errors in ${repositoryPath}`,
+        );
+        this.emitLintErrors(repositoryPath, errors, result);
+      }
+    } catch (error) {
+      this.logger.error(`Lint failed for ${repositoryPath}`, { error });
+      this.emitStatus("error", `Lint failed: ${error}`);
+    }
+  }
+
+  /**
+   * Add code snippets to errors (±5 lines)
+   */
+  private async addSnippetsToErrors(errors: CommandError[]): Promise<void> {
+    for (const error of errors) {
+      if (error.line && error.file) {
+        const snippet = await this.extractSnippet(error.file, error.line, 5);
+        if (snippet) {
+          error.snippet = snippet;
+        }
+      }
+    }
+  }
+
+  /**
+   * Start file watcher for a repository
+   */
+  private async startWatcher(repositoryPath: string): Promise<void> {
+    // TODO: Implement watch mode in future iteration
+    this.logger.info(
+      `Watch mode would be enabled for ${repositoryPath} (not implemented yet)`,
+    );
+  }
+
+  /**
+   * Parse ESLint errors
+   *
+   * ESLint output formats:
+   * 1. Stylish (default):
+   *    /path/to/file.js
+   *      10:5  error  'foo' is not defined  no-undef
+   *
+   * 2. Compact:
+   *    /path/to/file.js: line 10, col 5, Error - 'foo' is not defined (no-undef)
+   *
+   * 3. JSON (if --format json used):
+   *    [{"filePath":"...","messages":[{"line":10,"column":5,"severity":2,"message":"..."}]}]
+   */
+  protected parseErrors(
+    result: CommandResult,
+    repositoryPath: string,
+  ): CommandError[] {
+    const errors: CommandError[] = [];
+    const output = result.stdout + result.stderr;
+
+    // Try to parse as JSON first (if --format json was used)
+    try {
+      const jsonOutput = JSON.parse(output);
+      if (Array.isArray(jsonOutput)) {
+        return this.parseEslintJson(jsonOutput, repositoryPath);
+      }
+    } catch {
+      // Not JSON, continue with text parsing
+    }
+
+    // Parse stylish format
+    // Pattern: "  10:5  error  'foo' is not defined  no-undef"
+    const stylishRegex =
+      /^\s+(\d+):(\d+)\s+(error|warning)\s+(.+?)\s+([a-z-]+)$/gm;
+
+    // Current file being processed
+    let currentFile = "";
+
+    const lines = output.split("\n");
+    for (const line of lines) {
+      // Check if this is a file path line (doesn't start with whitespace)
+      if (line && !line.startsWith(" ") && !line.startsWith("\t")) {
+        // Could be a file path
+        const trimmed = line.trim();
+        if (trimmed.startsWith("/") || trimmed.startsWith("./")) {
+          currentFile = path.isAbsolute(trimmed)
+            ? trimmed
+            : path.join(repositoryPath, trimmed);
+          continue;
+        }
+      }
+
+      // Try to match error line
+      const match = stylishRegex.exec(line);
+      if (
+        match &&
+        currentFile &&
+        match[1] &&
+        match[2] &&
+        match[3] &&
+        match[4] &&
+        match[5]
+      ) {
+        const lineNum = match[1];
+        const column = match[2];
+        const severity = match[3];
+        const message = match[4];
+        const ruleId = match[5];
+
+        errors.push({
+          file: currentFile,
+          line: parseInt(lineNum, 10),
+          column: parseInt(column, 10),
+          severity: severity as "error" | "warning",
+          code: ruleId,
+          message: message.trim(),
+        });
+      }
+    }
+
+    // Also try compact format
+    // Pattern: "/path/to/file.js: line 10, col 5, Error - 'foo' is not defined (no-undef)"
+    const compactRegex =
+      /^(.+?):\s+line\s+(\d+),\s+col\s+(\d+),\s+(Error|Warning)\s+-\s+(.+?)\s+\(([^)]+)\)$/gm;
+
+    let compactMatch;
+    while ((compactMatch = compactRegex.exec(output)) !== null) {
+      if (
+        compactMatch[1] &&
+        compactMatch[2] &&
+        compactMatch[3] &&
+        compactMatch[4] &&
+        compactMatch[5] &&
+        compactMatch[6]
+      ) {
+        const file = compactMatch[1];
+        const line = compactMatch[2];
+        const column = compactMatch[3];
+        const severity = compactMatch[4];
+        const message = compactMatch[5];
+        const ruleId = compactMatch[6];
+
+        errors.push({
+          file: path.isAbsolute(file) ? file : path.join(repositoryPath, file),
+          line: parseInt(line, 10),
+          column: parseInt(column, 10),
+          severity: severity.toLowerCase() as "error" | "warning",
+          code: ruleId,
+          message: message.trim(),
+        });
+      }
+    }
+
+    return errors;
+  }
+
+  /**
+   * Parse ESLint JSON output
+   */
+  private parseEslintJson(
+    jsonOutput: any[],
+    repositoryPath: string,
+  ): CommandError[] {
+    const errors: CommandError[] = [];
+
+    for (const fileResult of jsonOutput) {
+      const file = fileResult.filePath || "";
+
+      for (const msg of fileResult.messages || []) {
+        errors.push({
+          file: path.isAbsolute(file) ? file : path.join(repositoryPath, file),
+          line: msg.line,
+          column: msg.column,
+          severity: msg.severity === 2 ? "error" : "warning",
+          code: msg.ruleId,
+          message: msg.message,
+        });
+      }
+    }
+
+    return errors;
+  }
+
+  /**
+   * Emit status update event
+   */
+  private emitStatus(
+    status: "idle" | "running" | "processing" | "error" | "stopped",
+    message: string,
+  ): void {
+    this.eventBus.publish(
+      {
+        type: "SERVICE_STATE_CHANGED",
+        service: "lint",
+        state: status,
+        timestamp: new Date().toISOString(),
+        metadata: { message },
+      },
+      "lint",
+    );
+  }
+
+  /**
+   * Emit successful lint event
+   */
+  private emitLintSuccess(repositoryPath: string, result: CommandResult): void {
+    this.eventBus.publish(
+      {
+        type: "SERVICE_STATE_CHANGED",
+        service: "lint",
+        state: "running",
+        timestamp: new Date().toISOString(),
+        metadata: {
+          repository: repositoryPath,
+          success: true,
+          duration: result.duration,
+          errorCount: 0,
+        },
+      },
+      "lint",
+    );
+  }
+
+  /**
+   * Emit lint errors event
+   */
+  private emitLintErrors(
+    repositoryPath: string,
+    errors: CommandError[],
+    result: CommandResult,
+  ): void {
+    this.eventBus.publish(
+      {
+        type: "SERVICE_STATE_CHANGED",
+        service: "lint",
+        state: "running",
+        timestamp: new Date().toISOString(),
+        metadata: {
+          repository: repositoryPath,
+          success: false,
+          duration: result.duration,
+          errorCount: errors.length,
+          errors: errors.map((e) => ({
+            file: e.file,
+            line: e.line,
+            column: e.column,
+            severity: e.severity,
+            code: e.code,
+            message: e.message,
+            snippet: e.snippet, // Included for lint service per spec v1.3.0
+          })),
+        },
+      },
+      "lint",
+    );
+  }
+}

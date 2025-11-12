@@ -2,14 +2,13 @@
 
 import path from "path";
 import { Command } from "commander";
-import { createActor } from "xstate";
 import { createContextLogger } from "../../../utils/logger.js";
 import { Orchestrator } from "../../orchestrator/orchestrator.js";
 import { loadDevACConfig } from "../config.js";
-import { CodeGraphService } from "../../services/codegraph/index.js";
 import { createWebServer } from "../../web/server.js";
 import { registerDemoServices } from "../demo-services.js";
-import type { DevACConfig, ServiceConfig } from "../../types/index.js";
+import { ServiceFactory } from "../../services/service-factory.js";
+import type { DevACConfig } from "../../types/index.js";
 import type { Server } from "http";
 
 const logger = createContextLogger("CLI:Start");
@@ -59,58 +58,24 @@ export function registerStartCommand(program: Command): void {
             logger.info("Demo services registered (3 services)");
           }
 
-          // Register and start CodeGraph service if enabled
-          if (config.services?.codegraph?.enabled) {
-            logger.info("Registering CodeGraph service...");
+          // Create and register all enabled services using the factory
+          const workspaceDir = path.resolve(process.cwd(), ".devac");
+          const serviceFactory = new ServiceFactory(config, workspaceDir);
+          const services = serviceFactory.createAllServices();
 
-            const workspaceDir = path.resolve(process.cwd(), ".devac");
+          // Register all services with the orchestrator
+          for (const { id, actor, config: serviceConfig } of services) {
+            orchestrator.registerService(id, actor, serviceConfig);
+            orchestrator.startService(id);
+            logger.info(`Service registered and started: ${id}`);
+          }
 
-            const serviceConfig: ServiceConfig = {
-              id: "codegraph",
-              name: "CodeGraph Analyzer",
-              type: "codegraph",
-              enabled: true,
-              config: {
-                directories: config.services.codegraph.directories || ["./"],
-                extensions: config.services.codegraph.extensions || [
-                  ".ts",
-                  ".tsx",
-                  ".js",
-                  ".jsx",
-                  ".py",
-                ],
-                ignore: config.services.codegraph.ignore || [
-                  "**/node_modules/**",
-                  "**/.git/**",
-                  "**/dist/**",
-                  "**/build/**",
-                ],
-                watch: config.services.codegraph.watch ?? true,
-                logDir: path.join(workspaceDir, "logs", "codegraph"),
-                resourceDir: path.join(workspaceDir, "resources", "codegraph"),
-                maxLogFileSize: 10 * 1024 * 1024, // 10MB
-                maxLogFiles: 10,
-                neo4j: {
-                  uri: config.neo4j.uri,
-                  username: config.neo4j.username,
-                  password: config.neo4j.password,
-                  database: config.neo4j.database,
-                },
-              },
-            };
-
-            const service = new CodeGraphService(serviceConfig);
-            const machine = service.createMachine();
-            const actor = createActor(machine, {
-              input: { config: serviceConfig },
-            });
-
-            actor.start();
-
-            orchestrator.registerService("codegraph", actor, serviceConfig);
-            orchestrator.startService("codegraph");
-
-            logger.info("CodeGraph service registered and started");
+          if (services.length > 0) {
+            logger.info(`Total services running: ${services.length}`);
+          } else if (!options.demo) {
+            logger.warn(
+              "No services enabled. Enable services in .devac/config.json or use --demo flag",
+            );
           }
 
           // Start web server if enabled

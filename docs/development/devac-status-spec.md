@@ -1,9 +1,9 @@
 # DevAC Status System Specification
 
-> Version: 1.3.0
+> Version: 1.4.0
 > Last Updated: 2025-11-12
 > Status: Draft
-> Changes: Clarified code snippet strategy - only Lint service includes snippets initially
+> Changes: Added Phase -1 (Workspace Discovery & Configuration) documentation - implementation completed
 
 ## Table of Contents
 
@@ -608,6 +608,45 @@ export class TypeCheckService extends BaseService {
 - **Volta/nvm**: Respects Node version requirements
 - **Private packages**: Only discovers what user has access to
 - **Large monorepos**: User can selectively enable packages to avoid overwhelming output
+
+#### Implementation Status
+
+**Phase -1 has been COMPLETED** with the following:
+
+**Completed Files**:
+- ✓ `src/devac/discovery/workspace-discovery.ts` - Repository structure detection
+- ✓ `src/devac/discovery/llm-config-generator.ts` - Configuration analysis (rule-based, ready for LLM)
+- ✓ `src/devac/types/workspace.ts` - Discovery data structures
+- ✓ `src/devac/types/config.ts` - Repository/package configuration types
+- ✓ `src/devac/cli/commands/configure.ts` - Interactive configuration wizard
+- ✓ `src/devac/services/command-based-service.ts` - Strategy execution engine
+
+**Key Features Implemented**:
+- ✓ Workspace discovery algorithm (detects npm/pnpm/yarn, monorepos, build systems)
+- ✓ Package capability detection (hasTests, hasLint, hasTypeCheck)
+- ✓ Configuration strategy analysis (aggregate, per-package, turborepo, single)
+- ✓ CLI configure command with interactive workflow
+- ✓ Service execution supporting all strategies
+- ✓ **Code snippet extraction for Lint service (±5 lines around errors)**
+- ✓ TypeCheck/Test services: File/line/column only (no snippets initially)
+
+**Usage**:
+```bash
+npm run devac:dev -- configure
+```
+
+This will:
+1. Discover workspace structures in configured directories
+2. Analyze and propose optimal execution strategies
+3. Display recommendations for review
+4. Save approved configuration to `.devac/config.json`
+
+**Code Context Strategy** (for LLM assistance):
+- **Lint service**: Includes ±5 lines of surrounding code (proven valuable in MVP)
+- **TypeCheck service**: File/line/column only initially (evaluate value before adding snippets)
+- **Test service**: File/line only initially (diffs more valuable than snippets)
+
+See **Phase -1** in Implementation Guide for detailed documentation.
 
 ---
 
@@ -1644,7 +1683,121 @@ export interface TestFailure extends StatusIssue {
 
 ## Implementation Guide
 
+### Phase -1: Workspace Discovery & Configuration (COMPLETED ✓)
+
+**Purpose**: Intelligently discover workspace structures and propose optimal service configurations before running any services.
+
+**The Challenge**: 
+- CodeGraph operates uniformly at directory level (list of directories to analyze)
+- TypeCheck/Lint/Test must respect package boundaries and workspace structure (repo-level with strategies)
+- Different repos use different package managers (npm/pnpm/yarn)
+- Monorepos need per-package or aggregate strategies
+- Build tools (Turborepo) should be leveraged when available
+
+**Implementation Summary**:
+
+**1. Workspace Discovery** (`src/devac/discovery/workspace-discovery.ts`)
+   - Scans each repository to detect structure
+   - Identifies workspace type (npm/pnpm/yarn/single), package manager, build system
+   - Finds all packages and their capabilities (hasTests, hasLint, hasTypeCheck)
+   - Locates config files (tsconfig.json, .eslintrc, etc.)
+   - Detects Node version requirements (.nvmrc, volta, package.json engines)
+
+**2. Configuration Analysis** (`src/devac/discovery/llm-config-generator.ts`)
+   - Analyzes discovery results to propose execution strategies
+   - Determines optimal approach per service and repository:
+     - **aggregate**: Run once at root for all packages (e.g., `npm run test --workspaces`)
+     - **per-package**: Run individually per package (e.g., `npm run test -w package-name`)
+     - **turborepo**: Leverage build system orchestration (e.g., `pnpm run test` with Turbo)
+     - **single**: Standard single-package execution
+   - Currently uses rule-based logic (designed for future LLM integration)
+   - Generates workspace-specific commands (npm -w, pnpm -F, yarn workspace)
+
+**3. CLI Configure Command** (`src/devac/cli/commands/configure.ts`)
+   - Interactive workflow: discover → analyze → propose → confirm → save
+   - Displays recommendations with rationale
+   - User can accept all, edit individual configs, or cancel
+   - Saves final configuration to `.devac/config.json`
+   - Per-package enable/disable for granular control
+
+**4. Service Execution** (`src/devac/services/command-based-service.ts`)
+   - Executes commands based on configured strategy
+   - Handles all strategy types (aggregate, per-package, turborepo, single)
+   - Supports workspace-specific syntax for different package managers
+   - **Code snippet extraction**: Lint service includes ±5 lines around errors
+   - TypeCheck/Test services: File/line/column only (no snippets initially)
+
+**Key Distinction**:
+- **CodeGraph service**: Operates at directory/repo level with `directories: [...]` config
+- **TypeCheck/Lint/Test services**: Operate at repo level with `repositories: [{ strategy, command }]` config
+- This is because CodeGraph analyzes files uniformly, while TypeCheck/Lint/Test must respect package structure
+
+**Key Types**:
+- `WorkspaceDiscovery` (`src/devac/types/workspace.ts`): Complete repo analysis result
+- `PackageDiscovery` (`src/devac/types/workspace.ts`): Individual package metadata
+- `ServiceRecommendation` (`src/devac/types/workspace.ts`): Proposed execution strategy
+- `RepositoryConfig` (`src/devac/types/config.ts`): Final configuration with strategy
+- `PackageConfig` (`src/devac/types/config.ts`): Per-package configuration
+
+**Code Context Strategy** (for LLM error diagnosis):
+- **Lint service**: Includes ±5 lines of surrounding code (proven valuable in MVP)
+- **TypeCheck service**: File/line/column only initially (evaluate value before adding)
+- **Test service**: File/line only initially (diffs more valuable than snippets)
+- Rationale: Start with proven valuable features, add others if needed
+
+**Completed Files**:
+- ✓ `src/devac/discovery/workspace-discovery.ts` - Workspace structure detection
+- ✓ `src/devac/discovery/llm-config-generator.ts` - Strategy recommendation engine
+- ✓ `src/devac/types/workspace.ts` - Discovery data structures
+- ✓ `src/devac/types/config.ts` - Configuration types (RepositoryConfig, PackageConfig)
+- ✓ `src/devac/cli/commands/configure.ts` - Interactive configuration wizard
+- ✓ `src/devac/services/command-based-service.ts` - Strategy execution engine
+
+**Usage**:
+```bash
+# Run the configuration wizard
+npm run devac:dev -- configure
+
+# Or specify directories to discover
+npm run devac:dev -- configure -d "/path/to/repo1,/path/to/repo2"
+
+# Auto-accept recommendations
+npm run devac:dev -- configure -y
+```
+
+**Example Output**:
+```
+🔧 DevAC Configuration Wizard
+
+📂 Discovering 3 directories...
+  ✓ Found npm workspace with 32 packages (monorepo-3.0)
+  ✓ Found pnpm workspace with Turborepo (frontend-monorepo)
+  ✓ Found single Expo package (app)
+
+🤖 Analyzing workspaces and generating recommendations...
+
+📋 Proposed Configuration:
+
+Repository: monorepo-3.0 (npm workspaces, 32 packages)
+  TypeCheck: aggregate (npm run typecheck --workspaces)
+  Lint: aggregate (npm run lint --workspaces)
+  Test: per-package (32 packages configured)
+
+Repository: frontend-monorepo (pnpm + Turbo, 8 packages)
+  TypeCheck: turborepo (pnpm run check-types)
+  Lint: turborepo (pnpm run lint)
+  Test: turborepo (pnpm run test)
+
+Accept this configuration? [Y/n] y
+
+✅ Configuration saved to .devac/config.json
+```
+
+---
+
 ### Phase 0: Implement TypeCheck, Lint, and Test Services (NEW)
+
+**Prerequisites**: Phase -1 workspace discovery must be completed ✓
 
 **Purpose**: Add real, useful services before implementing status system. These provide:
 - Real errors with code context for testing status display

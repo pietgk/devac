@@ -3,12 +3,20 @@
 /**
  * Service status enumeration
  */
-export type ServiceStatus = 'idle' | 'initializing' | 'watching' | 'processing' | 'degraded' | 'error' | 'stopping' | 'stopped';
+export type ServiceStatus =
+  | "idle"
+  | "initializing"
+  | "watching"
+  | "processing"
+  | "degraded"
+  | "error"
+  | "stopping"
+  | "stopped";
 
 /**
  * Service health status
  */
-export type HealthStatus = 'healthy' | 'degraded' | 'error';
+export type HealthStatus = "healthy" | "degraded" | "error";
 
 /**
  * Service configuration base interface
@@ -30,13 +38,15 @@ export interface ServiceConfig {
  * Service types
  */
 export type ServiceType =
-  | 'codegraph'
-  | 'git'
-  | 'build'
-  | 'test'
-  | 'import'
-  | 'export'
-  | 'custom';
+  | "codegraph"
+  | "git"
+  | "build"
+  | "test"
+  | "typecheck"
+  | "lint"
+  | "import"
+  | "export"
+  | "custom";
 
 /**
  * Collection statistics
@@ -89,7 +99,7 @@ export interface ResourceReference {
   /** Resource unique identifier */
   id: string;
   /** Resource type */
-  type: 'logfile' | 'datafile' | 'artifact';
+  type: "logfile" | "datafile" | "artifact";
   /** File path */
   path: string;
   /** File format */
@@ -129,14 +139,14 @@ export interface ServiceOutput {
  * Service event types for inter-service communication
  */
 export type ServiceEventType =
-  | 'SERVICE_STARTED'
-  | 'SERVICE_STOPPED'
-  | 'SERVICE_ERROR'
-  | 'COLLECTION_STARTED'
-  | 'COLLECTION_COMPLETED'
-  | 'COLLECTION_FAILED'
-  | 'HEALTH_CHANGED'
-  | 'CONFIG_UPDATED';
+  | "SERVICE_STARTED"
+  | "SERVICE_STOPPED"
+  | "SERVICE_ERROR"
+  | "COLLECTION_STARTED"
+  | "COLLECTION_COMPLETED"
+  | "COLLECTION_FAILED"
+  | "HEALTH_CHANGED"
+  | "CONFIG_UPDATED";
 
 /**
  * Service event
