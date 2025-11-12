@@ -1,11 +1,8 @@
 // src/devac/services/command-based-service.ts
 
-import { exec, type ChildProcess } from "child_process";
-import { promisify } from "util";
+import { spawn, type ChildProcess } from "child_process";
 import { createContextLogger } from "../../utils/logger.js";
 import type { RepositoryConfig } from "../types/index.js";
-
-const execAsync = promisify(exec);
 
 /**
  * Base class for services that run shell commands
@@ -49,49 +46,76 @@ export abstract class CommandBasedService {
     const startTime = Date.now();
     this.logger.info(`Running command in ${workingDirectory}`, { command });
 
-    try {
-      const { stdout, stderr } = await execAsync(command, {
+    return new Promise((resolve, reject) => {
+      // Use spawn instead of exec to get proper process handle
+      // Parse command into shell and args
+      const child = spawn(command, {
         cwd: workingDirectory,
         env: { ...process.env },
-        maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+        shell: true,
+        // Detached: false so we can kill the whole process group
+        detached: false,
       });
 
-      const duration = Date.now() - startTime;
+      // Track this process so we can kill it if needed
+      const processKey = `${repositoryPath}:${Date.now()}`;
+      this.runningProcesses.set(processKey, child);
 
-      const result: CommandResult = {
-        success: true,
-        stdout,
-        stderr,
-        exitCode: 0,
-        duration,
-      };
+      let stdout = "";
+      let stderr = "";
 
-      this.logger.info(`Command completed successfully`, {
-        command,
-        duration,
+      if (child.stdout) {
+        child.stdout.on("data", (data) => {
+          stdout += data.toString();
+        });
+      }
+
+      if (child.stderr) {
+        child.stderr.on("data", (data) => {
+          stderr += data.toString();
+        });
+      }
+
+      child.on("error", (error) => {
+        this.runningProcesses.delete(processKey);
+        const duration = Date.now() - startTime;
+        resolve({
+          success: false,
+          stdout,
+          stderr: stderr + "\n" + error.message,
+          exitCode: null,
+          duration,
+        });
       });
 
-      return result;
-    } catch (error: any) {
-      const duration = Date.now() - startTime;
+      child.on("close", (code) => {
+        this.runningProcesses.delete(processKey);
+        const duration = Date.now() - startTime;
 
-      // exec throws on non-zero exit codes, but we still get stdout/stderr
-      const result: CommandResult = {
-        success: false,
-        stdout: error.stdout || "",
-        stderr: error.stderr || error.message,
-        exitCode: error.code || null,
-        duration,
-      };
+        const result: CommandResult = {
+          success: code === 0,
+          stdout,
+          stderr,
+          exitCode: code,
+          duration,
+        };
 
-      this.logger.warn(`Command completed with errors`, {
-        command,
-        exitCode: result.exitCode,
-        duration,
+        if (code === 0) {
+          this.logger.info(`Command completed successfully`, {
+            command,
+            duration,
+          });
+        } else {
+          this.logger.warn(`Command completed with errors`, {
+            command,
+            exitCode: code,
+            duration,
+          });
+        }
+
+        resolve(result);
       });
-
-      return result;
-    }
+    });
   }
 
   /**
@@ -100,7 +124,18 @@ export abstract class CommandBasedService {
   protected killAllProcesses(): void {
     for (const [key, process] of this.runningProcesses) {
       this.logger.info(`Killing process: ${key}`);
-      process.kill();
+      try {
+        // Kill the process and its children
+        process.kill("SIGTERM");
+        // If it doesn't die, force kill after 1 second
+        setTimeout(() => {
+          if (!process.killed) {
+            process.kill("SIGKILL");
+          }
+        }, 1000);
+      } catch (error) {
+        this.logger.warn(`Error killing process ${key}`, { error });
+      }
     }
     this.runningProcesses.clear();
   }

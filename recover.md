@@ -1,3 +1,11 @@
+we are working on devac-status-spec.md and we had a crash.
+we just updated the specs to 1.4 after a previous crash where we had the implementation but no specs.
+we are in the middle of testing the added services for typecheck, lint and test after they where created.
+please do a thorough review and sync your status and help me fix the failing tests.
+npm test is now running in a local zed terminal
+
+
+
 ok we where working with dev-status-spec.md we created a phase -1 that is lost it seems (we did not update the spec)
 the latest commit does show what we did and we should retrieve the spec from it.
 the update originated from us detecting that
