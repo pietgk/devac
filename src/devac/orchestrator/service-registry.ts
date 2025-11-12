@@ -1,10 +1,10 @@
 // src/devac/orchestrator/service-registry.ts
 
-import type { ServiceActorRef } from '../services/base-service.js';
-import type { ServiceConfig, ServiceMetadata } from '../types/index.js';
-import { createContextLogger } from '../../utils/logger.js';
+import type { ServiceActorRef } from "../services/base-service.js";
+import type { ServiceConfig, ServiceMetadata } from "../types/index.js";
+import { createContextLogger } from "../../utils/logger.js";
 
-const logger = createContextLogger('ServiceRegistry');
+const logger = createContextLogger("ServiceRegistry");
 
 /**
  * Registry for managing service actors
@@ -16,7 +16,11 @@ export class ServiceRegistry {
   /**
    * Register a service actor
    */
-  register(serviceId: string, actor: ServiceActorRef, config: ServiceConfig): void {
+  register(
+    serviceId: string,
+    actor: ServiceActorRef,
+    config: ServiceConfig,
+  ): void {
     if (this.services.has(serviceId)) {
       throw new Error(`Service ${serviceId} is already registered`);
     }
@@ -88,6 +92,7 @@ export class ServiceRegistry {
       status: snapshot.context.status,
       health: snapshot.context.health,
       stats: snapshot.context.stats,
+      startedAt: (snapshot.context as any).startedAt, // May be undefined if service not started
       lastError: snapshot.context.error
         ? {
             message: snapshot.context.error.message,
@@ -95,7 +100,7 @@ export class ServiceRegistry {
             stack: snapshot.context.error.stack,
           }
         : undefined,
-      version: '1.0.0', // TODO: Get from service
+      version: "1.0.0", // TODO: Get from service
     };
   }
 
@@ -139,7 +144,7 @@ export class ServiceRegistry {
   clear(): void {
     this.services.clear();
     this.configs.clear();
-    logger.info('Registry cleared');
+    logger.info("Registry cleared");
   }
 
   /**

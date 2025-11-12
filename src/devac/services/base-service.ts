@@ -1,7 +1,13 @@
 // src/devac/services/base-service.ts
 
-import { setup, assign, fromPromise, fromCallback, type ActorRefFrom } from 'xstate';
-import { createContextLogger } from '../../utils/logger.js';
+import {
+  setup,
+  assign,
+  fromPromise,
+  fromCallback,
+  type ActorRefFrom,
+} from "xstate";
+import { createContextLogger } from "../../utils/logger.js";
 import type {
   ServiceConfig,
   ServiceStatus,
@@ -9,7 +15,7 @@ import type {
   CollectionStats,
   ServiceOutput,
   ResourceReference,
-} from '../types/index.js';
+} from "../types/index.js";
 
 /**
  * Base context for all services
@@ -21,20 +27,25 @@ export interface BaseServiceContext {
   stats: CollectionStats;
   error?: Error;
   currentCollectionId?: string;
+  startedAt?: string;
 }
 
 /**
  * Base events for all services
  */
 export type BaseServiceEvent =
-  | { type: 'START' }
-  | { type: 'STOP'; graceful?: boolean }
-  | { type: 'RETRY' }
-  | { type: 'HEALTH_CHECK' }
-  | { type: 'FILE_CHANGED'; path: string; changeType: 'add' | 'change' | 'unlink' }
-  | { type: 'SCAN_COMPLETE'; itemsFound: number }
-  | { type: 'PROCESSING_COMPLETE'; output: ServiceOutput }
-  | { type: 'ERROR'; error: Error };
+  | { type: "START" }
+  | { type: "STOP"; graceful?: boolean }
+  | { type: "RETRY" }
+  | { type: "HEALTH_CHECK" }
+  | {
+      type: "FILE_CHANGED";
+      path: string;
+      changeType: "add" | "change" | "unlink";
+    }
+  | { type: "SCAN_COMPLETE"; itemsFound: number }
+  | { type: "PROCESSING_COMPLETE"; output: ServiceOutput }
+  | { type: "ERROR"; error: Error };
 
 /**
  * Service actor input
@@ -70,7 +81,7 @@ export abstract class BaseService {
    * Set up file/change watching
    */
   protected abstract startWatcher(
-    sendEvent: (event: BaseServiceEvent) => void
+    sendEvent: (event: BaseServiceEvent) => void,
   ): () => void;
 
   /**
@@ -117,38 +128,41 @@ export abstract class BaseService {
           self.logger.info(`Service ${context.config.name} stopping...`);
         },
         logError: ({ context, event }) => {
-          if ('error' in event) {
-            self.logger.error(`Service ${context.config.name} error: ${event.error.message}`, {
-              stack: event.error.stack,
-            });
+          if ("error" in event) {
+            self.logger.error(
+              `Service ${context.config.name} error: ${event.error.message}`,
+              {
+                stack: event.error.stack,
+              },
+            );
           }
         },
         updateStats: assign({
           stats: ({ context, event }) => {
-            if (event.type === 'PROCESSING_COMPLETE') {
+            if (event.type === "PROCESSING_COMPLETE") {
               return event.output.stats;
             }
             return context.stats;
           },
         }),
         setHealthy: assign({
-          health: 'healthy',
+          health: "healthy",
         }),
         setDegraded: assign({
-          health: 'degraded',
+          health: "degraded",
         }),
         setError: assign({
-          health: 'error',
-          error: ({ event }) => ('error' in event ? event.error : undefined),
+          health: "error",
+          error: ({ event }) => ("error" in event ? event.error : undefined),
         }),
       },
     }).createMachine({
       id: `service-${this.config.id}`,
-      initial: 'idle',
+      initial: "idle",
       context: ({ input }: { input: ServiceActorInput }) => ({
         config: input.config,
-        status: 'idle' as ServiceStatus,
-        health: 'healthy' as HealthStatus,
+        status: "idle" as ServiceStatus,
+        health: "healthy" as HealthStatus,
         stats: {
           itemsProcessed: 0,
           nodesCreated: 0,
@@ -161,87 +175,87 @@ export abstract class BaseService {
       states: {
         idle: {
           on: {
-            START: 'initializing',
+            START: "initializing",
           },
         },
         initializing: {
-          entry: 'logStart',
+          entry: "logStart",
           invoke: {
-            src: 'initializer',
+            src: "initializer",
             onDone: {
-              target: 'scanning',
-              actions: 'setHealthy',
+              target: "scanning",
+              actions: "setHealthy",
             },
             onError: {
-              target: 'error',
-              actions: ['logError', 'setError'],
+              target: "error",
+              actions: ["logError", "setError"],
             },
           },
         },
         scanning: {
           invoke: {
-            src: 'scanner',
+            src: "scanner",
             onDone: {
-              target: 'watching',
+              target: "watching",
               actions: assign({
-                status: 'watching',
+                status: "watching",
               }),
             },
             onError: {
-              target: 'degraded',
-              actions: ['logError', 'setDegraded'],
+              target: "degraded",
+              actions: ["logError", "setDegraded"],
             },
           },
         },
         watching: {
           entry: assign({
-            status: 'watching',
+            status: "watching",
           }),
           invoke: {
-            src: 'watcher',
+            src: "watcher",
           },
           on: {
             FILE_CHANGED: {
-              target: 'processing',
+              target: "processing",
             },
-            STOP: 'stopping',
+            STOP: "stopping",
             HEALTH_CHECK: {
               actions: () => {
-                self.logger.debug('Health check OK');
+                self.logger.debug("Health check OK");
               },
             },
           },
         },
         processing: {
           entry: assign({
-            status: 'processing',
+            status: "processing",
           }),
           invoke: {
-            src: 'processor',
+            src: "processor",
             input: ({ event }) => event,
             onDone: {
-              target: 'watching',
-              actions: ['updateStats', 'setHealthy'],
+              target: "watching",
+              actions: ["updateStats", "setHealthy"],
             },
             onError: {
-              target: 'degraded',
-              actions: ['logError', 'setDegraded'],
+              target: "degraded",
+              actions: ["logError", "setDegraded"],
             },
           },
         },
         degraded: {
           entry: assign({
-            status: 'degraded',
+            status: "degraded",
           }),
           on: {
-            RETRY: 'watching',
-            STOP: 'stopping',
+            RETRY: "watching",
+            STOP: "stopping",
           },
           after: {
             5000: {
-              target: 'watching',
+              target: "watching",
               actions: () => {
-                self.logger.info('Auto-retrying after degraded state...');
+                self.logger.info("Auto-retrying after degraded state...");
               },
             },
           },
@@ -249,33 +263,33 @@ export abstract class BaseService {
         error: {
           entry: [
             assign({
-              status: 'error',
+              status: "error",
             }),
-            'logError',
+            "logError",
           ],
           on: {
-            RETRY: 'initializing',
-            STOP: 'stopping',
+            RETRY: "initializing",
+            STOP: "stopping",
           },
         },
         stopping: {
-          entry: ['logStop', assign({ status: 'stopping' })],
+          entry: ["logStop", assign({ status: "stopping" })],
           invoke: {
             src: fromPromise(async () => {
               await self.cleanup();
             }),
-            onDone: 'stopped',
+            onDone: "stopped",
             onError: {
-              target: 'stopped',
-              actions: 'logError',
+              target: "stopped",
+              actions: "logError",
             },
           },
         },
         stopped: {
           entry: assign({
-            status: 'stopped',
+            status: "stopped",
           }),
-          type: 'final',
+          type: "final",
         },
       },
     });
@@ -285,4 +299,6 @@ export abstract class BaseService {
 /**
  * Service actor reference type
  */
-export type ServiceActorRef = ActorRefFrom<ReturnType<BaseService['createMachine']>>;
+export type ServiceActorRef = ActorRefFrom<
+  ReturnType<BaseService["createMachine"]>
+>;

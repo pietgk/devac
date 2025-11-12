@@ -236,7 +236,7 @@ describe("SSEManager", () => {
         }),
       };
 
-      registry.register(serviceConfig, mockActor as any, "1.0.0");
+      registry.register(serviceConfig.id, mockActor as any, serviceConfig);
 
       sseManager.start();
 
@@ -284,11 +284,8 @@ describe("SSEManager", () => {
       });
 
       services.forEach((svc) => {
-        registry.register(
-          { ...svc, enabled: true, config: {} },
-          createMockActor() as any,
-          "1.0.0",
-        );
+        const config = { ...svc, enabled: true, config: {} };
+        registry.register(svc.id, createMockActor() as any, config);
       });
 
       sseManager.start();
@@ -332,17 +329,15 @@ describe("SSEManager", () => {
         }),
       };
 
-      registry.register(
-        {
-          id: "test-service",
-          name: "Test",
-          type: "codegraph",
-          enabled: true,
-          config: {},
-        },
-        mockActor as any,
-        "1.0.0",
-      );
+      const serviceConfig = {
+        id: "test-service",
+        name: "Test",
+        type: "codegraph",
+        enabled: true,
+        config: {},
+      };
+
+      registry.register("test-service", mockActor as any, serviceConfig);
 
       sseManager.start();
 

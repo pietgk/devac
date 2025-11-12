@@ -1,6 +1,6 @@
 // src/devac/services/service-factory.ts
 
-import { createActor } from "xstate";
+import { createActor, setup, assign } from "xstate";
 import path from "path";
 import { CodeGraphService } from "./codegraph/index.js";
 import { TypeCheckService } from "./typecheck/typecheck-service.js";
@@ -8,7 +8,7 @@ import { LintService } from "./lint/lint-service.js";
 import { TestService } from "./test/test-service.js";
 import { EventBus } from "../orchestrator/event-bus.js";
 import { createContextLogger } from "../../utils/logger.js";
-import type { ServiceActorRef } from "./base-service.js";
+import type { ServiceActorRef, BaseServiceContext } from "./base-service.js";
 import type {
   DevACConfig,
   ServiceConfig,
@@ -18,6 +18,88 @@ import type {
 } from "../types/index.js";
 
 const logger = createContextLogger("ServiceFactory");
+
+/**
+ * Create a minimal XState actor wrapper for command-based services
+ * This provides getSnapshot() compatibility until we migrate them to proper actors
+ */
+function createCommandServiceActor(
+  service: any,
+  serviceConfig: ServiceConfig,
+): ServiceActorRef {
+  const machine = setup({
+    types: {
+      context: {} as BaseServiceContext,
+      events: {} as { type: "START" } | { type: "STOP" },
+      input: {} as { config: ServiceConfig },
+    },
+    actions: {
+      startService: () => {
+        service.start().catch((err: any) => {
+          logger.error(`Failed to start ${serviceConfig.name}:`, err);
+        });
+      },
+      stopService: () => {
+        service.stop().catch((err: any) => {
+          logger.error(`Failed to stop ${serviceConfig.name}:`, err);
+        });
+      },
+    },
+  }).createMachine({
+    id: serviceConfig.id,
+    initial: "idle",
+    context: ({ input }) => ({
+      config: input.config,
+      status: "idle" as const,
+      health: "healthy" as const,
+      stats: {
+        itemsProcessed: 0,
+        nodesCreated: 0,
+        relationshipsCreated: 0,
+        duration: 0,
+        errors: 0,
+        warnings: 0,
+      },
+      startedAt: undefined,
+    }),
+    states: {
+      idle: {
+        on: {
+          START: {
+            target: "watching",
+            actions: ["startService"],
+          },
+        },
+      },
+      watching: {
+        entry: assign({
+          status: "watching" as const,
+          startedAt: () => new Date().toISOString(),
+        }),
+        on: {
+          STOP: {
+            target: "stopped",
+            actions: ["stopService"],
+          },
+        },
+      },
+      stopped: {
+        entry: assign({
+          status: "stopped" as const,
+        }),
+        type: "final",
+      },
+    },
+  });
+
+  const actor = createActor(machine, {
+    input: { config: serviceConfig },
+  });
+
+  actor.start();
+
+  return actor as ServiceActorRef;
+}
 
 /**
  * Service factory for creating and configuring service actors
@@ -178,17 +260,17 @@ export class ServiceFactory {
         },
       };
 
-      // Note: TypeCheckService extends CommandBasedService, not BaseService
-      // It doesn't use XState actors - it's a simpler service that runs commands
-      // For now, we'll create a minimal actor wrapper
-      // TODO: Refactor command-based services to use proper XState architecture
+      // TypeCheckService extends CommandBasedService, not BaseService
+      // Wrap it in an XState actor for consistency
       const service = new TypeCheckService(
         typecheckConfig,
         this.getOrCreateEventBus(),
-      ) as any;
+      );
 
-      logger.info("TypeCheck service created");
-      return { id: "typecheck", actor: service, config: serviceConfig };
+      const actor = createCommandServiceActor(service, serviceConfig);
+
+      logger.info("TypeCheck service created with actor wrapper");
+      return { id: "typecheck", actor, config: serviceConfig };
     } catch (error: any) {
       logger.error(`Failed to create TypeCheck service: ${error.message}`);
       return null;
@@ -222,17 +304,14 @@ export class ServiceFactory {
         },
       };
 
-      // Note: LintService extends CommandBasedService, not BaseService
-      // It doesn't use XState actors - it's a simpler service that runs commands
-      // For now, we'll create a minimal actor wrapper
-      // TODO: Refactor command-based services to use proper XState architecture
-      const service = new LintService(
-        lintConfig,
-        this.getOrCreateEventBus(),
-      ) as any;
+      // LintService extends CommandBasedService, not BaseService
+      // Wrap it in an XState actor for consistency
+      const service = new LintService(lintConfig, this.getOrCreateEventBus());
 
-      logger.info("Lint service created");
-      return { id: "lint", actor: service, config: serviceConfig };
+      const actor = createCommandServiceActor(service, serviceConfig);
+
+      logger.info("Lint service created with actor wrapper");
+      return { id: "lint", actor, config: serviceConfig };
     } catch (error: any) {
       logger.error(`Failed to create Lint service: ${error.message}`);
       return null;
@@ -265,17 +344,14 @@ export class ServiceFactory {
         },
       };
 
-      // Note: TestService extends CommandBasedService, not BaseService
-      // It doesn't use XState actors - it's a simpler service that runs commands
-      // For now, we'll create a minimal actor wrapper
-      // TODO: Refactor command-based services to use proper XState architecture
-      const service = new TestService(
-        testConfig,
-        this.getOrCreateEventBus(),
-      ) as any;
+      // TestService extends CommandBasedService, not BaseService
+      // Wrap it in an XState actor for consistency
+      const service = new TestService(testConfig, this.getOrCreateEventBus());
 
-      logger.info("Test service created");
-      return { id: "test", actor: service, config: serviceConfig };
+      const actor = createCommandServiceActor(service, serviceConfig);
+
+      logger.info("Test service created with actor wrapper");
+      return { id: "test", actor, config: serviceConfig };
     } catch (error: any) {
       logger.error(`Failed to create Test service: ${error.message}`);
       return null;
