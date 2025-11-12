@@ -8,6 +8,7 @@ import { registerStopCommand } from "./commands/stop.js";
 import { createServiceCommand } from "./commands/service.js";
 import { registerInitCommand } from "./commands/init.js";
 import { registerConfigureCommand } from "./commands/configure.js";
+import { registerStatusCommand } from "./commands/status.js";
 import { createContextLogger } from "../../utils/logger.js";
 import { AppError } from "../../utils/errors.js";
 import fs from "fs";
@@ -46,6 +47,7 @@ async function main() {
   registerConfigureCommand(program);
   registerStartCommand(program);
   registerStopCommand(program);
+  registerStatusCommand(program);
   program.addCommand(createServiceCommand());
 
   // Handle invalid commands
