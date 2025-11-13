@@ -14,9 +14,18 @@
   "services": {
     "codegraph": {
       "enabled": true,
-      "directories": ["/Users/grop/ws/CodeGraph"],
-      "extensions": [".ts", ".js", ".py", ".java", ".go"],
-      "ignore": ["**/node_modules/**", "**/.git/**"],
+      "directories": ["/Users/grop/ws"],
+      "extensions": [".ts", ".tsx", ".js", ".jsx", ".py", ".java"],
+      "ignore": [
+        "**/node_modules/**",
+        "**/.git/**",
+        "**/dist/**",
+        "**/build/**",
+        "**/.next/**",
+        "**/coverage/**",
+        "**/.turbo/**",
+        "**/out/**"
+      ],
       "watch": true
     },
     "typecheck": {
