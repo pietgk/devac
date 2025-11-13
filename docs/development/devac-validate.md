@@ -23,3 +23,13 @@ think very hard about this and give me a very detailed plan with only the why an
 if needed to research on how other tackle this in a similar context as we are in.
 
 create this spec as file docs/development/devac-validate-spec.md
+
+
+
+
+
+## build it prompt
+
+[@devac-validate-spec.md](file:///Users/grop/ws/CodeGraph/docs/development/devac-validate-spec.md) can you do a thorough review of the given spec file and together with a thorough review of the current code base create a plan to implement this. think hard and keep it elegant and do not overengineer it. try to keep a tdd mindset.
+to understand the impact of this implementation we would like mermaid diagrams explaining the core concepts and ideas. this to understand what and how while building this and be able to validate whats created fully. this to make sure we create a high quality solution that is usable in practice.
+create the plan as file docs/development/devac-validate-implementation-plan.md
