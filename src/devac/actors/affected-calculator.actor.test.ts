@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createActor, waitFor } from "xstate";
 import type { AnyActorRef } from "xstate";
-import { affectedCalculatorActor } from "./affected-calculator.actor";
+import {
+  affectedCalculatorActor,
+  AffectedCalculatorCache,
+} from "./affected-calculator.actor";
 import type {
   AffectedCalculatorInput,
   PackageInfo,
@@ -15,6 +18,9 @@ describe("AffectedCalculatorActor", () => {
   let mockPackages: PackageInfo[];
 
   beforeEach(() => {
+    // Clear cache before each test
+    AffectedCalculatorCache.clear();
+
     parentEvents = [];
 
     mockParent = {
@@ -336,6 +342,94 @@ describe("AffectedCalculatorActor", () => {
       expect(result.dependentCount).toBe(0);
 
       actor.stop();
+    });
+  });
+
+  describe("Caching", () => {
+    it("should cache results and reuse on subsequent calls", async () => {
+      const input: AffectedCalculatorInput = {
+        changedFilePath: "/project/packages/a/source.ts",
+        neo4jClient: mockNeo4jClient,
+        packages: mockPackages,
+        parent: mockParent,
+      };
+
+      // First call - should hit Neo4j
+      const actor1 = createActor(affectedCalculatorActor, { input });
+      actor1.start();
+      await waitFor(actor1, (state) => state.value === "success", {
+        timeout: 1000,
+      });
+
+      expect(mockNeo4jClient.runTransaction).toHaveBeenCalledTimes(1);
+
+      // Second call with same file - should use cache
+      const actor2 = createActor(affectedCalculatorActor, { input });
+      actor2.start();
+      await waitFor(actor2, (state) => state.value === "success", {
+        timeout: 1000,
+      });
+
+      // Should not have called Neo4j again
+      expect(mockNeo4jClient.runTransaction).toHaveBeenCalledTimes(1);
+
+      // Results should be identical
+      const result1 = actor1.getSnapshot().output;
+      const result2 = actor2.getSnapshot().output;
+      expect(result1).toEqual(result2);
+    });
+
+    it("should track cache statistics", async () => {
+      const input: AffectedCalculatorInput = {
+        changedFilePath: "/project/packages/a/source.ts",
+        neo4jClient: mockNeo4jClient,
+        packages: mockPackages,
+      };
+
+      const actor = createActor(affectedCalculatorActor, { input });
+      actor.start();
+      await waitFor(actor, (state) => state.value === "success", {
+        timeout: 1000,
+      });
+
+      const stats = AffectedCalculatorCache.getStats();
+      expect(stats.size).toBe(1);
+      expect(stats.maxSize).toBe(100);
+      expect(stats.ttlMs).toBe(60000);
+    });
+
+    it("should allow manual cache invalidation", async () => {
+      const input: AffectedCalculatorInput = {
+        changedFilePath: "/project/packages/a/source.ts",
+        neo4jClient: mockNeo4jClient,
+        packages: mockPackages,
+      };
+
+      // First call
+      const actor1 = createActor(affectedCalculatorActor, { input });
+      actor1.start();
+      await waitFor(actor1, (state) => state.value === "success", {
+        timeout: 1000,
+      });
+
+      expect(AffectedCalculatorCache.has("/project/packages/a/source.ts")).toBe(
+        true,
+      );
+
+      // Invalidate
+      AffectedCalculatorCache.invalidate("/project/packages/a/source.ts");
+      expect(AffectedCalculatorCache.has("/project/packages/a/source.ts")).toBe(
+        false,
+      );
+
+      // Second call should hit Neo4j again
+      const actor2 = createActor(affectedCalculatorActor, { input });
+      actor2.start();
+      await waitFor(actor2, (state) => state.value === "success", {
+        timeout: 1000,
+      });
+
+      expect(mockNeo4jClient.runTransaction).toHaveBeenCalledTimes(2);
     });
   });
 

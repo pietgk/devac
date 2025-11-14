@@ -15,8 +15,15 @@
 import { setup, assign, fromPromise, type AnyActorRef } from "xstate";
 import type { Neo4jClient } from "../../database/neo4j-client.js";
 import { createContextLogger } from "../../utils/logger.js";
+import { LRUCache } from "../utils/lru-cache.js";
 
 const logger = createContextLogger("AffectedCalculatorActor");
+
+// Global cache for affected results (shared across actor instances)
+const affectedCache = new LRUCache<AffectedResult>({
+  maxSize: 100,
+  ttlMs: 60000, // 60 seconds TTL
+});
 
 // ============================================================================
 // Types
@@ -84,6 +91,21 @@ export const affectedCalculatorActor = setup({
       async ({ input }: { input: AffectedCalculatorInput }) => {
         const { changedFilePath, neo4jClient, packages, parent } = input;
 
+        // Check cache first
+        const cached = affectedCache.get(changedFilePath);
+        if (cached) {
+          logger.info(`Affected calculation: cache hit for ${changedFilePath}`);
+
+          if (parent) {
+            parent.send({
+              type: "AFFECTED_CALCULATION_COMPLETE",
+              result: cached,
+            });
+          }
+
+          return cached;
+        }
+
         if (parent) {
           parent.send({
             type: "AFFECTED_CALCULATION_STARTED",
@@ -147,6 +169,9 @@ export const affectedCalculatorActor = setup({
           dependentCount: affectedFiles.size,
         };
 
+        // Cache the result
+        affectedCache.set(changedFilePath, affectedResult);
+
         if (parent) {
           parent.send({
             type: "AFFECTED_CALCULATION_COMPLETE",
@@ -155,7 +180,7 @@ export const affectedCalculatorActor = setup({
         }
 
         logger.info(
-          `Affected calculation: ${scope} scope, ${affectedFiles.size} files, ${affectedPackages.size} packages`,
+          `Affected calculation: ${scope} scope, ${affectedFiles.size} files, ${affectedPackages.size} packages (cached)`,
         );
 
         return affectedResult;
@@ -239,3 +264,33 @@ export const affectedCalculatorActor = setup({
  * Actor type exports for type safety
  */
 export type AffectedCalculatorActor = typeof affectedCalculatorActor;
+
+/**
+ * Utility functions for cache management
+ */
+export const AffectedCalculatorCache = {
+  /**
+   * Get cache statistics
+   */
+  getStats: () => affectedCache.stats(),
+
+  /**
+   * Clear the cache
+   */
+  clear: () => affectedCache.clear(),
+
+  /**
+   * Prune expired entries
+   */
+  prune: () => affectedCache.prune(),
+
+  /**
+   * Check if a file path is cached
+   */
+  has: (filePath: string) => affectedCache.has(filePath),
+
+  /**
+   * Invalidate a specific file path
+   */
+  invalidate: (filePath: string) => affectedCache.delete(filePath),
+};
