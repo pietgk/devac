@@ -104,3 +104,62 @@ docs/development/devac-validate-basics-spec-v4-review-gemini.md
 
 can you create a recap of all these reviews as file docs/development/devac-validate-basics-spec-v4-review-recap.md this to enable me to get an understanding of all the reviews together.
 please think very hard and make sure the recap is usable in a way that we can determine the best tactic to create a very high quality v5 of the spaces from the review recap
+
+## v5 specs
+
+Use CodeGraph/docs/development/devac-validate-basics-spec-v4-review-recap.md to create an update of docs/development/devac-validate-basics-spec-v4.md
+Follow the review recaps recommended recommendation and proposals including  'Architectual Improvements'.
+Think very hard about the review recap and make sure to create a very high quality v5 spec
+create this updated spec as file CodeGraph/docs/development/devac-validate-basics-spec-v5.md
+Make sure it is usable as todo so we can track progress while implementing it.
+
+## v5 review
+
+[@devac-validate-basics-spec-v5.md](file:///Users/grop/ws/CodeGraph/docs/development/devac-validate-basics-spec-v5.md)
+Can you do a very thorough review of the current repo and then do a very thorough review of the spec.
+Determine its quality, are there any flaws, bugs, overlaps and or inconsistencies.
+Is the use of actors and modern xstate v5 state machines folowing the guidelines from the latest x5 documentation and does it elegantly and fully benefit from the best xstate testing patterns.
+Also review if the 2 phase from current batch processing is still correctly handled in the spec.
+Think very hard and research very hard.
+You can store your answer in docs/development/devac-validate-basic-spec-v5-review-gpt.md
+
+## recap reviews
+
+we created 4 reviews
+docs/development/devac-validate-basics-spec-v5-review-claude.md
+docs/development/devac-validate-basics-spec-v5-review-gpt.md
+docs/development/devac-validate-basics-spec-v5-review-grok.md
+docs/development/devac-validate-basics-spec-v5-review-gemini.md
+
+can you create a recap of all these reviews as file docs/development/devac-validate-basics-spec-v5-review-recap.md this to enable me to get an understanding of all the reviews together.
+please think very hard and make sure the recap is usable in a way that we can determine the best tactic to create a very high quality v6 of the spacs from the review recap
+
+regarding the xstate testing and the current support for model base testing we need to do a thorough analysis what the best tacktic is:
+We should determine what we can use from existing available xstate context by looking thoroughly at
+https://stately.ai/docs/testing
+https://stately.ai/docs/xstate-test
+https://stately.ai/docs/xstate-graph
+plus the fact that we prefer to do model based testing.
+i think the current beta @xstate/test@beta should be taken into account.
+if really needed we can create our own wrapper if that is a manageble task when the @xstate/test@beta is not working for us.
+in the future when xstate v5 model based testing is fully integrated into @xstate/graph we have a higher change we can move to that if needed.
+
+## v6 specs
+
+Use CodeGraph/docs/development/devac-validate-basics-spec-v5-review-recap.md to create an update of docs/development/devac-validate-basics-spec-v5.md
+Follow the review recaps recommended recommendation.
+Think very hard about the review recap and make sure to create a very high quality v6 spec
+create this updated spec as file CodeGraph/docs/development/devac-validate-basics-spec-v6.md
+Make sure it is usable as todo so we can track progress while implementing it.
+
+## solve 2 phase issue
+
+can we take  step back and see if we can find an alternative for the 2 phases we seem to need.
+what if we asume the dependancy is something that will be there in the future.
+so accept that it could not be there but will be in the future
+and be robust in supporting this fact. would that be possible and remove the need for 2 phases
+think hard
+
+==> See CodeGraph/docs/development/eventual-consistency-dependency-resolution.md
+
+==> created CodeGraph/docs/development/lazy-semantic-resolution-poc.md
