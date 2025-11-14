@@ -163,3 +163,73 @@ think hard
 ==> See CodeGraph/docs/development/eventual-consistency-dependency-resolution.md
 
 ==> created CodeGraph/docs/development/lazy-semantic-resolution-poc.md
+
+# spec v7
+
+use CodeGraph/docs/development/devac-validate-basics-spec-v6.md
+and CodeGraph/docs/development/lazy-semantic-resolution-poc-final-report.md
+
+to create the updated spec v7 as file CodeGraph/docs/development/devac-validate-basics-spec-v7.md
+
+Think very hard about the updated spec and use the poc result and make sure to create a very high quality v7 spec
+create this updated spec as file CodeGraph/docs/development/devac-validate-basics-spec-v7.md
+Make sure it is usable as todo so we can track progress while implementing it.
+
+## v7 review
+
+[@devac-validate-basics-spec-v7.md](file:///Users/grop/ws/CodeGraph/docs/development/devac-validate-basics-spec-v7.md)
+Can you do a very thorough review of the spec.
+Determine its quality, are there any flaws, bugs, overlaps and or inconsistencies.
+Is the use of actors and modern xstate v5 state machines folowing the guidelines from the latest x5 documentation and does it elegantly and fully benefit from the best xstate testing patterns (taking into account the availability of xstate v5 test functionlity).
+Also review if the lazy semantic resolution introduced and the current batch processing are still correctly handled in the spec.
+Think very hard and research very hard.
+You can store your answer in docs/development/devac-validate-basic-spec-v7-review-gpt.md
+
+## recap v7 reviews
+
+we created 4 reviews
+CodeGraph/docs/development/devac-validate-basics-spec-v7-review-claude.md
+CodeGraph/docs/development/devac-validate-basics-spec-v7-review-gpt.md
+CodeGraph/docs/development/devac-validate-basics-spec-v7-review-grok.md
+CodeGraph/docs/development/devac-validate-basics-spec-v7-review-gemini.md
+
+can you create a recap of all these reviews as file docs/development/devac-validate-basics-spec-v7-review-recap.md this to enable me to get an understanding of all the reviews together.
+please think very hard and make sure the recap is usable in a way that we can determine the best tactic to create a very high quality v8 of the specs from the review recap
+
+# spec v8
+
+use CodeGraph/docs/development/devac-validate-basics-spec-v7.md
+and CodeGraph/docs/development/devac-validate-basics-spec-v7-review-recap.md
+
+follow the recomendations in the review recap
+to create the updated spec v8 as file CodeGraph/docs/development/devac-validate-basics-spec-v8.md
+
+try to limit references and make it as self contained as possible
+
+Think very hard about the updated spec and use the poc result and make sure to create a very high quality v8 spec
+create this updated spec as file CodeGraph/docs/development/devac-validate-basics-spec-v7.md
+Make sure it is usable as todo so we can track progress while implementing it.
+
+# spec v8 questions
+
+what is pm2 that you use in
+pm2 scale validation-coordinator +2
+
+## v8 review
+
+[@devac-validate-basics-spec-v8.md](file:///Users/grop/ws/CodeGraph/docs/development/devac-validate-basics-spec-v8.md)
+Can you do a very thorough review of the spec.
+Determine its quality, are there any flaws, bugs, overlaps and or inconsistencies.
+Think very hard and research very hard.
+You can store your answer in CodeGraph/docs/development/devac-validate-basic-spec-v8-review-gpt.md
+
+## recap v8 reviews
+
+we created 4 reviews
+CodeGraph/docs/development/devac-validate-basic-spec-v8-review-claude.md
+CodeGraph/docs/development/devac-validate-basic-spec-v8-review-gpt.md
+CodeGraph/docs/development/devac-validate-basic-spec-v8-review-grok.md
+CodeGraph/docs/development/devac-validate-basic-spec-v8-review-gemini.md
+
+can you create a recap of all these reviews as file docs/development/devac-validate-basics-spec-v8-review-recap.md this to enable me to get an understanding of all the reviews together.
+please think very hard and make sure the recap is usable in a way that we can determine success
