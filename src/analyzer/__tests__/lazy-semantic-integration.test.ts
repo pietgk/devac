@@ -4,6 +4,7 @@ import { StructuralParser } from "../structural-parser.js";
 import { SemanticResolver } from "../semantic-resolver.js";
 import { Neo4jClient } from "../../database/neo4j-client.js";
 import { ImportResolver } from "../parsers/import-resolver.js";
+import { toNumber } from "../../database/neo4j-utils.js";
 import type { PackageInfo } from "../parsers/package-extractor.js";
 import type { AstNode, RelationshipInfo } from "../types.js";
 
@@ -144,9 +145,7 @@ describe("Lazy Semantic Resolution Integration", () => {
       { path: testCodebasePath },
     );
 
-    const count = structuralNodeCount.records[0]?.get("count");
-    const countValue =
-      typeof count === "object" && count.toNumber ? count.toNumber() : count;
+    const countValue = toNumber(structuralNodeCount.records[0]?.get("count"));
     console.log(`  ✓ Structural nodes in Neo4j: ${countValue}`);
     expect(countValue).toBeGreaterThan(0);
 
@@ -192,11 +191,9 @@ describe("Lazy Semantic Resolution Integration", () => {
       {},
     );
 
-    const semanticCount = semanticRelCount.records[0]?.get("count");
-    const semanticRelationships =
-      typeof semanticCount === "object" && semanticCount.toNumber
-        ? semanticCount.toNumber()
-        : semanticCount || 0;
+    const semanticRelationships = toNumber(
+      semanticRelCount.records[0]?.get("count"),
+    );
     console.log(`  ✓ Semantic relationships: ${semanticRelationships}`);
 
     // Note: The test codebase uses .js extensions in imports but actual files are .ts
