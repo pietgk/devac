@@ -257,6 +257,64 @@ export class Neo4jClient {
   }
 
   /**
+   * Executes a multi-query transaction using a transaction function.
+   * This method is useful when you need to run multiple queries within a single transaction.
+   *
+   * @param work - Transaction function that receives a ManagedTransaction and returns a result.
+   * @param accessMode - 'READ' or 'WRITE'.
+   * @param context - Optional context string for logging.
+   * @returns The result returned by the work function.
+   * @throws {Neo4jError} If the transaction fails.
+   */
+  public async runTransactionWork<T>(
+    work: (tx: ManagedTransaction) => Promise<T>,
+    accessMode: "READ" | "WRITE" = "WRITE",
+    context: string = "Default",
+  ): Promise<T> {
+    let session: Session | null = null;
+
+    try {
+      session = await this.getSession(accessMode, context);
+
+      logger.debug(
+        `(${context}) Starting multi-query transaction (${accessMode})`,
+      );
+
+      // Neo4j's executeWrite/executeRead handles retries automatically
+      const result =
+        accessMode === "READ"
+          ? await session.executeRead(work)
+          : await session.executeWrite(work);
+
+      logger.debug(
+        `(${context}) Multi-query transaction completed successfully`,
+      );
+
+      return result;
+    } catch (error: any) {
+      logger.error(`(${context}) Multi-query transaction failed`, {
+        error: error.message,
+        code: error.code,
+      });
+      throw new Neo4jError(`Transaction failed: ${error.message}`, {
+        originalError: error,
+        code: error.code,
+      });
+    } finally {
+      if (session) {
+        try {
+          await session.close();
+          logger.debug(`(${context}) Session closed`);
+        } catch (closeError: any) {
+          logger.error(`(${context}) Failed to close session`, {
+            error: closeError.message,
+          });
+        }
+      }
+    }
+  }
+
+  /**
    * Checks if the connection to Neo4j is healthy.
    * @param context - Optional context string for logging.
    * @returns True if connection is healthy, false otherwise.

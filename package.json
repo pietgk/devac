@@ -36,6 +36,9 @@
   "license": "MIT",
   "dependencies": {
     "@alanse/mcp-neo4j-server": "^0.1.1",
+    "@babel/parser": "^7.28.5",
+    "@babel/traverse": "^7.28.5",
+    "@babel/types": "^7.28.5",
     "@fastify/cors": "^9.0.0",
     "@fastify/static": "^7.0.0",
     "@modelcontextprotocol/sdk": "^1.8.0",
