@@ -24,6 +24,10 @@ import { StructuralParser } from "../../analyzer/structural-parser.js";
 import { ImportResolver } from "../../analyzer/parsers/import-resolver.js";
 import type { PackageInfo } from "../../analyzer/parsers/package-extractor.js";
 import type { FileChangeEvent } from "../types/file-watcher.js";
+import { graphUpdaterActor } from "../actors/graph-updater.actor.js";
+import { semanticResolverActor } from "../actors/semantic-resolver.actor.js";
+import { affectedCalculatorActor } from "../actors/affected-calculator.actor.js";
+import { createScriptExecutorWithPackages } from "../actors/script-executor.actor.js";
 
 /**
  * Result of affected scope calculation
@@ -153,11 +157,9 @@ export class ValidationCoordinatorService {
       },
 
       actors: {
-        // TODO: Import actual actor implementations when ready
-        // graphUpdater: graphUpdaterActor,
-        // semanticResolver: semanticResolverActor,
-        // affectedCalculator: affectedCalculatorActor,
-        // scriptExecutor: scriptExecutorActor,
+        graphUpdater: graphUpdaterActor,
+        semanticResolver: semanticResolverActor,
+        affectedCalculator: affectedCalculatorActor,
       },
 
       actions: {
@@ -166,7 +168,7 @@ export class ValidationCoordinatorService {
             if (event.type === "FILE_CHANGED") {
               // Remove duplicates (same file)
               const filtered = context.processingQueue.filter(
-                (e) => e.path !== event.event.path
+                (e) => e.path !== event.event.path,
               );
               // Add to end of queue
               return [...filtered, event.event];
@@ -189,7 +191,8 @@ export class ValidationCoordinatorService {
         }),
 
         setError: assign({
-          error: ({ event }) => (event as any).error || new Error("Unknown error"),
+          error: ({ event }) =>
+            (event as any).error || new Error("Unknown error"),
         }),
 
         logProgress: ({ event }) => {
@@ -289,7 +292,7 @@ export class ValidationCoordinatorService {
                 // TODO: Send ENQUEUE to SemanticResolverService
                 ({ context }) => {
                   console.log(
-                    `[ValidationCoordinator] Queued for semantic: ${context.fileEvent!.path}`
+                    `[ValidationCoordinator] Queued for semantic: ${context.fileEvent!.path}`,
                   );
                 },
               ],
@@ -312,14 +315,101 @@ export class ValidationCoordinatorService {
             calculatingAffected: {
               // TODO: Invoke AffectedCalculatorActor
               entry: () => {
-                console.log("[ValidationCoordinator] Calculating affected scope");
+                console.log(
+                  "[ValidationCoordinator] Calculating affected scope",
+                );
               },
             },
 
             validating: {
-              // TODO: Invoke ScriptExecutorActor
-              entry: () => {
-                console.log("[ValidationCoordinator] Running validation");
+              invoke: {
+                src: fromPromise(async ({ input }) => {
+                  const { affectedResult, self } = input as {
+                    affectedResult: AffectedResult;
+                    self: AnyActorRef;
+                  };
+
+                  console.log(
+                    `[ValidationCoordinator] Running validation for ${affectedResult.packages.length} package(s)`,
+                  );
+
+                  // Create dynamic script executor with affected packages
+                  const scriptExecutorMachine =
+                    createScriptExecutorWithPackages({
+                      affectedPackages: affectedResult.packages,
+                      validationCommand: "npm run validate",
+                      parent: self,
+                    });
+
+                  const scriptActor = createActor(scriptExecutorMachine, {
+                    input: {
+                      affectedPackages: affectedResult.packages,
+                      validationCommand: "npm run validate",
+                      parent: self,
+                    },
+                  });
+
+                  scriptActor.start();
+                  scriptActor.send({ type: "EXECUTE" });
+
+                  // Wait for completion
+                  return new Promise((resolve) => {
+                    scriptActor.subscribe((state) => {
+                      if (state.status === "done") {
+                        const results =
+                          state.output?.results ||
+                          Array.from(state.context.results.values());
+                        resolve({ results });
+                      }
+                    });
+                  });
+                }),
+                input: ({ context, self }) => ({
+                  affectedResult: context.affectedResult!,
+                  self,
+                }),
+                onDone: {
+                  target: "complete",
+                  actions: assign({
+                    validationResults: ({ event }) => {
+                      const results = (
+                        event.output as { results: ValidationResult[] }
+                      ).results;
+                      const map = new Map<string, ValidationResult>();
+                      for (const result of results) {
+                        map.set(result.packageName, result);
+                      }
+                      return map;
+                    },
+                  }),
+                },
+                onError: {
+                  target: "#validationCoordinator.degraded",
+                  actions: "setError",
+                },
+              },
+              on: {
+                VALIDATION_PROGRESS: {
+                  actions: ({ event }) => {
+                    console.log(
+                      `[ValidationCoordinator] Validation progress: ${event.packageName}`,
+                    );
+                  },
+                },
+                VALIDATION_OUTPUT: {
+                  actions: ({ event }) => {
+                    console.log(
+                      `[ValidationCoordinator] ${event.packageName}: ${event.output}`,
+                    );
+                  },
+                },
+                VALIDATION_COMPLETE: {
+                  actions: ({ event }) => {
+                    console.log(
+                      `[ValidationCoordinator] ${event.packageName} completed with exit code ${event.exitCode}`,
+                    );
+                  },
+                },
               },
             },
 
@@ -327,7 +417,7 @@ export class ValidationCoordinatorService {
               entry: [
                 ({ context }) => {
                   console.log(
-                    `[ValidationCoordinator] Validation complete for ${context.fileEvent!.path}`
+                    `[ValidationCoordinator] Validation complete for ${context.fileEvent!.path}`,
                   );
                 },
                 "clearFileEvent",
@@ -350,7 +440,7 @@ export class ValidationCoordinatorService {
           entry: ({ context }) => {
             console.error(
               "[ValidationCoordinator] Entered degraded mode",
-              context.error
+              context.error,
             );
           },
           on: {
@@ -391,9 +481,7 @@ export class ValidationCoordinatorService {
    */
   public send(event: ValidationCoordinatorEvent): void {
     if (!this.actor) {
-      throw new Error(
-        "ValidationCoordinator not started. Call start() first."
-      );
+      throw new Error("ValidationCoordinator not started. Call start() first.");
     }
 
     this.actor.send(event);
