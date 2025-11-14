@@ -16,6 +16,7 @@ import { setup, assign, fromPromise, type AnyActorRef } from "xstate";
 import type { Neo4jClient } from "../../database/neo4j-client.js";
 import { createContextLogger } from "../../utils/logger.js";
 import { LRUCache } from "../utils/lru-cache.js";
+import { trackQuery } from "../utils/query-profiler.js";
 
 const logger = createContextLogger("AffectedCalculatorActor");
 
@@ -113,9 +114,8 @@ export const affectedCalculatorActor = setup({
           });
         }
 
-        // Query for dependent files
-        const result = await neo4jClient.runTransaction(
-          `MATCH (changed:File {filePath: $filePath})
+        // Query for dependent files (with performance tracking)
+        const query = `MATCH (changed:File {filePath: $filePath})
            USING INDEX changed:File(filePath)
            WITH changed
 
@@ -130,10 +130,19 @@ export const affectedCalculatorActor = setup({
            RETURN DISTINCT
              dependentFile.filePath as filePath,
              pkg.name as packageName
-           LIMIT 500`,
+           LIMIT 500`;
+
+        const result = await trackQuery(
+          "AffectedCalculator-DependentFiles",
+          query,
           { filePath: changedFilePath },
-          "READ",
-          "AffectedCalculator-Query",
+          () =>
+            neo4jClient.runTransaction(
+              query,
+              { filePath: changedFilePath },
+              "READ",
+              "AffectedCalculator-Query",
+            ),
         );
 
         const affectedFiles = new Set<string>();

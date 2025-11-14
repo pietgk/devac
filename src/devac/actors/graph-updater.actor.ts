@@ -19,6 +19,7 @@ import type { ManagedTransaction } from "neo4j-driver";
 import type { Neo4jClient } from "../../database/neo4j-client.js";
 import { toNumber } from "../../database/neo4j-utils.js";
 import { createContextLogger } from "../../utils/logger.js";
+import { trackQuery } from "../utils/query-profiler.js";
 
 const logger = createContextLogger("GraphUpdaterActor");
 

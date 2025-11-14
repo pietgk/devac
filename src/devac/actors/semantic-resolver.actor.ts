@@ -26,6 +26,7 @@ import type { Neo4jClient } from "../../database/neo4j-client.js";
 import type { RelationshipInfo } from "../../analyzer/types.js";
 import { createContextLogger } from "../../utils/logger.js";
 import { findNearestTsConfig } from "../../analyzer/utils/tsconfig-finder.js";
+import { trackQuery } from "../utils/query-profiler.js";
 
 const logger = createContextLogger("SemanticResolverActor");
 
@@ -104,14 +105,22 @@ async function findBatchDependencies(
   neo4jClient: Neo4jClient,
 ): Promise<string[]> {
   try {
-    const result = await neo4jClient.runTransaction(
-      `UNWIND $filePaths as filePath
+    const query = `UNWIND $filePaths as filePath
        MATCH path = (target:File {filePath: filePath})-[:IMPORTS*0..5]->(dep:File)
        RETURN DISTINCT dep.filePath as depPath
-       LIMIT 100`,
+       LIMIT 100`;
+
+    const result = await trackQuery(
+      "SemanticResolver-FindBatchDependencies",
+      query,
       { filePaths: batch },
-      "READ",
-      "FindBatchDependencies",
+      () =>
+        neo4jClient.runTransaction(
+          query,
+          { filePaths: batch },
+          "READ",
+          "FindBatchDependencies",
+        ),
     );
 
     return result.records.map((record) => record.get("depPath") as string);

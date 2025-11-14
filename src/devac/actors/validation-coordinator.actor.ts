@@ -1,4 +1,11 @@
-import { setup, assign, sendTo, fromPromise, createActor, type AnyActorRef } from "xstate";
+import {
+  setup,
+  assign,
+  sendTo,
+  fromPromise,
+  createActor,
+  type AnyActorRef,
+} from "xstate";
 import type { FileChangeEvent } from "../types/file-watcher.js";
 import type { Neo4jClient } from "../graph/neo4j-client.js";
 import type { StructuralParser } from "../parsers/structural-parser.js";
@@ -10,6 +17,7 @@ import { graphUpdaterActor } from "./graph-updater.actor.js";
 import { semanticResolverActor } from "./semantic-resolver.actor.js";
 import { affectedCalculatorActor } from "./affected-calculator.actor.js";
 import { createScriptExecutorWithPackages } from "./script-executor.actor.js";
+import { trackQuery } from "../utils/query-profiler.js";
 
 // ============================================================================
 // Types
@@ -28,16 +36,30 @@ export type ValidationCoordinatorEvent =
   | { type: "FILE_CHANGED"; event: FileChangeEvent }
   | { type: "SEMANTIC_COMPLETE"; filePath: string }
   | { type: "RECOVER" }
-  | { type: "GRAPH_UPDATE_PROGRESS"; phase: string; filePath?: string; nodesCount?: number }
+  | {
+      type: "GRAPH_UPDATE_PROGRESS";
+      phase: string;
+      filePath?: string;
+      nodesCount?: number;
+    }
   | { type: "GRAPH_UPDATE_COMPLETE"; filePath: string; nodesUpdated: number }
   | { type: "SEMANTIC_BATCH_STARTED"; filesCount: number }
   | { type: "SEMANTIC_DEPENDENCIES_FOUND"; dependenciesCount: number }
-  | { type: "SEMANTIC_BATCH_COMPLETE"; filesProcessed: number; duration: number }
+  | {
+      type: "SEMANTIC_BATCH_COMPLETE";
+      filesProcessed: number;
+      duration: number;
+    }
   | { type: "AFFECTED_CALCULATION_STARTED"; filePath: string }
   | { type: "AFFECTED_CALCULATION_COMPLETE"; result: AffectedResult }
   | { type: "VALIDATION_PROGRESS"; packageName: string; phase?: string }
   | { type: "VALIDATION_OUTPUT"; packageName: string; output: string }
-  | { type: "VALIDATION_COMPLETE"; packageName: string; exitCode: number; duration: number }
+  | {
+      type: "VALIDATION_COMPLETE";
+      packageName: string;
+      exitCode: number;
+      duration: number;
+    }
   | { type: "ENQUEUE_SEMANTIC"; filePath: string; priority: "high" | "normal" };
 
 // ============================================================================
@@ -132,7 +154,9 @@ export class ValidationCoordinatorService {
 
         logGraphUpdateProgress: ({ event }) => {
           if (event.type === "GRAPH_UPDATE_PROGRESS") {
-            console.log(`[ValidationCoordinator] Graph update progress: ${event.phase}`);
+            console.log(
+              `[ValidationCoordinator] Graph update progress: ${event.phase}`,
+            );
           }
         },
 
@@ -217,15 +241,23 @@ export class ValidationCoordinatorService {
         scanning: {
           invoke: {
             src: fromPromise(async () => {
-              // Scan for files needing semantic resolution
-              const result = await this.neo4jClient.runTransaction(
-                `MATCH (f:File)
+              // Scan for files needing semantic resolution (with performance tracking)
+              const query = `MATCH (f:File)
                  WHERE f.structuralComplete = true
                    AND f.semanticComplete = false
-                 RETURN collect(f.filePath) as files`,
+                 RETURN collect(f.filePath) as files`;
+
+              const result = await trackQuery(
+                "ValidationCoordinator-InitialScan",
+                query,
                 {},
-                "READ",
-                "InitialScan",
+                () =>
+                  this.neo4jClient.runTransaction(
+                    query,
+                    {},
+                    "READ",
+                    "InitialScan",
+                  ),
               );
 
               const files = result.records[0]?.get("files") || [];
@@ -379,11 +411,12 @@ export class ValidationCoordinatorService {
                   };
 
                   // Create dynamic script executor with affected packages
-                  const scriptExecutorMachine = createScriptExecutorWithPackages({
-                    affectedPackages: affectedResult.packages,
-                    validationCommand: "npm run validate",
-                    parent: self,
-                  });
+                  const scriptExecutorMachine =
+                    createScriptExecutorWithPackages({
+                      affectedPackages: affectedResult.packages,
+                      validationCommand: "npm run validate",
+                      parent: self,
+                    });
 
                   const scriptActor = createActor(scriptExecutorMachine, {
                     input: {
@@ -400,7 +433,9 @@ export class ValidationCoordinatorService {
                   return new Promise((resolve) => {
                     scriptActor.subscribe((state) => {
                       if (state.status === "done") {
-                        const results = state.output?.results || Array.from(state.context.results.values());
+                        const results =
+                          state.output?.results ||
+                          Array.from(state.context.results.values());
                         resolve({ results });
                       }
                     });
