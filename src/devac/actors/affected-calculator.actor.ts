@@ -17,6 +17,10 @@ import type { Neo4jClient } from "../../database/neo4j-client.js";
 import { createContextLogger } from "../../utils/logger.js";
 import { LRUCache } from "../utils/lru-cache.js";
 import { trackQuery } from "../utils/query-profiler.js";
+import {
+  measurePerformance,
+  snapshotMemory,
+} from "../utils/performance-monitor.js";
 
 const logger = createContextLogger("AffectedCalculatorActor");
 
@@ -92,30 +96,39 @@ export const affectedCalculatorActor = setup({
       async ({ input }: { input: AffectedCalculatorInput }) => {
         const { changedFilePath, neo4jClient, packages, parent } = input;
 
-        // Check cache first
-        const cached = affectedCache.get(changedFilePath);
-        if (cached) {
-          logger.info(`Affected calculation: cache hit for ${changedFilePath}`);
+        // Track performance of entire calculation
+        return measurePerformance(
+          "AffectedCalculator-FullCalculation",
+          async () => {
+            // Take initial memory snapshot
+            const startMemory = snapshotMemory();
 
-          if (parent) {
-            parent.send({
-              type: "AFFECTED_CALCULATION_COMPLETE",
-              result: cached,
-            });
-          }
+            // Check cache first
+            const cached = affectedCache.get(changedFilePath);
+            if (cached) {
+              logger.info(
+                `Affected calculation: cache hit for ${changedFilePath}`,
+              );
 
-          return cached;
-        }
+              if (parent) {
+                parent.send({
+                  type: "AFFECTED_CALCULATION_COMPLETE",
+                  result: cached,
+                });
+              }
 
-        if (parent) {
-          parent.send({
-            type: "AFFECTED_CALCULATION_STARTED",
-            filePath: changedFilePath,
-          });
-        }
+              return cached;
+            }
 
-        // Query for dependent files (with performance tracking)
-        const query = `MATCH (changed:File {filePath: $filePath})
+            if (parent) {
+              parent.send({
+                type: "AFFECTED_CALCULATION_STARTED",
+                filePath: changedFilePath,
+              });
+            }
+
+            // Query for dependent files (with performance tracking)
+            const query = `MATCH (changed:File {filePath: $filePath})
            USING INDEX changed:File(filePath)
            WITH changed
 
@@ -132,67 +145,70 @@ export const affectedCalculatorActor = setup({
              pkg.name as packageName
            LIMIT 500`;
 
-        const result = await trackQuery(
-          "AffectedCalculator-DependentFiles",
-          query,
-          { filePath: changedFilePath },
-          () =>
-            neo4jClient.runTransaction(
+            const result = await trackQuery(
+              "AffectedCalculator-DependentFiles",
               query,
               { filePath: changedFilePath },
-              "READ",
-              "AffectedCalculator-Query",
-            ),
+              () =>
+                neo4jClient.runTransaction(
+                  query,
+                  { filePath: changedFilePath },
+                  "READ",
+                  "AffectedCalculator-Query",
+                ),
+            );
+
+            const affectedFiles = new Set<string>();
+            const affectedPackages = new Set<string>();
+
+            for (const record of result.records) {
+              const filePath = record.get("filePath") as string | null;
+              const packageName = record.get("packageName") as string | null;
+
+              if (filePath) {
+                affectedFiles.add(filePath);
+              }
+              if (packageName) {
+                affectedPackages.add(packageName);
+              }
+            }
+
+            // Determine scope
+            let scope: "file" | "package" | "repository";
+
+            if (affectedFiles.size === 0) {
+              scope = "file"; // Only affects itself
+            } else if (affectedPackages.size === 1) {
+              scope = "package"; // Affects one package
+            } else {
+              scope = "repository"; // Affects multiple packages
+            }
+
+            const affectedResult: AffectedResult = {
+              scope,
+              files: Array.from(affectedFiles),
+              packages: Array.from(affectedPackages),
+              dependentCount: affectedFiles.size,
+            };
+
+            // Cache the result
+            affectedCache.set(changedFilePath, affectedResult);
+
+            if (parent) {
+              parent.send({
+                type: "AFFECTED_CALCULATION_COMPLETE",
+                result: affectedResult,
+              });
+            }
+
+            logger.info(
+              `Affected calculation: ${scope} scope, ${affectedFiles.size} files, ${affectedPackages.size} packages (cached)`,
+            );
+
+            return affectedResult;
+          },
+          { filePath: changedFilePath },
         );
-
-        const affectedFiles = new Set<string>();
-        const affectedPackages = new Set<string>();
-
-        for (const record of result.records) {
-          const filePath = record.get("filePath") as string | null;
-          const packageName = record.get("packageName") as string | null;
-
-          if (filePath) {
-            affectedFiles.add(filePath);
-          }
-          if (packageName) {
-            affectedPackages.add(packageName);
-          }
-        }
-
-        // Determine scope
-        let scope: "file" | "package" | "repository";
-
-        if (affectedFiles.size === 0) {
-          scope = "file"; // Only affects itself
-        } else if (affectedPackages.size === 1) {
-          scope = "package"; // Affects one package
-        } else {
-          scope = "repository"; // Affects multiple packages
-        }
-
-        const affectedResult: AffectedResult = {
-          scope,
-          files: Array.from(affectedFiles),
-          packages: Array.from(affectedPackages),
-          dependentCount: affectedFiles.size,
-        };
-
-        // Cache the result
-        affectedCache.set(changedFilePath, affectedResult);
-
-        if (parent) {
-          parent.send({
-            type: "AFFECTED_CALCULATION_COMPLETE",
-            result: affectedResult,
-          });
-        }
-
-        logger.info(
-          `Affected calculation: ${scope} scope, ${affectedFiles.size} files, ${affectedPackages.size} packages (cached)`,
-        );
-
-        return affectedResult;
       },
     ),
   },
