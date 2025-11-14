@@ -651,7 +651,7 @@ async function safeDeleteFile(filePath, neo4jClient) {
 #### Type Definitions
 
 ```typescript
-import { setup, assign, sendTo, type AnyActorRef } from "xstate";
+import { setup, assign, sendTo, fromPromise, type AnyActorRef } from "xstate";
 import type { FileChangeEvent } from "../types/file-watcher.js";
 import { graphUpdaterActor } from "../actors/graph-updater.actor.js";
 import { semanticResolverActor } from "../actors/semantic-resolver.actor.js";
@@ -670,7 +670,17 @@ export type ValidationCoordinatorEvent =
   | { type: "START" }
   | { type: "FILE_CHANGED"; event: FileChangeEvent }
   | { type: "SEMANTIC_COMPLETE"; filePath: string }
-  | { type: "RECOVER" };
+  | { type: "RECOVER" }
+  | { type: "GRAPH_UPDATE_PROGRESS"; phase: string; filePath?: string; nodesCount?: number }
+  | { type: "GRAPH_UPDATE_COMPLETE"; filePath: string; nodesUpdated: number }
+  | { type: "SEMANTIC_BATCH_STARTED"; filesCount: number }
+  | { type: "SEMANTIC_DEPENDENCIES_FOUND"; dependenciesCount: number }
+  | { type: "SEMANTIC_BATCH_COMPLETE"; filesProcessed: number; duration: number }
+  | { type: "AFFECTED_CALCULATION_STARTED"; filePath: string }
+  | { type: "AFFECTED_CALCULATION_COMPLETE"; result: AffectedResult }
+  | { type: "VALIDATION_PROGRESS"; packageName: string; phase?: string }
+  | { type: "VALIDATION_OUTPUT"; packageName: string; output: string }
+  | { type: "VALIDATION_COMPLETE"; packageName: string; exitCode: number; duration: number };
 ```
 
 #### State Machine
@@ -1110,67 +1120,75 @@ export const semanticResolverActor = setup({
     }) => {
       const startTime = performance.now();
       
-      // Notify parent of progress
-      if (input.parent) {
-        input.parent.send({
-          type: "SEMANTIC_BATCH_STARTED",
-          filesCount: input.batch.length
-        });
-      }
-      
-      // Use SemanticResolverCore for actual processing
-      const resolver = new SemanticResolverCore(
-        input.neo4jClient,
-        input.importResolver,
-        input.packages,
-        { batchSize: input.batch.length, maxQueueSize: 1000 }
-      );
-      
-      // Find transitive dependencies
-      const allNeededFiles = await findBatchDependencies(
-        input.batch,
-        input.neo4jClient
-      );
-      
-      if (input.parent) {
-        input.parent.send({
-          type: "SEMANTIC_DEPENDENCIES_FOUND",
-          dependenciesCount: allNeededFiles.length
-        });
-      }
-      
-      // Create mini ts-morph Project
-      const miniProject = await createMiniProject(allNeededFiles);
-      
-      // Resolve relationships (uses existing POC code)
-      const relationships = await resolver.resolveSemanticRelationships(
-        miniProject,
-        input.batch
-      );
-      
-      // Write to Neo4j
-      await writeSemanticData(
-        input.neo4jClient,
-        input.batch,
-        relationships
-      );
-      
-      const duration = performance.now() - startTime;
-      
-      // Notify parent of completion
-      if (input.parent) {
-        input.parent.send({
-          type: "SEMANTIC_BATCH_COMPLETE",
+      try {
+        // Notify parent of progress
+        if (input.parent) {
+          input.parent.send({
+            type: "SEMANTIC_BATCH_STARTED",
+            filesCount: input.batch.length
+          });
+        }
+        
+        // Use SemanticResolverCore for actual processing
+        const resolver = new SemanticResolverCore(
+          input.neo4jClient,
+          input.importResolver,
+          input.packages,
+          { batchSize: input.batch.length, maxQueueSize: 1000 }
+        );
+        
+        // Find transitive dependencies
+        const allNeededFiles = await findBatchDependencies(
+          input.batch,
+          input.neo4jClient
+        );
+        
+        if (input.parent) {
+          input.parent.send({
+            type: "SEMANTIC_DEPENDENCIES_FOUND",
+            dependenciesCount: allNeededFiles.length
+          });
+        }
+        
+        // Create mini ts-morph Project
+        const miniProject = await createMiniProject(allNeededFiles);
+        
+        // Resolve relationships (uses existing POC code)
+        const relationships = await resolver.resolveSemanticRelationships(
+          miniProject,
+          input.batch
+        );
+        
+        // Write to Neo4j
+        await writeSemanticData(
+          input.neo4jClient,
+          input.batch,
+          relationships
+        );
+        
+        const duration = performance.now() - startTime;
+        
+        // Notify parent of completion
+        if (input.parent) {
+          input.parent.send({
+            type: "SEMANTIC_BATCH_COMPLETE",
+            filesProcessed: input.batch.length,
+            duration
+          });
+        }
+        
+        return {
           filesProcessed: input.batch.length,
+          filePaths: input.batch,
           duration
+        };
+      } catch (error) {
+        logger.error("Semantic batch processing failed", {
+          batch: input.batch,
+          error: error instanceof Error ? error.message : String(error)
         });
+        throw error; // Re-throw to trigger actor error handling
       }
-      
-      return {
-        filesProcessed: input.batch.length,
-        filePaths: input.batch,
-        duration
-      };
     })
   },
   
@@ -1698,14 +1716,14 @@ export const graphUpdaterActor = setup({
 
 /**
  * Safe delete: Only delete nodes with no external references
+ * Transaction version - accepts ManagedTransaction parameter
  * 
  * ✅ v8: Accepts ManagedTransaction (no nested transactions)
  */
-async function safeDeleteFile(
-  neo4jClient: Neo4jClient,
+async function safeDeleteFileTx(
+  tx: ManagedTransaction,
   filePath: string
 ): Promise<{ nodesDeleted: number }> {
-  const result = await neo4jClient.runTransactionWork(async (tx) => {
     // 1. Find nodes owned by this file
     const ownedNodesResult = await tx.run(
       `MATCH (f:File {filePath: $filePath})-[:OWNS]->(n:Node)
@@ -1760,26 +1778,37 @@ async function safeDeleteFile(
     );
     
     return { nodesDeleted: safeToDelete.length };
+}
+
+/**
+ * Safe delete wrapper: Creates transaction and calls safeDeleteFileTx
+ * Use this when deleting a file (not during updates)
+ */
+async function safeDeleteFile(
+  neo4jClient: Neo4jClient,
+  filePath: string
+): Promise<{ nodesDeleted: number }> {
+  return await neo4jClient.runTransactionWork(async (tx) => {
+    return await safeDeleteFileTx(tx, filePath);
   }, "WRITE", "GraphUpdater-SafeDelete");
-  
-  return result;
 }
 
 /**
  * Update file data: Delete old nodes, insert new ones
  * 
- * ✅ v8: Uses safeDeleteFile (no nested transactions)
+ * ✅ v8: Single transaction for atomic operation
  */
 async function updateFileData(
   neo4jClient: Neo4jClient,
   filePath: string,
   parseResult: StructuralParseResult
 ): Promise<{ nodesUpdated: number }> {
-  // First, safe delete old data (separate transaction)
-  await safeDeleteFile(neo4jClient, filePath);
-  
-  // Then, create new data (new transaction)
+  // Use single transaction for entire operation (atomic)
   const result = await neo4jClient.runTransactionWork(async (tx) => {
+    // First, safe delete old data (same transaction)
+    await safeDeleteFileTx(tx, filePath);
+    
+    // Then, create new data (same transaction)
     // 1. Create File node
     await tx.run(
       `MERGE (f:File {filePath: $filePath})
