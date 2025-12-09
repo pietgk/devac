@@ -2,7 +2,11 @@
 
 import { Neo4jClient } from "../src/database/neo4j-client.js";
 import { UniversalDatabaseManager } from "./universal-db-manager.js";
-import { ServiceStrategy, ContainerStrategy, NativeStrategy } from "./strategies/index.js";
+import {
+  ServiceStrategy,
+  ContainerStrategy,
+  NativeStrategy,
+} from "./strategies/index.js";
 import { SilentStrategyLogger } from "./strategy-logger.js";
 import type { DbStrategyResult } from "./types.js";
 
@@ -48,8 +52,7 @@ export const TEST_NEO4J_CONFIG = {
     process.env.TEST_NEO4J_USERNAME || process.env.NEO4J_USERNAME || "neo4j",
   password:
     process.env.TEST_NEO4J_PASSWORD || process.env.NEO4J_PASSWORD || "test1234",
-  database:
-    process.env.TEST_NEO4J_DATABASE || process.env.NEO4J_DATABASE || "neo4j", // Default database for Neo4j 4.0+
+  database: process.env.TEST_NEO4J_DATABASE || "codegraph-test", // Separate test database
 };
 
 /**

@@ -6,9 +6,9 @@ Welcome to the CodeGraph documentation! This directory contains comprehensive do
 
 ### 🚀 [Guides](./guides/)
 User-facing guides to get started and learn CodeGraph features:
-- **[Quick Start Guide](./guides/quick-start.md)** - Get up and running in 5 minutes
-- **[Customization Guide](./guides/customization-guide.md)** - Customize CodeGraph for your needs
-- **[Primitives Guide](./guides/primitives-guide.md)** - Understanding CodeGraph primitives
+- **[Quick Start Guide](./guides/quick-start.md)** - Get up and running in 5 minutes 
+- **[Customization Guide](./guides/customization-guide.md)** - Customize CodeGraph for your needs (ui-gen very alpha idea)
+- **[Primitives Guide](./guides/primitives-guide.md)** - Understanding CodeGraph primitives (ui-gen very alpha idea)
 - **[Demo Guide](./guides/demo-guide.md)** - Running demos and examples
 - **[MCP Setup Guide](./guides/mcp-setup.md)** - Model Context Protocol integration
 

@@ -220,10 +220,71 @@ The CodeGraph setup package includes pre-configured MCP settings for both server
    npm run build
    ```
 
-4. **Configure Environment**: Create a `.env` file for Neo4j credentials
+4. **Configure Environment**: Create a `.env` file for Neo4j credentials (see Database Configuration below)
 5. **Configure MCP**: Set up your MCP servers
-6. **Start Neo4j**: Ensure your Neo4j instance is running
+6. **Start Neo4j**: Ensure your Neo4j instance is running with the `codegraph` database created
 7. **Run Analysis**: Use the CLI directly or the code-analyzer-mcp tool
+
+## 🗄️ Database Configuration
+
+CodeGraph uses Neo4j as its graph database. The default database name is `codegraph`.
+
+### Creating the Database
+
+Before running CodeGraph, create the database in Neo4j Desktop or Browser:
+
+```cypher
+CREATE DATABASE codegraph
+```
+
+For running tests, also create:
+```cypher
+CREATE DATABASE `codegraph-test`
+```
+
+### Environment Variables
+
+Copy `.env.example` to `.env` and configure:
+
+```bash
+# Neo4j Connection
+NEO4J_URL=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=your_password
+NEO4J_DATABASE=codegraph  # Default database for all operations
+```
+
+### Configuration Priority
+
+Database configuration is resolved in this order (highest to lowest priority):
+
+1. **CLI flag**: `--neo4j-database my_database`
+2. **Environment variable**: `NEO4J_DATABASE=my_database`
+3. **Default**: `codegraph`
+
+### Using Different Databases
+
+You can use different databases for different purposes:
+
+```bash
+# Analyze to a specific database
+node dist/index.js analyze ./my-project --neo4j-database my_project_db
+
+# Check workspace status on a specific database
+node dist/index.js workspace status --neo4j-database my_project_db
+
+# Start DevAC with a specific database
+npx tsx src/devac/cli/index.ts start --neo4j-database my_devac_db
+```
+
+### Database Naming Convention
+
+| Purpose | Recommended Name |
+|---------|-----------------|
+| Main analysis | `codegraph` |
+| Development/experiments | `codegraph-dev` |
+| Testing | `codegraph-test` |
+| Project-specific | `codegraph-projectname` |
 
 ## 📊 Usage (CLI)
 

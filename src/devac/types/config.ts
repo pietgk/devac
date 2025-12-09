@@ -231,7 +231,7 @@ export const DEFAULT_DEVAC_CONFIG: DevACConfig = {
     uri: "bolt://localhost:7687",
     username: "neo4j",
     password: "password",
-    database: "devac",
+    database: "codegraph",
   },
   web: {
     port: 3000,

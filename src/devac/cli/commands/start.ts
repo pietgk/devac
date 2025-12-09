@@ -26,6 +26,10 @@ export function registerStartCommand(program: Command): void {
     .option("--no-web", "Start without web server")
     .option("-w, --workspace <name>", "Workspace name")
     .option("--demo", "Start with demo services for testing the UI")
+    .option(
+      "--neo4j-database <database>",
+      "Neo4j database name (overrides config)",
+    )
     .action(
       async (options: {
         config: string;
@@ -33,6 +37,7 @@ export function registerStartCommand(program: Command): void {
         web: boolean;
         workspace?: string;
         demo?: boolean;
+        neo4jDatabase?: string;
       }) => {
         try {
           logger.info("Starting DevAC...");
@@ -43,6 +48,12 @@ export function registerStartCommand(program: Command): void {
           // Override port if specified
           if (options.port) {
             config.web.port = parseInt(options.port, 10);
+          }
+
+          // Override Neo4j database if specified
+          if (options.neo4jDatabase) {
+            config.neo4j.database = options.neo4jDatabase;
+            logger.info(`Using Neo4j database: ${options.neo4jDatabase}`);
           }
 
           // Create and start orchestrator

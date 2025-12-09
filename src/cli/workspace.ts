@@ -126,6 +126,7 @@ export function createWorkspaceCommand(): Command {
       "Maximum files to process per repository",
       parseInt,
     )
+    .option("--neo4j-database <database>", "Neo4j database name")
     .action(async (options) => {
       // Calculate verbosity level from flags
       let verbosity = 0;
@@ -144,7 +145,11 @@ export function createWorkspaceCommand(): Command {
         const configPath = path.resolve(options.config);
 
         // Load config
-        const neo4jClient = new Neo4jClient();
+        const neo4jClient = new Neo4jClient(
+          options.neo4jDatabase
+            ? { database: options.neo4jDatabase }
+            : undefined,
+        );
         const manager = new WorkspaceManager(neo4jClient);
         const config = await manager.loadConfig(configPath);
 
@@ -225,6 +230,7 @@ export function createWorkspaceCommand(): Command {
       "Config file path",
       ".codegraph/workspace.json",
     )
+    .option("--neo4j-database <database>", "Neo4j database name")
     .action(async (options) => {
       try {
         logger.info(`Checking workspace status...`);
@@ -232,7 +238,11 @@ export function createWorkspaceCommand(): Command {
         const configPath = path.resolve(options.config);
 
         // Load config
-        const neo4jClient = new Neo4jClient();
+        const neo4jClient = new Neo4jClient(
+          options.neo4jDatabase
+            ? { database: options.neo4jDatabase }
+            : undefined,
+        );
         const manager = new WorkspaceManager(neo4jClient);
 
         let config: WorkspaceConfig | undefined;
@@ -308,6 +318,7 @@ export function createWorkspaceCommand(): Command {
     .description("Remove repository data from database")
     .requiredOption("-r, --repo <name>", "Repository name to clean")
     .option("--confirm", "Confirm deletion without prompting", false)
+    .option("--neo4j-database <database>", "Neo4j database name")
     .action(async (options) => {
       try {
         const repoName = options.repo;
@@ -320,7 +331,11 @@ export function createWorkspaceCommand(): Command {
 
         logger.info(`Cleaning repository: ${repoName}...`);
 
-        const neo4jClient = new Neo4jClient();
+        const neo4jClient = new Neo4jClient(
+          options.neo4jDatabase
+            ? { database: options.neo4jDatabase }
+            : undefined,
+        );
         const manager = new WorkspaceManager(neo4jClient);
 
         const deletedCount = await manager.cleanRepository(repoName);

@@ -124,6 +124,29 @@ export class Neo4jClient {
       });
       // Attempt to close the driver if verification fails after initial creation attempt
       await this.closeDriver(context);
+
+      // Provide helpful error message for missing database
+      const dbName = this.neo4jConfig.database;
+      if (
+        error.message?.includes("Database does not exist") ||
+        error.code === "Neo.ClientError.Database.DatabaseNotFound"
+      ) {
+        throw new Neo4jError(
+          `Database "${dbName}" does not exist.\n` +
+            `\n` +
+            `To fix this, either:\n` +
+            `  1. Create the database in Neo4j Desktop or Browser:\n` +
+            `     CREATE DATABASE \`${dbName}\`\n` +
+            `\n` +
+            `  2. Or use a different database via environment variable:\n` +
+            `     NEO4J_DATABASE=your_database\n` +
+            `\n` +
+            `  3. Or specify via CLI flag:\n` +
+            `     --neo4j-database your_database`,
+          { originalError: error },
+        );
+      }
+
       throw new Neo4jError(
         `Neo4j connectivity verification failed: ${error.message}`,
         { originalError: error },

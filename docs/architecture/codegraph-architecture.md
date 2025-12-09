@@ -27,13 +27,21 @@
 ### Key Capabilities
 
 ✅ **Multi-language support** - TypeScript, JavaScript, Python, Java, C#, Go, C/C++
+
 ✅ **C4 diagram generation** - Container and Component level diagrams from code
+
 ✅ **Package detection** - Workspace-aware with monorepo support
+
 ✅ **Import resolution** - Resolves workspace packages, path aliases, relative imports
+
 ✅ **Component analysis** - React component and hook detection
+
 ✅ **Sophisticated entity IDs** - Handles function overloading, anonymous functions
+
 ✅ **Two-pass parsing** - Accurate cross-file relationship resolution
+
 ✅ **Memory efficient** - Streaming writes to Neo4j during parsing
+
 ✅ **Sleep detection** - Laptop-friendly for long-running analyses
 
 ### Primary Use Cases
@@ -242,8 +250,11 @@ findUsedHooks(func: FunctionDeclaration): string[]
 ### Features
 
 ✅ **Function Overloading** - Same name, different signatures
+
 ✅ **Anonymous Functions** - Location-based uniqueness
+
 ✅ **Nested Entities** - Parent context in hash
+
 ✅ **Backward Compatible** - Supports legacy 2-param signature
 
 ### Examples
@@ -486,7 +497,9 @@ CodeGraph can generate:
 ### Component Analysis
 
 **Implementation**: `src/analyzer/parsers/component-analyzer.ts`
+
 **Integration**: ⚠️ **Needs 1-Hour Task**
+
 **Status**: ✅ **Code Exists**, ❌ **Not Hooked Up**
 
 **What Works**:

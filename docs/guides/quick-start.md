@@ -36,6 +36,8 @@ NEO4J_DATABASE=codegraph
 
 ### 2. Start Neo4j
 
+piet: install Neo4j Desktop on your mac is easier, i have instance devac-test database codegraph and user neo4j
+
 ```bash
 # If using Neo4j Desktop: Start your database
 # If using Docker:
@@ -75,6 +77,8 @@ node dist/index.js analyze . \
 | `-v, -vv, -vvv` | Verbosity levels | `-vv` for debug |
 
 ## Generate C4 Diagrams
+
+piet: look at this later
 
 ### Step 1: Run Analysis
 
