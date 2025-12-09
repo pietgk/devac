@@ -6,7 +6,7 @@ Complete guide to setting up and using CodeGraph with Model Context Protocol (MC
 
 CodeGraph provides two complementary MCP servers that enable AI-powered codebase exploration:
 
-1. **code-analyzer-mcp** - Triggers CodeGraph analysis from Claude Desktop
+1. **code-analyzer-mcp** - Triggers CodeGraph analysis from Claude Desktop (not really used by me as i prefer the cli approach)
 2. **@alanse/mcp-neo4j-server** - Enables natural language → Cypher queries
 
 Together, these create a "neural bridge" where AI can understand your codebase through the Neo4j knowledge graph.

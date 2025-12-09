@@ -6,7 +6,7 @@
 
 ## Executive Summary
 
-DevAC (Development Agent Coordinator) is a **production-ready orchestration framework** for managing development services with real-time monitoring, event-driven architecture, and comprehensive logging. The codebase demonstrates **high quality** with strong architectural patterns, complete test coverage (253 passing tests), and well-structured TypeScript implementation.
+DevAC (Development Analytics Centre) is a **production-ready orchestration framework** for managing development services with real-time monitoring, event-driven architecture, and comprehensive logging. The codebase demonstrates **high quality** with strong architectural patterns, complete test coverage (253 passing tests), and well-structured TypeScript implementation.
 
 **Overall Quality Grade: A-**
 

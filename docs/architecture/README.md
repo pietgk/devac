@@ -22,7 +22,7 @@ Topics covered:
 ---
 
 ### [DevAC Architecture](../development/code-status.md)
-**Development Agent Coordinator (DevAC) system architecture**
+**Development Analytics Centre (DevAC) system architecture**
 
 Note: Full architecture is documented in the Code Status document which includes comprehensive Mermaid diagrams.
 
