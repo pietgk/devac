@@ -1,32 +1,56 @@
-# DevAC Spec v1.1 – Architecture/Integration Review (GPT)
+# Review of devac-spec-v1.1 (Incremental Graph Updates)
 
-Date: 2025-12-10
+## Summary
+- The high-level two-phase design (fast structural write, deferred semantic resolution) is sound and aligns with CodeGraph’s existing batch pipeline, but the spec overstates readiness of several components and under-specifies operational concerns (failure handling, ordering, backpressure, and consistency guarantees).
+- Performance targets (<200ms end-to-end structural after debounce) are only plausible for TS/JS and fast tree-sitter paths; Python (200–500ms) and any cold-start overheads make the target unrealistic without a keep-alive plus pre-warm strategy and stricter scope (e.g., “<200ms for TS/JS, <300–500ms for others”).
+- Integration points are sketched but not contractually defined (event shapes, required fields, error/timeout semantics), which risks coupling bugs and brittle retries.
 
-## 1) Feasibility (working vs broken)
-- “Implementation-Ready” components still have blocking TypeScript errors (StructuralParser, SemanticResolver) and missing adapters; they are not yet plug-and-play. The “working” tree-sitter parsers do not emit imports/exports, so they cannot satisfy the declared cross-file requirements without additional extraction. ValidationCoordinator has the largest error surface; calling it ready-to-fix in 1-2 days feels optimistic without confirming test coverage breadth.
+## Feasibility (working vs. broken components)
+- Labeling StructuralParser/SemanticResolver as “ready” is optimistic: structural-parser has 9 TS errors and currently uses Babel; it does not yet emit the new `StructuralParseResult` (importStrings/exportedSymbols/metadata), so it is not integration-ready. SemanticResolver currently operates in batch mode; the queueing semantics and `pendingImports` consumption for incremental are not implemented.
+- Tree-sitter parsers are described as “ready” but lack the adapter and per-language structural shapes; they also currently do not extract imports/exports, so cross-file edges will be missing for non-TS languages unless a follow-on semantic step is defined (not covered).
+- FileWatcher and StorageManager are likely usable, but concurrency and ordering guarantees (per-file serialization) are unspecified; without these, atomicity in GraphUpdater can still see races from simultaneous events on the same file.
+- Neo4jClient/GraphUpdater actors provide atomic delete-then-insert, but “safe delete” needs confirmation that it removes relationships created by semantic resolution; otherwise, stale IMPORTS edges can linger if semantic runs out-of-band.
 
-## 2) Architecture (two-phase parsing, boundaries)
-- Two-phase split (structural then semantic) is sound for TS/JS, but Phase 2 is only defined for TS/JS; other languages never get semantic import resolution, so cross-language edges are absent by design. GraphUpdater relies on parse results to be complete; if parsers omit imports/exports (tree-sitter adapters zero them), the graph will silently miss dependencies with no fallback queue. Boundaries between FileWatcher → LanguageRouter → GraphUpdater are high level but lack contract detail (event schema, retries, idempotency, batching behavior).
+## Architecture (two-phase design and boundaries)
+- Two-phase separation is good, but boundaries need explicit contracts: Structural → GraphUpdater must guarantee the `StructuralParseResult` shape (including language, loc, parseTime), and GraphUpdater must write a consistent schema (e.g., `pendingImports`, `exportedSymbols`, `semanticComplete=false`).
+- Semantic phase is described as TS-only, but the spec doesn’t define what happens for other languages (do they stay permanently without import edges? do we run language-specific semantic steps?). This affects downstream correctness.
+- LanguageRouter responsibilities are under-specified: how to handle unsupported extensions, mixed-mode files, or routing failures (should they short-circuit to “drop with log” vs. “retry” vs. “poison queue”)?
+- Adapter layer is one-way; no contract for reverse mapping (e.g., when SemanticResolver needs original structural metadata). Consider standardizing IDs/entity keys across phases to avoid duplicated nodes.
 
-## 3) Implementation phases and dependencies
-- Phase ordering ignores schema/versioning: adding pendingImports/exportedSymbols to File nodes needs migration/version gates before ingestion. IncrementalPipeline (Phase 2) depends on LanguageRouter and actors being typed/compiled; sequencing should enforce “fix errors + add interfaces” before wiring. Queue handoff from GraphUpdater to SemanticResolver (enqueue TS/JS files) is implied but not specified—missing concrete API/event names and failure handling between phases.
+## Implementation phases and dependencies
+- Phase ordering (fix TS errors → integrate router/pipeline → add adapters → optimize Python) is reasonable, but Phase 2 assumes Phase 1 introduces `StructuralParseResult` and that all parsers implement it; this dependency should be explicit.
+- Integration plan omits migration of existing analyzer entrypoints/tests to exercise incremental pipeline; without that, regressions may hide. Add smoke tests for FileWatcher → LanguageRouter → GraphUpdater happy path and failure path before Phase 3.
+- Tree-sitter enablement (Phase 3) depends on adapter plus LanguageRouter coverage, but also on per-language parser outputs conforming to the canonical interface—called out, but no task to retrofit each parser.
+- Python keep-alive (Phase 4) is listed as perf work but is prerequisite to meeting latency targets; treat as required for SLA, not “optimization.”
 
-## 4) Performance targets realism
-- <200ms post-debounce end-to-end is unlikely for Python (200–500ms parse) and remote Neo4j transactions; even TS/JS <50ms parse + <50ms write leaves little budget for routing, serialization, and network. Tree-sitter parsers at <80ms plus transaction overhead similarly squeeze the 200ms target; background GC, logging, and driver pooling are not accounted for. Semantic batch of 10 files in 2–10s is fine for background, but repeated retries can starve fresh events without backpressure controls.
+## Performance targets
+- <200ms structural end-to-end after debounce is tight: budget after 300ms debounce leaves ~200ms for parse + transaction. TS/JS (~20–50ms parse + ~50ms Neo4j) is plausible if Neo4j is warm and network local; tree-sitter paths might fit. Python at 200–500ms violates the target unless parallelized/pre-warmed; spec should split targets by language and note cold-start vs. steady-state.
+- Semantic batch 2–10s is acceptable as background, but the spec should define queue throughput/backpressure (max concurrency, max queue length, drop/slowpath behavior) to avoid backlog under large churn.
+- No mention of GC/heap impact for ts-morph in incremental mode; prior batch mitigations (source file eviction) should be reused or restated.
 
-## 5) Missing pieces / failure modes
-- Backpressure and coalescing: no strategy for bursty change sets, rename storms, or multi-file atomic edits (e.g., branch switch). Crash/restart recovery: no persisted queue or replay plan; in-flight deletes/inserts could leave the graph stale if a process dies after delete but before reinsert. Idempotency/dedup not addressed—duplicate FileWatcher events could thrash Neo4j. No metrics/tracing at key points (parse time, queue depth, transaction latency) to validate the <200ms target. Rollback for semantic failures is “drop after 3 attempts” with no alerting or manual requeue path. File deletions and semantic queues are not coordinated—pending imports may reference removed files without cleanup.
+## Missing pieces / failure modes
+- Retry/rollback: GraphUpdater retries are noted, but no idempotency guidance (e.g., detecting partial writes if transaction aborts mid-batch) or poison-queue handling after max retries. SemanticResolver retry policy is proposed but not tied to metrics/alerts.
+- Out-of-order events: FileWatcher may emit rapid sequences (save → format → save); need per-file sequencing and de-duping to avoid thrash and accidental deletion of fresh data.
+- Deletions vs. pending semantic work: spec doesn’t define what happens if a file is deleted while queued for semantic resolution—should drop queued items and ensure IMPORTS edges are removed.
+- Schema changes: storing `pendingImports`/`exportedSymbols` needs explicit schema migration (existing `dist` builds, tests) and data shape validation.
+- Observability: no metrics/logging requirements (latency histograms, retry counts, queue depth, Neo4j transaction timing) to validate the SLAs.
+- Testing: success criteria mention `npm test`, but there are no outlined integration tests for the incremental pipeline, nor fixtures for cross-language routes.
 
-## 6) Integration points clarity
-- FileWatcher → LanguageRouter: debounce parameters given, but no ignore pattern source of truth or normalization for symlinks/renames. LanguageRouter → Parser: interface defined, but unsupported extensions/error surfaces (exceptions vs. null) and timeout policies are unspecified. Parser → GraphUpdater: StructuralParseResult is defined, yet required fields (importStrings/exportedSymbols) are optional in adapters, so contract compliance is weakly enforced. GraphUpdater → SemanticResolver: enqueue semantics, priority rules, and retry budgets are not defined; failure/retry signals between actors are missing.
+## Integration points (FileWatcher → LanguageRouter → Parser → StorageManager)
+- Event contract is implied, not defined: FileWatcher should emit {filePath, eventType, mtime, language?}; LanguageRouter needs to return {language, parseResult|error}. Define these as types and enforce in actors to avoid structural drift.
+- Parser → GraphUpdater: need guarantees on uniqueness of node IDs/entity IDs, handling of zero-results (e.g., empty file), and explicit marking of `semanticComplete=false` so SemanticResolver knows what to pick up.
+- GraphUpdater → SemanticResolver: enqueue policy for TS/JS only is stated but not codified; define an explicit hook or event with backpressure (e.g., bounded channel) to avoid unbounded memory.
+- StorageManager expectations (batch size, transaction boundaries) are not tied to the incremental path; clarify whether it is bypassed (actors write directly) or used as a shared abstraction.
 
-## Practical implementation risks
-- Type fixes alone do not guarantee behavior; actor logic needs integration tests with Neo4j to validate atomicity and delete-reinsert correctness under concurrent changes. Python keep-alive (Phase 4) changes the perf envelope and error modes; watchdog and restart policies are absent. Without schema guards (constraints/indexes) and size limits on pendingImports/exportedSymbols, large files may bloat File nodes and slow transactions.
+## Practical implementation challenges
+- Type alignment: XState v5 event typing fixes must be paired with shared event schemas; ad hoc type guards will rot unless events are centralized.
+- Concurrency: Multiple file changes in parallel will contend on Neo4j; need either per-file mutex or transactional guards to prevent interleaved delete/insert of the same file.
+- Non-TS languages currently lack semantic resolution; consumers must tolerate missing IMPORTS/EXPORTS edges or the spec should commit to minimal import extraction for tree-sitter languages.
+- Python latency will dominate unless the keep-alive is implemented; the SLA and rollout plan should reflect this.
 
-## Recommendations (minimal to unblock)
-1) Define concrete event/DTO contracts for each hop (WatcherEvent, RouteResult, ParseResult, UpdateCommand), including error shapes and idempotency keys.  
-2) Add backpressure + coalescing plan (batch multiple changes per file, collapse rapid successive events, cap concurrent transactions).  
-3) Re-baseline the <200ms target by language and environment (local vs. remote Neo4j); publish P50/P95 budgets and instrumentation points.  
-4) Specify queue durability and recovery (persisted work log or checkpoint) so delete/insert cannot leave gaps after crashes.  
-5) Extend StructuralParseResult requirements or language-specific adapters to extract imports/exports where possible; otherwise document that cross-file edges are TS/JS-only.  
-6) Gate rollout with schema migration/versioning and small-scope integration tests covering delete+insert, rename, and retry exhaustion.
+## Recommendations
+- Add explicit contracts (TypeScript types) for all inter-component messages/events and enforce them in actors.
+- Split performance targets by language and state cold vs. warm expectations; require Python keep-alive for SLA.
+- Define backpressure/sequencing: bounded queues, per-file dedupe, and drop/merge policies for rapid successive events.
+- Add integration tests for the incremental path (watcher → router → parser → updater) and deletion + retry scenarios before expanding languages.
+- Document schema fields (`pendingImports`, `exportedSymbols`, `semanticComplete`) and ensure safe deletion removes semantic edges.
