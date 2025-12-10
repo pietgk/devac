@@ -3,6 +3,7 @@
 import { Command } from "commander";
 import { registerAnalyzeCommand } from "./cli/analyze.js";
 import { createWorkspaceCommand } from "./cli/workspace.js";
+import { registerSpecReviewCommand } from "./cli/spec-review.js";
 import { createContextLogger } from "./utils/logger.js";
 import { AppError } from "./utils/errors.js";
 // Import package.json to get version (requires appropriate tsconfig settings)
@@ -48,6 +49,7 @@ async function main() {
   // Register commands
   registerAnalyzeCommand(program);
   program.addCommand(createWorkspaceCommand());
+  registerSpecReviewCommand(program);
 
   program.on("command:*", () => {
     logger.error(

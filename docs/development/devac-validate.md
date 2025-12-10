@@ -328,3 +328,63 @@ try to limit references and make it as self contained as possible
 
 Think very hard about the updated spec and use the poc result and make sure to create a very high quality v9.1 spec
 create this updated spec as file CodeGraph/docs/development/devac-validate-basics-spec-v9.1.md
+
+## v9.1 review
+
+[@devac-validate-basics-spec-v9.1.md](file:///Users/grop/ws/CodeGraph/docs/development/devac-validate-basics-spec-v9.1.md)
+Can you do a very thorough review of the spec.
+Determine its quality, are there any flaws, bugs, overlaps and or inconsistencies.
+Think very hard and research very hard.
+You can store your answer in CodeGraph/docs/development/devac-validate-basic-spec-v9.1-review-gemini.md
+
+## recap v9.1 reviews
+
+we created 3 reviews
+CodeGraph/docs/development/devac-validate-basic-spec-v9.1-review-claude.md
+CodeGraph/docs/development/devac-validate-basic-spec-v9.1-review-gpt.md
+CodeGraph/docs/development/devac-validate-basic-spec-v9.1-review-gemini.md
+
+can you create a recap of all these reviews as file CodeGraph/docs/development/devac-validate-basic-spec-v9.1-review-recap.md this to enable me to get an understanding of all the reviews together.
+
+## v9.2 specs
+
+use CodeGraph/docs/development/devac-validate-basics-spec-v9.1.md
+and CodeGraph/docs/development/devac-validate-basic-spec-v9.1-review-recap.md
+
+follow the recomendations in the review recap
+to create the updated spec v9.2 as file CodeGraph/docs/development/devac-validate-basic-spec-v9.2.md
+
+try to limit references and make it as self contained as possible
+
+Think very hard about the updated spec and use the poc result and make sure to create a very high quality v9.2 spec
+create this updated spec as file CodeGraph/docs/development/devac-validate-basics-spec-v9.2.md
+
+## v9.2 review
+
+[@devac-validate-basics-spec-v9.2.md](file:///Users/grop/ws/CodeGraph/docs/development/devac-validate-basics-spec-v9.2.md)
+Can you do a very thorough review of the spec.
+Determine its quality, are there any flaws, bugs, overlaps and or inconsistencies.
+Think very hard and research very hard.
+You can store your answer in CodeGraph/docs/development/devac-validate-basic-spec-v9.2-review-gemini.md
+
+## recap v9.2 reviews
+
+we created 3 reviews
+CodeGraph/docs/development/devac-validate-basic-spec-v9.2-review-claude.md
+CodeGraph/docs/development/devac-validate-basic-spec-v9.2-review-gpt.md
+CodeGraph/docs/development/devac-validate-basic-spec-v9.2-review-gemini.md
+
+can you create a recap of all these reviews as file CodeGraph/docs/development/devac-validate-basic-spec-v9.2-review-recap.md this to enable me to get an understanding of all the reviews together.
+
+## v9.3 specs
+
+use CodeGraph/docs/development/devac-validate-basics-spec-v9.2.md
+and CodeGraph/docs/development/devac-validate-basic-spec-v9.2-review-recap.md
+
+follow the recomendations in the review recap
+to create the updated spec v9.3 as file CodeGraph/docs/development/devac-validate-basic-spec-v9.3.md
+
+try to limit references and make it as self contained as possible
+
+Think very hard about the updated spec and use the poc result and make sure to create a very high quality v9.3 spec
+create this updated spec as file CodeGraph/docs/development/devac-validate-basics-spec-v9.3.md
