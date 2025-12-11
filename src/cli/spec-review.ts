@@ -43,7 +43,7 @@ const TEMPLATE_DEFAULTS: Record<TemplateType, string> = {
 function verifyFileCreated(
   filePath: string,
   prompt: string,
-  context: string
+  context: string,
 ): boolean {
   if (existsSync(filePath)) {
     logger.info(`✓ ${context}: File created successfully`);
@@ -153,7 +153,9 @@ export function registerSpecReviewCommand(program: Command): void {
 
       // Select prompts based on template type
       const isDevacSpec = templateType === "devac-spec";
-      const reviewPrompt = isDevacSpec ? devacReviewPrompt : validateReviewPrompt;
+      const reviewPrompt = isDevacSpec
+        ? devacReviewPrompt
+        : validateReviewPrompt;
       const recapPrompt = isDevacSpec ? devacRecapPrompt : validateRecapPrompt;
       const nextVersionPrompt = isDevacSpec
         ? devacNextVersionPrompt
@@ -196,9 +198,11 @@ export function registerSpecReviewCommand(program: Command): void {
         logger.info("Reviews and recap complete (--reviews-only specified)");
         logger.info("");
         logger.info("=== PROMPT TO CREATE NEXT VERSION ===");
-        logger.info("Copy the following prompt to create the next version when ready:");
+        logger.info(
+          "Copy the following prompt to create the next version when ready:",
+        );
         logger.info("");
-        console.log(nextVersionPrompt(ctx));
+        console.log(nextVersionPrompt(ctx, reviewFiles));
         logger.info("");
         logger.info("======================================");
         return;
@@ -206,10 +210,14 @@ export function registerSpecReviewCommand(program: Command): void {
 
       // Step 3: Generate next version
       const nextVersionFilePath = `${docsDir}/${effectiveSpecPattern}-v${to}.md`;
-      const nextVersionPromptText = nextVersionPrompt(ctx);
+      const nextVersionPromptText = nextVersionPrompt(ctx, reviewFiles);
       logger.info(`Generating spec v${to} with ${recapModel}...`);
       await runCopilot(nextVersionPromptText, recapModel);
-      verifyFileCreated(nextVersionFilePath, nextVersionPromptText, "Next Version");
+      verifyFileCreated(
+        nextVersionFilePath,
+        nextVersionPromptText,
+        "Next Version",
+      );
 
       logger.info(`Spec review workflow complete: v${from} → v${to}`);
     });

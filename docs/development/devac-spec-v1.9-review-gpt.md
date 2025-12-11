@@ -1,0 +1,29 @@
+# Review of devac-spec-v1.9
+
+## Feasibility and component correctness
+- Working vs broken: FileWatcher/Neo4jClient/StructuralParser marked “working” but incremental behavior depends on new adapters and retry/circuit logic that are only sketched; GraphUpdaterActor/SemanticResolverActor/ValidationCoordinatorActor flagged “needs fixes” correctly. RelationshipResolver “API mismatch” is accurate, but the adapter still leans on pass-2 logic without ensuring compatibility with incremental deltas or Neo4j lookups, so “needs fixes” should cover resolver too. Declaration that spec is “implementation-ready” is optimistic: multiple “Files to Create” and “Files to Modify” are non-existent—so status should be “partial design, major coding required.”
+
+## Architecture and two-phase parsing
+- Two-phase (structural then semantic) is sensible for latency; structural pass wired to GraphUpdater atomic tx, semantic queued separately. Boundaries are mostly clear (LanguageRouter → ParseResultAdapter → GraphUpdater; SemanticResolver later), but the adapter/resolver coupling leaves unclear how semantic outputs write back (no semantic storage flow described). The spec does not describe how semantic pass invalidates or reconciles structural relationships (cross-file edges flagged “may be stale” without a correction path).
+
+## Implementation phases and dependencies
+- Phase ordering is mostly sound (import fixes before adapter creation before full integration). However, Phase 2 depends on Phase 0.5 adapters and retry/APOC utilities that are scheduled earlier—good. Phase 3 (ts-morph lifecycle) depends on SemanticResolver integration, but Phase 2 exit criteria already expect “basic pipeline working,” which is unlikely without ts-morph semantic resolution; exit gate should be relaxed or dependency moved earlier. Rename reconciliation (Phase 4) depends on stable rename detection in Phase 2; that coupling is implied but not called out.
+
+## Performance targets realism
+- Targets (<200ms structural, <200–300ms graph, <500ms total warm) are aggressive but plausible only with: warm ts-morph project, APOC enabled, local Neo4j, small (<1k LOC) files, and zero contention. Cold targets (<3s first file) are reasonable. Without APOC or under remote Neo4j/SSL or larger files (1–5k LOC), the <500ms warm and <1000ms cold budgets are unlikely; spec notes +30–50% but exit criteria still demand <500ms typical—needs qualification and measurement plan.
+
+## Missing pieces / failure modes
+- Error handling: Structural parse failures set parseError, but no path to clear/retry after fixes; semantic failures handling unspecified. No strategy for partial semantic failures (per-file retries, poison queue, DLQ). Backpressure exists, but no deduping/compaction strategy besides drop-oldest; needs metrics on dropped events and reconciliation. Crash recovery only requeues semanticQueued files; doesn’t restore in-flight structural tx or reconcile FileWatcher backlog. No idempotency/version checks on GraphUpdaterInput vs stored structuralVersion. No explicit handling for file moves across case-sensitive/insensitive FS. Rollback: relies on single tx, but non-APOC multi-query batches may still leave gaps if whitelists skip invalid kinds; needs explicit validation before tx. Metrics: logging only; no counters/histograms or sampling plan to validate budgets. Testing: integration scenarios listed but no fixtures or env setup (Neo4j lifecycle) spelled out.
+
+## Integration points clarity
+- FileWatcher → ValidationCoordinator → LanguageRouter → ParseResultAdapter → GraphUpdater → SemanticResolver is described, but:
+  - SemanticResolver output path to StorageManager/GraphUpdater for semantic edges is missing.
+  - RelationshipResolverAdapter queries Neo4j for imports before semantic data is written; possible mismatch/staleness. 
+  - Circuit breaker coordination states are outlined, but re-entry to healthy doesn’t drain pendingEvents or re-run skipped files explicitly.
+  - Mutex + debounce + queue interactions for rapid changes are not fully ordered (e.g., version guard on SemanticQueueEvent is defined but not consumed).
+
+## Practical implementation risks
+- Ts-morph lifecycle: refreshFromFileSystem per change may thrash; needs file text caching and project reuse across workers. Rename heuristic (100ms window) is brittle; likely to misclassify add+unlink bursts—needs fallback reconciliation earlier than Phase 4. FilePath-based entityId rewrites on rename can be expensive for large graphs; lacks batching/limit guards. Fallback Cypher groups by kind/type; if kind validation drops items, tx still commits, violating “no zero nodes lost” guarantee. Queue drop-oldest can discard high-priority events unless dedup is done first. Health check opens circuit after 5 failures but doesn’t back off processing attempts in degraded mode beyond pauses; risk of log spam and backlog growth.
+
+## Recommendations
+- Reclassify status to “design approved, implementation pending”; keep working/broken flags but mark RelationshipResolver as “needs adapter validation.” Add explicit semantic write-back flow (adapter → GraphUpdater semantic mode or dedicated SemanticUpdater). Tie structuralVersion into GraphUpdaterInput and SemanticQueueEvent consumption to ensure idempotency and last-write-wins for rapid changes. Add deduplication (by filePath, keep latest version) before queue/backpressure decisions; emit metrics on drops. Clarify performance acceptance per environment (local vs remote Neo4j, APOC on/off) and allow relaxed targets for >1k LOC or fallback mode. Expand crash recovery to reconcile pending FileWatcher events and incomplete structural writes (e.g., files with structuralComplete=false). Define error handling for semantic failures (retry with cap, quarantine). Document how circuit-closed drains queued events and replays missed files. Add tests/fixtures for rename mis-detection, queue overflow, circuit open/close, and retry exhaustion.

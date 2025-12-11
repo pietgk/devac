@@ -30,7 +30,7 @@ export const getShortModelName = (model: string): string => {
  */
 export const reviewPrompt = (
   ctx: SpecReviewContext,
-  shortModelName: string
+  shortModelName: string,
 ): string => `@${ctx.specPath}
 Can you do a very thorough review of the spec.
 Determine its quality, are there any flaws, bugs, overlaps and or inconsistencies.
@@ -41,7 +41,7 @@ You can store your answer in ${ctx.reviewOutputDir}/${ctx.specBaseName}-v${ctx.s
  */
 export const recapPrompt = (
   ctx: SpecReviewContext,
-  reviewFiles: string[]
+  reviewFiles: string[],
 ): string => `we created ${reviewFiles.length} reviews
 ${reviewFiles.join("\n")}
 
@@ -53,7 +53,10 @@ The recap should be concise but thorough.`;
 /**
  * Next version prompt - creates new spec version from current + recap
  */
-export const nextVersionPrompt = (ctx: SpecReviewContext): string => `use ${ctx.specPath}
+export const nextVersionPrompt = (
+  ctx: SpecReviewContext,
+  reviewFiles: string[],
+): string => `use ${ctx.specPath}
 and ${ctx.reviewOutputDir}/${ctx.specBaseName}-v${ctx.specVersion}-review-recap.md
 
 follow the recommendations in the review recap
