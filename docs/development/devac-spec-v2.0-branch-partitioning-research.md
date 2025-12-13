@@ -19,7 +19,9 @@ The v2.0 spec proposed **per-source-file Parquet partitioning** for fast increme
 | Branch as first-class concept reduces file count | HIGH | Implement branch-aware storage |
 | Content hashing enables fast regeneration | HIGH | Hash files to skip unchanged |
 | Git cannot merge Parquet files intelligently | MEDIUM | Use "ours" strategy + regenerate |
-| Cross-branch queries cause ID collisions | HIGH | Include branch in entity_id; add logical_id |
+| Entity ID should NOT include branch | HIGH | Branch is partition key only; use composite PK |
+
+**IMPORTANT UPDATE (2025-12-13):** Based on further analysis in `devac-spec-v2.0-entity-id-lifecycle-analysis.md` Question 6, the recommendation has been **revised** - branch should NOT be part of entity_id. This aligns with Git's content-addressable philosophy where same content = same identity regardless of branch.
 
 ### Recommended Architecture
 
@@ -258,171 +260,114 @@ And [Gradle's incremental build](https://docs.gradle.org/current/userguide/incre
 
 ## 5. Entity ID Format with Branch
 
-### 5.1 Current Format (v2.0 Spec)
+> **⚠️ REVISION NOTICE (2025-12-13):** This section has been **revised** based on deeper analysis in `devac-spec-v2.0-entity-id-lifecycle-analysis.md` Question 6. The original recommendation was Option A (branch IN entity_id), but after researching Git's content-addressable philosophy, the recommendation is now **Option B (branch as partition key only)**.
+
+### 5.1 Finalized Entity ID Format
 
 ```
-{repo}:{package_path}:{kind}:{content_hash}
+{repo}:{package_path}:{kind}:{scope_hash}
 ```
+
+Where `scope_hash = sha256(filePath + scopedName + kind)` - NO line numbers, NO branch.
 
 Example: `repo-api:packages/auth:function:a1b2c3d4`
 
-### 5.2 The Duplicate ID Problem
+### 5.2 Why Branch is NOT in Entity ID
 
-If branch is NOT in the entity ID, querying across branches causes collisions:
+**Git's Content-Addressable Philosophy:**
+From [Git internals](https://medium.com/@SK9712/unpacking-git-how-your-codes-history-is-stored-and-tracked-98fd8f022452):
+> "Git is fundamentally a content-addressable data storage system based on hashing... Git doesn't care about names or locations — just content."
+> "A branch in Git is nothing more than a lightweight pointer to a specific commit."
 
-```sql
-SELECT * FROM read_parquet('.devac/seed/branch=*/nodes.parquet')
-WHERE entity_id = 'repo-api:packages/auth:function:a1b2c3d4'
-```
+The same file content has the **same blob hash** regardless of which branch it's on. Our entity IDs should follow the same principle.
 
-**Result:** Multiple rows with the same `entity_id` - one from each branch where that entity exists. This breaks uniqueness guarantees and makes edge references ambiguous.
+**The "Same Code, Same Identity" Principle:**
+- `handleLogin` on `main` → entity_id: `repo:pkg:function:abc123`
+- `handleLogin` on `feature` (unchanged) → entity_id: `repo:pkg:function:abc123` (SAME!)
+- This is **correct** - it's the same code, same identity
 
-### 5.3 Options for Adding Branch
+### 5.3 How Uniqueness is Achieved
 
-#### Option A: Branch as First-Class Citizen in ID (RECOMMENDED)
-
-```
-{repo}:{branch}:{package_path}:{kind}:{content_hash}
-```
-
-Example: `repo-api:main:packages/auth:function:a1b2c3d4`
-
-**Pros:**
-- Entity IDs are globally unique across ALL branches
-- No ambiguity in cross-branch queries
-- Edges can reference entities on specific branches explicitly
-- Clear data model - every row is uniquely identifiable
-
-**Cons:**
-- Same logical code on different branches has different IDs
-- Cross-branch "is this the same entity?" requires parsing the ID or using `logical_id`
-- Slightly longer IDs
-
-#### Option B: Branch as Partition Key Only (Not in ID)
-
-```
-{repo}:{package_path}:{kind}:{content_hash}  # ID unchanged
-```
-
-**Pros:**
-- Same code has same ID regardless of branch
-- Simpler cross-branch comparison
-- Shorter IDs
-
-**Cons:**
-- **CRITICAL:** Duplicate entity IDs when querying across branches
-- Edges cannot unambiguously reference a specific branch's entity
-- Requires composite key (entity_id + branch) for true uniqueness
-
-#### Option C: Hybrid - Branch Optional in ID
-
-```
-{repo}:{package_path}:{kind}:{content_hash}[:{branch}]
-```
-
-**Pros:**
-- Backward compatible
-- Explicit when needed
-
-**Cons:**
-- Inconsistent format
-- Complex parsing
-- Doesn't solve the core uniqueness problem
-
-### 5.4 Recommendation: Option A (Branch IN Entity ID)
-
-**Rationale:**
-
-1. **Global Uniqueness:** Every entity ID is globally unique across all branches, repos, and packages. No ambiguity, ever.
-
-2. **Edge Integrity:** When an edge references `target_entity_id`, it's unambiguous which branch's version is meant:
-   ```
-   source_entity_id: repo-api:main:packages/auth:function:a1b2c3d4
-   target_entity_id: repo-api:main:packages/core:class:b2c3d4e5
-   ```
-
-3. **Query Safety:** Cross-branch queries return distinct rows that can be properly aggregated or compared:
-   ```sql
-   SELECT entity_id, branch, name 
-   FROM read_parquet('.devac/seed/branch=*/nodes.parquet')
-   WHERE logical_id = 'repo-api:packages/auth:function:a1b2c3d4'
-   -- Returns one row per branch, each with unique entity_id
-   ```
-
-4. **Aligns with Branch-Partitioned Storage:** Since we're storing data per-branch anyway, having branch in the ID creates consistency between storage and identity.
-
-### 5.5 Updated Entity ID Format
-
-```
-{repo}:{branch}:{package_path}:{kind}:{content_hash}
-```
-
-**Examples:**
-```
-repo-api:main:packages/auth:function:a1b2c3d4
-repo-api:feature-x:packages/auth:function:a1b2c3d4
-repo-api:development:packages/core:class:e5f6g7h8
-```
-
-### 5.6 Logical ID for Cross-Branch Comparison
-
-Add a `logical_id` column to enable "same entity across branches" queries:
+Instead of putting branch in the entity_id, we use a **composite primary key** in storage:
 
 ```sql
--- Schema includes both IDs
 CREATE TABLE nodes (
-  entity_id VARCHAR NOT NULL,      -- Globally unique: includes branch
-  logical_id VARCHAR NOT NULL,     -- Branch-agnostic: for cross-branch comparison
-  branch VARCHAR NOT NULL,         -- Explicit branch column (from hive partition)
+  entity_id VARCHAR NOT NULL,       -- {repo}:{pkg}:{kind}:{scope_hash}
+  branch VARCHAR NOT NULL,          -- Branch is context, not identity
+  scoped_name VARCHAR NOT NULL,
+  file_path VARCHAR NOT NULL,
+  start_line INTEGER NOT NULL,
   ...
+  
+  -- Composite key for storage uniqueness
+  PRIMARY KEY (entity_id, branch)
 );
-
--- logical_id format (excludes branch)
--- {repo}:{package_path}:{kind}:{content_hash}
 ```
 
-**Usage:**
+### 5.4 Cross-Branch Query Patterns
+
+**Query single branch (most common):**
 ```sql
--- Find same entity across all branches
-SELECT entity_id, branch, name, file_path
-FROM read_parquet('.devac/seed/branch=*/nodes.parquet', hive_partitioning=true)
-WHERE logical_id = 'repo-api:packages/auth:function:a1b2c3d4'
-ORDER BY branch;
-
--- Result:
--- entity_id                                          | branch    | name        | file_path
--- repo-api:main:packages/auth:function:a1b2c3d4      | main      | handleLogin | src/auth.ts
--- repo-api:feature-x:packages/auth:function:a1b2c3d4 | feature-x | handleLogin | src/auth.ts
+-- Partition pruning keeps it fast
+SELECT * FROM read_parquet('.devac/seed/branch=main/nodes.parquet')
+WHERE kind = 'function';
 ```
+
+**Query across branches (find all versions):**
+```sql
+SELECT entity_id, branch, scoped_name, file_path
+FROM read_parquet('.devac/seed/branch=*/nodes.parquet', hive_partitioning=true)
+WHERE entity_id = 'repo-api:packages/auth:function:a1b2c3d4';
+
+-- Result: One row per branch that has this entity
+-- entity_id                                | branch    | scoped_name | file_path
+-- repo-api:packages/auth:function:a1b2c3d4 | main      | handleLogin | src/auth.ts
+-- repo-api:packages/auth:function:a1b2c3d4 | feature-x | handleLogin | src/auth.ts
+```
+
+**Deduplicate for unique entities:**
+```sql
+SELECT DISTINCT entity_id, scoped_name
+FROM read_parquet('.devac/seed/branch=*/nodes.parquet', hive_partitioning=true)
+WHERE kind = 'function';
+```
+
+### 5.5 Edge References
+
+Edges within a branch reference entities by entity_id. Since edges are stored per-branch, they implicitly reference entities on the same branch:
+
+```sql
+-- edges.parquet (in branch=main/ partition)
+source_entity_id: repo:pkg:function:abc123  -- handleLogin
+target_entity_id: repo:pkg:function:def456  -- validateUser
+edge_type: CALLS
+
+-- Both source and target are on 'main' branch (same partition)
+```
+
+**Cross-branch edges are rare** but can be supported by adding an optional `target_branch` column when needed.
+
+### 5.6 Benefits of This Approach
+
+1. **Aligns with Git:** Same code = same identity, matching content-addressable storage
+2. **Simpler entity IDs:** No branch parsing needed
+3. **Natural deduplication:** Cross-branch queries can easily find unique entities
+4. **Cleaner edge references:** Edges within a branch just use entity_id
+5. **Storage efficiency:** Hive partitioning handles branch separation
 
 ### 5.7 Implementation
 
 ```typescript
-// Entity ID generation (updated for v2.1)
+// Entity ID generation (v2.1 - branch NOT included)
 function generateEntityId(
   repo: string,
-  branch: string,
   packagePath: string,
   kind: string,
   filePath: string,
-  name: string,
-  startLine: number
+  scopedName: string  // e.g., "AuthService.login", "processUser.validate"
 ): string {
-  const contentHash = sha256(`${filePath}:${name}:${startLine}:${kind}`).slice(0, 8);
-  return `${repo}:${branch}:${packagePath}:${kind}:${contentHash}`;
-}
-
-// Logical ID generation (branch-agnostic, for cross-branch queries)
-function generateLogicalId(
-  repo: string,
-  packagePath: string,
-  kind: string,
-  filePath: string,
-  name: string,
-  startLine: number
-): string {
-  const contentHash = sha256(`${filePath}:${name}:${startLine}:${kind}`).slice(0, 8);
-  return `${repo}:${packagePath}:${kind}:${contentHash}`;
+  const scopeHash = sha256(`${filePath}:${scopedName}:${kind}`).slice(0, 8);
+  return `${repo}:${packagePath}:${kind}:${scopeHash}`;
 }
 
 // Query current branch
@@ -433,13 +378,24 @@ const results = db.all(`
   WHERE kind = 'function'
 `);
 
-// Query across branches for same logical entity
+// Find entity across all branches
 const crossBranchResults = db.all(`
-  SELECT entity_id, branch, name 
+  SELECT entity_id, branch, scoped_name 
   FROM read_parquet('.devac/seed/branch=*/nodes.parquet', hive_partitioning=true)
-  WHERE logical_id = '${logicalId}'
+  WHERE entity_id = '${entityId}'
 `);
 ```
+
+### 5.8 Comparison with Original Options
+
+| Aspect | Option A (Branch IN ID) | Option B (Branch as Partition) ← CHOSEN |
+|--------|-------------------------|----------------------------------------|
+| Same code, same identity | ❌ Different IDs per branch | ✅ Same ID |
+| Aligns with Git philosophy | ❌ No | ✅ Yes |
+| Cross-branch comparison | Requires logical_id | Natural (same entity_id) |
+| Storage uniqueness | By entity_id alone | By (entity_id, branch) |
+| Edge references | Unambiguous | Within-branch implicit |
+| Complexity | Higher (two ID columns) | Lower (single ID + partition) |
 
 ---
 
@@ -664,15 +620,16 @@ async function pruneStaleBranches(seedPath: string): Promise<void> {
 ### 8.1 Node Schema (Updated)
 
 ```sql
--- Updated schema with branch in entity_id and logical_id for cross-branch queries
+-- Updated schema: branch is partition key, NOT part of entity_id
 CREATE TABLE nodes (
-  -- Identity (updated for v2.1)
-  entity_id VARCHAR NOT NULL,      -- Globally unique: {repo}:{branch}:{pkg}:{kind}:{hash}
-  logical_id VARCHAR NOT NULL,     -- Branch-agnostic: {repo}:{pkg}:{kind}:{hash}
-  branch VARCHAR NOT NULL,         -- Branch name (also available via hive partition)
+  -- Identity (v2.1 - no branch in entity_id)
+  entity_id VARCHAR NOT NULL,      -- {repo}:{pkg}:{kind}:{scope_hash}
+  branch VARCHAR NOT NULL,         -- Branch name (from hive partition, not in ID)
   
-  -- Source location
-  source_file VARCHAR NOT NULL,
+  -- Scope information (for display and debugging)
+  scoped_name VARCHAR NOT NULL,    -- "AuthService.login", "processUser.validate"
+  
+  -- Source location (informational, NOT part of ID)
   file_path VARCHAR NOT NULL,
   start_line INTEGER NOT NULL,
   start_column INTEGER NOT NULL,
@@ -691,7 +648,10 @@ CREATE TABLE nodes (
   
   -- Metadata
   created_at TIMESTAMP DEFAULT NOW(),
-  properties JSON
+  properties JSON,
+  
+  -- Composite primary key for storage uniqueness
+  PRIMARY KEY (entity_id, branch)
 );
 ```
 
@@ -701,14 +661,11 @@ CREATE TABLE nodes (
 CREATE TABLE edges (
   -- Identity
   id VARCHAR NOT NULL,
+  branch VARCHAR NOT NULL,           -- From hive partition
   
-  -- Endpoints (both include branch for unambiguous references)
-  source_entity_id VARCHAR NOT NULL,  -- {repo}:{branch}:{pkg}:{kind}:{hash}
-  target_entity_id VARCHAR NOT NULL,  -- {repo}:{branch}:{pkg}:{kind}:{hash}
-  
-  -- For cross-branch edge analysis
-  source_logical_id VARCHAR NOT NULL, -- Branch-agnostic source
-  target_logical_id VARCHAR NOT NULL, -- Branch-agnostic target
+  -- Endpoints (entity_ids do NOT include branch)
+  source_entity_id VARCHAR NOT NULL,  -- {repo}:{pkg}:{kind}:{scope_hash}
+  target_entity_id VARCHAR NOT NULL,  -- {repo}:{pkg}:{kind}:{scope_hash}
   
   -- Classification
   edge_type VARCHAR NOT NULL,
@@ -717,7 +674,10 @@ CREATE TABLE edges (
   is_resolved BOOLEAN DEFAULT FALSE,
   
   -- Metadata
-  properties JSON
+  properties JSON,
+  
+  -- Composite primary key
+  PRIMARY KEY (id, branch)
 );
 ```
 
@@ -868,9 +828,10 @@ packages/auth/
 |--------|-----------------|---------------------|
 | **Partitioning** | Per-source-file | Per-package-per-branch |
 | **File Count** | 3N per package | 3 per branch per package |
-| **Entity ID** | {repo}:{pkg}:{kind}:{hash} | {repo}:{branch}:{pkg}:{kind}:{hash} |
-| **Logical ID** | N/A | {repo}:{pkg}:{kind}:{hash} (for cross-branch) |
-| **Branch Handling** | Not addressed | Hive-style partition + in entity ID |
+| **Entity ID** | {repo}:{pkg}:{kind}:{hash} (with line number) | {repo}:{pkg}:{kind}:{scope_hash} (with scoped name) |
+| **Branch in ID** | Not considered | NO - branch is partition key only |
+| **Storage Uniqueness** | By entity_id | By composite (entity_id, branch) |
+| **Branch Handling** | Not addressed | Hive-style partition as storage key |
 | **Incremental Updates** | Replace partition file | Content hash skip + regenerate |
 | **Git Merge** | Not addressed | merge=ours + post-merge hook |
 | **Update Target** | <100ms | <300ms (with <50ms skip) |
@@ -884,7 +845,8 @@ packages/auth/
 | Query planning overhead | Hive partitioning enables pruning |
 | Slow incremental updates | Content hash enables skip |
 | Git merge conflicts | Regeneration after merge |
-| Cross-branch ID collisions | Branch included in entity_id; logical_id for comparison |
+| Line numbers break entity ID stability | Use scoped names instead |
+| Same code different ID on branches | Branch NOT in entity_id |
 
 ### 11.3 Next Steps
 

@@ -3,7 +3,7 @@
 **System:** DevAC, CodeGraph  
 **Version:** 2.0  
 **Status:** Draft  
-**Last Updated:** 2025-12-12  
+**Last Updated:** 2025-12-13  
 **Previous Version:** v1.11 (direction change - not implemented)
 
 ---
@@ -229,24 +229,23 @@ Instead of adding PostgreSQL as a second database (v1.11-db-redesign proposal), 
 │  LAYER 1: PACKAGE SEEDS (Ground Truth)                                      │
 │  ──────────────────────────────────────                                     │
 │                                                                             │
-│  packages/auth/.devac/seed/                                                │
+│  packages/auth/.devac/                                                     │
 │  │                                                                          │
-│  │  nodes/                        ← One Parquet file per source file        │
-│  │  ├── src_index_ts.parquet                                               │
-│  │  ├── src_auth_ts.parquet                                                │
-│  │  └── src_utils_ts.parquet                                               │
+│  │  meta.json                     ← Package metadata, file content hashes  │
 │  │                                                                          │
-│  │  edges/                        ← One Parquet file per source file        │
-│  │  ├── src_index_ts.parquet                                               │
-│  │  ├── src_auth_ts.parquet                                                │
-│  │  └── src_utils_ts.parquet                                               │
+│  │  seed/                         ← Hive-style branch partitioning         │
+│  │  ├── branch=main/              ← One set per branch                     │
+│  │  │   ├── nodes.parquet        ← All nodes for this package/branch      │
+│  │  │   ├── edges.parquet        ← All edges for this package/branch      │
+│  │  │   └── external_refs.parquet ← All refs for this package/branch      │
+│  │  │                                                                       │
+│  │  └── branch=feature-x/         ← Additional branch if analyzed         │
+│  │      ├── nodes.parquet                                                  │
+│  │      ├── edges.parquet                                                  │
+│  │      └── external_refs.parquet                                          │
 │  │                                                                          │
-│  │  external_refs/                ← One Parquet file per source file        │
-│  │  ├── src_index_ts.parquet                                               │
-│  │  └── src_auth_ts.parquet                                                │
-│  │                                                                          │
-│  │  meta.json                     ← Package metadata, analysis timestamp    │
-│  │                                                                          │
+│  Per-package-per-branch = ~100x fewer files than per-source-file!          │
+│                                                                          │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -258,54 +257,87 @@ Instead of adding PostgreSQL as a second database (v1.11-db-redesign proposal), 
 | **Repository Manifest** | Package index, config | <1KB | On package add/remove |
 | **Central Hub** | Repo registry, computed edges | ~1MB total | On cross-repo query |
 
-### 3.3 Why Per-File Parquet Partitioning?
+### 3.3 Why Per-Package-Per-Branch Partitioning?
 
-The key insight from the deep analysis document: **partition by source file for O(1) incremental updates**.
+> **Updated 2025-12-13:** Changed from per-file to per-package-per-branch based on research. See `devac-spec-v2.0-branch-partitioning-research.md` for detailed analysis.
+
+The original v2.0 proposal used per-source-file partitioning. All reviewers flagged this as HIGH RISK due to file count explosion (3 files × N source files). The revised approach uses **per-package-per-branch partitioning** with content-hash-based skip optimization.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                                                                             │
-│  SINGLE FILE APPROACH (simpler but slower updates)                          │
-│  ─────────────────────────────────────────────────                          │
+│  PER-FILE APPROACH (v2.0 original - REJECTED)                              │
+│  ────────────────────────────────────────────                               │
 │                                                                             │
-│  .devac/seed/                                                              │
-│  ├── nodes.parquet     ← All nodes in one file                             │
-│  ├── edges.parquet     ← All edges in one file                             │
-│  └── refs.parquet      ← All refs in one file                              │
+│  .devac/seed/nodes/                                                        │
+│  ├── src_index_ts.parquet      ← 1 file per source file                   │
+│  ├── src_auth_ts.parquet       ← For 5K source files = 15K Parquet files! │
+│  └── src_utils_ts.parquet                                                  │
 │                                                                             │
-│  UPDATE src/auth.ts:                                                        │
-│  1. Read all nodes.parquet into memory                                      │
-│  2. Filter out old nodes for auth.ts                                        │
-│  3. Add new nodes for auth.ts                                               │
-│  4. Write entire nodes.parquet                                              │
-│                                                                             │
-│  Time: O(total nodes) ≈ 100-500ms for large packages                       │
+│  PROBLEMS:                                                                  │
+│  • File count explosion (15K+ files for large packages)                    │
+│  • DuckDB glob metadata overhead with 10K+ files                           │
+│  • OS file handle limits                                                    │
+│  • Query planning overhead                                                  │
 │                                                                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  PER-FILE PARTITIONING (v2.0 approach)                                      │
-│  ─────────────────────────────────────                                      │
+│  PER-PACKAGE-PER-BRANCH (v2.1 approach - ADOPTED)                          │
+│  ─────────────────────────────────────────────────                          │
 │                                                                             │
-│  .devac/seed/nodes/                                                        │
-│  ├── src_index_ts.parquet                                                  │
-│  ├── src_auth_ts.parquet      ← Only this file changes                     │
-│  └── src_utils_ts.parquet                                                  │
+│  .devac/seed/                                                              │
+│  ├── branch=main/                                                          │
+│  │   ├── nodes.parquet         ← ALL nodes for package on this branch     │
+│  │   ├── edges.parquet         ← ALL edges for package on this branch     │
+│  │   └── external_refs.parquet                                             │
+│  └── branch=feature-x/                                                     │
+│      └── ... (3 files per branch)                                          │
 │                                                                             │
-│  UPDATE src/auth.ts:                                                        │
-│  1. Delete src_auth_ts.parquet                                             │
-│  2. Parse src/auth.ts                                                       │
-│  3. Write new src_auth_ts.parquet                                          │
+│  FILE COUNT: 3 files × branches (typically 1-5) = 3-15 files per package  │
+│  vs. 3 × N source files = thousands of files                              │
 │                                                                             │
-│  Time: O(nodes in file) ≈ 10-50ms                                          │
+│  REDUCTION: ~100x fewer files for typical workflows                        │
 │                                                                             │
-│  QUERY (unchanged):                                                         │
-│  SELECT * FROM read_parquet('.devac/seed/nodes/*.parquet')                 │
-│  -- DuckDB handles glob across all partition files                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  INCREMENTAL UPDATES (Content Hash Skip)                                    │
+│  ────────────────────────────────────────                                   │
+│                                                                             │
+│  meta.json stores content hashes for each source file:                     │
+│  {                                                                          │
+│    "fileHashes": {                                                          │
+│      "src/auth.ts": "sha256:a1b2c3...",                                    │
+│      "src/utils.ts": "sha256:d4e5f6..."                                    │
+│    }                                                                        │
+│  }                                                                          │
+│                                                                             │
+│  UPDATE FLOW:                                                               │
+│  1. Compute current file hashes (~20ms)                                    │
+│  2. Compare with stored hashes                                              │
+│  3. IF no changes → SKIP (total: ~20-50ms)                                 │
+│  4. IF changes → Parse only changed files, regenerate package Parquet     │
+│                                                                             │
+│  Single file change: ~150-300ms (vs ~50ms per-file, but fewer files)       │
+│  Batch changes (10 files): ~150-300ms (same as single - batch wins!)       │
+│  No changes: ~20-50ms (hash check only)                                    │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  QUERY PATTERNS                                                             │
+│  ──────────────                                                             │
+│                                                                             │
+│  Single branch (most common):                                              │
+│  SELECT * FROM read_parquet('.devac/seed/branch=main/nodes.parquet')       │
+│  → Partition pruning, only reads one file                                  │
+│                                                                             │
+│  Cross-branch (find same entity):                                          │
+│  SELECT entity_id, branch FROM read_parquet(                               │
+│    '.devac/seed/branch=*/nodes.parquet', hive_partitioning=true            │
+│  ) WHERE entity_id = 'repo:pkg:function:abc123'                            │
+│  → Returns one row per branch with that entity                             │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
-
-**Open Question:** Does DuckDB perform well with hundreds of small Parquet files? See [Section 14](#14-open-questions--validation) for validation approach.
 
 ---
 
@@ -314,19 +346,22 @@ The key insight from the deep analysis document: **partition by source file for 
 ### 4.1 Node Schema
 
 ```sql
--- nodes/{source_file_hash}.parquet
+-- nodes.parquet (per-package-per-branch: .devac/seed/branch=main/nodes.parquet)
 
 CREATE TABLE nodes (
-  -- Identity
-  entity_id VARCHAR NOT NULL,        -- Global ID: "repo:package:kind:hash"
-  source_file VARCHAR NOT NULL,      -- Partition key: file that contains this node
+  -- Identity (v2.1 - branch NOT in entity_id)
+  entity_id VARCHAR NOT NULL,        -- Global ID: "{repo}:{package}:{kind}:{scope_hash}"
+  branch VARCHAR NOT NULL,           -- Branch name (from hive partition, NOT in ID)
+  
+  -- Scope information (used for entity_id generation)
+  scoped_name VARCHAR NOT NULL,      -- "AuthService.login", "outer.inner", "fetchUser"
   
   -- Classification
   kind VARCHAR NOT NULL,             -- Function, Class, Method, Variable, etc.
   name VARCHAR,                      -- Symbol name (nullable for anonymous)
   
-  -- Location
-  file_path VARCHAR NOT NULL,        -- Absolute path to source file
+  -- Location (informational, NOT part of entity_id)
+  file_path VARCHAR NOT NULL,        -- Path relative to package root
   start_line INTEGER NOT NULL,
   start_column INTEGER NOT NULL,
   end_line INTEGER NOT NULL,
@@ -342,28 +377,31 @@ CREATE TABLE nodes (
   
   -- Metadata
   created_at TIMESTAMP DEFAULT NOW(),
-  properties JSON                    -- Flexible additional properties
+  properties JSON,                   -- Flexible properties (decorators, etc.)
+  
+  -- Composite primary key for storage uniqueness
+  PRIMARY KEY (entity_id, branch)
 );
 
--- Example entity_id formats:
+-- Example entity_id formats (NO branch in ID):
 -- "repo-api:packages/auth:function:abc123"
 -- "repo-web:apps/main:class:def456"
--- "repo-api:packages/auth:method:abc123:methodName"
+-- "repo-api:packages/auth:method:ghi789"
 ```
 
 ### 4.2 Edge Schema
 
 ```sql
--- edges/{source_file_hash}.parquet
+-- edges.parquet (per-package-per-branch: .devac/seed/branch=main/edges.parquet)
 
 CREATE TABLE edges (
   -- Identity
   id VARCHAR NOT NULL,               -- Unique edge ID
-  source_file VARCHAR NOT NULL,      -- Partition key: file containing source node
+  branch VARCHAR NOT NULL,           -- Branch name (from hive partition)
   
-  -- Endpoints
-  source_entity_id VARCHAR NOT NULL, -- From node
-  target_entity_id VARCHAR NOT NULL, -- To node
+  -- Endpoints (entity_ids do NOT include branch)
+  source_entity_id VARCHAR NOT NULL, -- From node: "{repo}:{pkg}:{kind}:{scope_hash}"
+  target_entity_id VARCHAR NOT NULL, -- To node: "{repo}:{pkg}:{kind}:{scope_hash}"
   
   -- Classification
   edge_type VARCHAR NOT NULL,        -- CONTAINS, CALLS, IMPORTS, EXTENDS, etc.
@@ -373,7 +411,10 @@ CREATE TABLE edges (
   resolved_at TIMESTAMP,
   
   -- Metadata
-  properties JSON                    -- Weight, annotations, etc.
+  properties JSON,                   -- Weight, annotations, etc.
+  
+  -- Composite primary key
+  PRIMARY KEY (id, branch)
 );
 
 -- Edge Types (hierarchical):
@@ -381,20 +422,23 @@ CREATE TABLE edges (
 -- Reference: CALLS, USES, REFERENCES
 -- Type: EXTENDS, IMPLEMENTS, RETURNS_TYPE, PARAMETER_TYPE
 -- Module: IMPORTS, EXPORTS, RE_EXPORTS
+
+-- Note: Edges within a branch reference entities on the same branch.
+-- Cross-branch edges are rare and can use optional target_branch column if needed.
 ```
 
 ### 4.3 External Reference Schema
 
 ```sql
--- external_refs/{source_file_hash}.parquet
+-- external_refs.parquet (per-package-per-branch: .devac/seed/branch=main/external_refs.parquet)
 
 CREATE TABLE external_refs (
   -- Identity
   id VARCHAR NOT NULL,
-  source_file VARCHAR NOT NULL,      -- Partition key
+  branch VARCHAR NOT NULL,           -- Branch name (from hive partition)
   
   -- Reference Origin
-  source_entity_id VARCHAR NOT NULL, -- Node making the reference
+  source_entity_id VARCHAR NOT NULL, -- Node making the reference (no branch in ID)
   source_file_path VARCHAR NOT NULL, -- File containing the import
   source_line INTEGER,               -- Line number of import statement
   
@@ -405,28 +449,43 @@ CREATE TABLE external_refs (
   
   -- Resolution (populated by semantic pass)
   is_resolved BOOLEAN DEFAULT FALSE,
-  resolved_entity_id VARCHAR,        -- Resolved target entity
+  resolved_entity_id VARCHAR,        -- Resolved target entity (no branch in ID)
   resolved_file_path VARCHAR,        -- Resolved target file
   resolved_package VARCHAR,          -- Package containing target
   is_internal BOOLEAN,               -- Same package? Same repo?
+  
+  -- Re-export tracking
+  is_reexport BOOLEAN DEFAULT FALSE, -- Is this a re-export?
+  export_alias VARCHAR,              -- Alias name if re-exported (e.g., "login" for "handleLogin as login")
   
   -- Classification
   is_type_only BOOLEAN DEFAULT FALSE, -- TypeScript "import type"
   
   -- Metadata
-  properties JSON
+  properties JSON,
+  
+  -- Composite primary key
+  PRIMARY KEY (id, branch)
 );
 ```
 
 ### 4.4 Global Entity ID Format
 
+> **Updated 2025-12-13:** Entity ID format revised based on lifecycle analysis. See `devac-spec-v2.0-entity-id-lifecycle-analysis.md` for detailed rationale.
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                                                                             │
-│  ENTITY ID FORMAT                                                           │
-│  ─────────────────                                                          │
+│  ENTITY ID FORMAT (v2.1)                                                    │
+│  ────────────────────────                                                   │
 │                                                                             │
-│  {repo}:{package_path}:{kind}:{content_hash}                               │
+│  {repo}:{package_path}:{kind}:{scope_hash}                                 │
+│                                                                             │
+│  Where: scope_hash = sha256(filePath + scopedName + kind).slice(0,8)       │
+│                                                                             │
+│  IMPORTANT: Branch is NOT part of entity_id!                               │
+│  Branch is used as a storage partition key only.                           │
+│  Same code = same entity_id regardless of branch.                          │
 │                                                                             │
 │  Examples:                                                                  │
 │  ─────────                                                                  │
@@ -434,20 +493,98 @@ CREATE TABLE external_refs (
 │  repo-web:apps/main:class:e5f6g7h8                                         │
 │  repo-mobile:packages/ui:component:i9j0k1l2                                │
 │                                                                             │
-│  Content Hash:                                                              │
-│  ────────────                                                               │
-│  Based on: file_path + name + start_line + kind                            │
-│  Ensures globally unique, deterministic IDs                                 │
-│  Survives renames/refactors within same location                           │
+│  Scoped Name (replaces line number for stability):                         │
+│  ─────────────────────────────────────────────────                         │
+│  • Top-level function: "handleLogin"                                       │
+│  • Class method: "AuthService.login"                                       │
+│  • Nested function: "processUser.validate"                                 │
+│  • Arrow in variable: "fetchUser" (variable name)                          │
+│  • Callback: "users.map.$callback" or "users.map.$arg0"                   │
+│  • Array element: "callbacks.$0", "callbacks.$1"                           │
+│  • Reassigned: "handler$0", "handler$1" (indexed)                         │
+│  • Computed property: "Foo.[key]" (syntactic form)                        │
 │                                                                             │
-│  Special Cases:                                                             │
-│  ──────────────                                                             │
-│  Anonymous function: use parent scope + index                               │
-│  Method: include class name in hash input                                   │
-│  Overloads: include signature hash                                          │
+│  Why Scoped Names (not line numbers):                                       │
+│  ────────────────────────────────────                                       │
+│  • Code above function changes → entity_id STABLE                          │
+│  • Merge/rebase shifts lines → entity_id STABLE                           │
+│  • Same code on different branches → SAME entity_id                        │
+│                                                                             │
+│  Storage Uniqueness:                                                        │
+│  ──────────────────                                                         │
+│  Composite PRIMARY KEY (entity_id, branch) ensures uniqueness              │
+│  in storage while allowing same entity across branches.                    │
+│                                                                             │
+│  Re-exports:                                                                │
+│  ───────────                                                                │
+│  Original definition is canonical. Re-exports create references            │
+│  pointing to the canonical entity_id.                                      │
+│                                                                             │
+│  Decorators:                                                                │
+│  ──────────                                                                 │
+│  Do NOT affect entity identity. Stored as node properties.                 │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### 4.5 Scoped Name Generation Rules
+
+```typescript
+// TypeScript/JavaScript scoped name generation
+
+function generateScopedName(node: ASTNode, context: ParserContext): string {
+  // 1. Named function/class at file level
+  if (isTopLevel(node) && node.name) {
+    return node.name;  // "handleLogin"
+  }
+  
+  // 2. Class member
+  if (isClassMember(node)) {
+    return `${getClassName(node)}.${node.name}`;  // "AuthService.login"
+  }
+  
+  // 3. Nested function
+  if (isNestedFunction(node) && node.name) {
+    return `${getParentScope(node)}.${node.name}`;  // "outer.inner"
+  }
+  
+  // 4. Arrow function assigned to variable
+  if (isArrowInVariable(node)) {
+    const varName = getAssignmentTarget(node);
+    const reassignIndex = getReassignmentIndex(node, varName);
+    return reassignIndex > 0 ? `${varName}$${reassignIndex}` : varName;
+  }
+  
+  // 5. Callback/argument
+  if (isCallbackArgument(node)) {
+    const callExpr = getParentCall(node);
+    const argIndex = getArgumentIndex(node);
+    return `${callExpr}.$arg${argIndex}`;  // "users.map.$arg0"
+  }
+  
+  // 6. Array element
+  if (isArrayElement(node)) {
+    const arrayName = getArrayName(node);
+    const index = getArrayIndex(node);
+    return `${arrayName}.$${index}`;  // "callbacks.$0"
+  }
+  
+  // 7. Computed property
+  if (isComputedProperty(node)) {
+    const className = getClassName(node);
+    const keyExpr = getComputedKeyExpression(node);
+    return `${className}.[${keyExpr}]`;  // "Foo.[key]"
+  }
+  
+  // 8. IIFE
+  if (isIIFE(node)) {
+    const iifeIndex = getIIFEIndex(node, context);
+    return `$iife_${iifeIndex}`;
+  }
+  
+  // Fallback: use AST node index
+  return `$anon_${getASTIndex(node)}`;
+}
 
 ---
 
@@ -523,16 +660,16 @@ CREATE TABLE external_refs (
 │   │   │   │   └── utils.ts
 │   │   │   │
 │   │   │   └── .devac/
-│   │   │       ├── meta.json           # Package analysis metadata
+│   │   │       ├── meta.json           # Package metadata + file content hashes
 │   │   │       └── seed/
-│   │   │           ├── nodes/
-│   │   │           │   ├── src_index_ts.parquet
-│   │   │           │   ├── src_auth_ts.parquet
-│   │   │           │   └── src_utils_ts.parquet
-│   │   │           ├── edges/
-│   │   │           │   └── *.parquet
-│   │   │           └── external_refs/
-│   │   │               └── *.parquet
+│   │   │           ├── branch=main/    # Hive-style branch partition
+│   │   │           │   ├── nodes.parquet
+│   │   │           │   ├── edges.parquet
+│   │   │           │   └── external_refs.parquet
+│   │   │           └── branch=feature-auth/  # Additional branch if analyzed
+│   │   │               ├── nodes.parquet
+│   │   │               ├── edges.parquet
+│   │   │               └── external_refs.parquet
 │   │   │
 │   │   └── core/
 │   │       └── .devac/seed/...
@@ -549,7 +686,33 @@ CREATE TABLE external_refs (
     └── repos.json                      # Registered repositories
 ```
 
-### 5.3 Size Estimates
+### 5.3 Meta.json Format
+
+```json
+{
+  "schemaVersion": "2.1",
+  "analyzedBranch": "main",
+  "analyzedAt": "2025-12-13T10:30:00Z",
+  "packagePath": "packages/auth",
+  "fileHashes": {
+    "src/index.ts": {
+      "contentHash": "sha256:a1b2c3d4e5f6...",
+      "size": 1234,
+      "mtime": "2025-12-13T10:00:00Z"
+    },
+    "src/auth.ts": {
+      "contentHash": "sha256:b2c3d4e5f6g7...",
+      "size": 5678,
+      "mtime": "2025-12-13T09:30:00Z"
+    }
+  },
+  "nodeCount": 150,
+  "edgeCount": 200,
+  "refCount": 75
+}
+```
+
+### 5.4 Size Estimates
 
 | Component | Typical Size | Notes |
 |-----------|--------------|-------|
@@ -834,50 +997,57 @@ export function formatForLLM(
 
 ## 8. Incremental Updates
 
+> **Updated 2025-12-13:** Changed from per-file partition updates to content-hash-based skip with package-level regeneration.
+
 ### 8.1 Update Flow
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                                                                             │
-│  FILE CHANGE DETECTED                                                       │
-│  ────────────────────                                                       │
+│  INCREMENTAL ANALYSIS WITH CONTENT HASHING                                 │
+│  ──────────────────────────────────────────                                 │
 │                                                                             │
-│  src/auth.ts modified                                                       │
-│       │                                                                     │
-│       ▼                                                                     │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │ Step 1: Delete old partitions                                        │   │
-│  │                                                                      │   │
-│  │   rm .devac/seed/nodes/src_auth_ts.parquet                          │   │
-│  │   rm .devac/seed/edges/src_auth_ts.parquet                          │   │
-│  │   rm .devac/seed/external_refs/src_auth_ts.parquet                  │   │
-│  │                                                                      │   │
-│  │   Time: ~1ms                                                         │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│       │                                                                     │
-│       ▼                                                                     │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │ Step 2: Parse changed file                                           │   │
-│  │                                                                      │   │
-│  │   TypeScriptParser.parse('src/auth.ts')                             │   │
-│  │   → nodes[], edges[], externalRefs[]                                │   │
-│  │                                                                      │   │
-│  │   Time: ~30-50ms (TypeScript with ts-morph)                         │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│       │                                                                     │
-│       ▼                                                                     │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │ Step 3: Write new partitions                                         │   │
-│  │                                                                      │   │
-│  │   DuckDB (memory) → nodes.parquet                                   │   │
-│  │   DuckDB (memory) → edges.parquet                                   │   │
-│  │   DuckDB (memory) → external_refs.parquet                           │   │
-│  │                                                                      │   │
-│  │   Time: ~10-20ms                                                     │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│       │                                                                     │
-│       ▼                                                                     │
-│  TOTAL: ~50-100ms per file                                                 │
+│  Step 1: Compute current file hashes (~20ms)                               │
+│  ───────────────────────────────────────────                                │
+│  For each source file in package:                                          │
+│    currentHash = sha256(fileContent)                                       │
+│                                                                             │
+│  Step 2: Compare with stored hashes                                         │
+│  ──────────────────────────────────                                         │
+│  changedFiles = files where currentHash != storedHash                      │
+│  newFiles = files not in storedHashes                                      │
+│  deletedFiles = storedHashes keys not in current files                     │
+│                                                                             │
+│  Step 3: Selective parsing                                                  │
+│  ────────────────────────                                                   │
+│  IF no changes detected:                                                    │
+│    SKIP - no regeneration needed                                           │
+│    Time: ~20-50ms total                                                    │
+│  ELSE:                                                                      │
+│    Parse ONLY changed/new files (~30-50ms per file)                        │
+│    Keep unchanged nodes in memory or re-read                               │
+│    Merge all nodes into single package Parquet                             │
+│                                                                             │
+│  Step 4: Write package Parquet files                                        │
+│  ───────────────────────────────────                                        │
+│  DuckDB (memory) → branch=main/nodes.parquet                               │
+│  DuckDB (memory) → branch=main/edges.parquet                               │
+│  DuckDB (memory) → branch=main/external_refs.parquet                       │
+│  Time: ~50-100ms (depends on package size)                                 │
+│                                                                             │
+│  Step 5: Update meta.json                                                   │
+│  ────────────────────────                                                   │
+│  Write updated fileHashes to meta.json                                     │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  TIMING SUMMARY                                                             │
+│  ──────────────                                                             │
+│                                                                             │
+│  No changes:         ~20-50ms (hash check only)                            │
+│  1 file changed:     ~150-300ms (parse 1, merge, write)                    │
+│  10 files changed:   ~300-500ms (parse 10, merge, write)                   │
+│  Full regeneration:  ~5-10s (parse all, write)                             │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -1304,15 +1474,20 @@ devac issues --file src/auth.ts
 
 ### 12.1 Target Performance
 
+> **Updated 2025-12-13:** Revised targets based on per-package-per-branch storage approach.
+
 | Operation | Target | Notes |
 |-----------|--------|-------|
+| Hash check (no changes) | <50ms | File content hash comparison |
 | Structural parse (TS) | <50ms | Per file, Babel-based |
 | Structural parse (Python) | <200ms | Per file, subprocess |
-| Seed write | <20ms | Per file, DuckDB → Parquet |
-| **Total incremental update** | **<100ms** | Per file change |
-| Package query (1K files) | <100ms | read_parquet with glob |
-| Repo query (10K files) | <500ms | Multiple package globs |
-| Cross-repo query (50K files) | <2s | Federated globs |
+| Package Parquet write | <100ms | All nodes/edges for package |
+| **Single file change** | **<300ms** | Hash + parse + merge + write |
+| **Batch changes (10 files)** | **<500ms** | Same as single (batch optimized) |
+| Package query | <100ms | Single branch, hive partition pruning |
+| Repo query (10 packages) | <200ms | Multiple package globs |
+| Cross-repo query (3 repos) | <600ms | Federated globs |
+| Cross-branch query | <150ms | Hive partitioning across branches |
 
 ### 12.2 Parquet Optimization
 
@@ -1681,6 +1856,15 @@ describe("Recursive CTE Depth", () => {
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 2.0 | 2025-12-12 | DevAC Team | Initial federated architecture spec |
+| 2.1 | 2025-12-13 | DevAC Team | Entity ID revision: scoped names instead of line numbers; branch NOT in entity_id; per-package-per-branch storage; content-hash-based incremental updates |
+
+---
+
+## Related Documents
+
+- `devac-spec-v2.0-branch-partitioning-research.md` - Detailed analysis of branch-based partitioning approach
+- `devac-spec-v2.0-entity-id-lifecycle-analysis.md` - Comprehensive entity ID behavior analysis across all scenarios
+- `devac-spec-v2.0-review-recap.md` - Consolidated review feedback and decisions
 
 ---
 
