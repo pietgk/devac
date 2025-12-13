@@ -313,7 +313,7 @@ When feature merges to main:
 
 ```
 .devac/
-├── meta.json              # Package-level metadata only (no file hashes)
+├── meta.json              # Minimal: { "schemaVersion": "2.1" } only
 └── seed/
     ├── base/              # Full content for base branch (main/development)
     │   ├── nodes.parquet  # All nodes, branch='main'
@@ -327,10 +327,12 @@ When feature merges to main:
 ```
 
 **Key decisions:**
+- **Ultra-minimal meta.json** - Only `{ "schemaVersion": "2.1" }`, all other data in Parquet or filesystem
 - **No hive-style directories** - Simple `base/` and `branch/` names
 - **No branch_meta.json** - Deleted files tracked via `is_deleted` column
 - **File content hashes in Parquet** - `file_content_hash` column in nodes
 - **Branch name in column** - Each row has `branch` column with actual branch name
+- **Stats from Parquet** - Query `SELECT COUNT(*) FROM nodes.parquet` instead of caching in meta.json
 
 ### Query Abstraction
 
@@ -351,11 +353,13 @@ const nodes = await devac.query(`
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
+| **meta.json** | Minimal: `{ "schemaVersion": "2.1" }` only | Zero sync risk, single source of truth |
 | Hash storage | Column in nodes.parquet (`file_content_hash`) | Single source of truth, queryable, no sync issues |
 | Branch storage | Delta-only with `base/` and `branch/` directories | Simple, Git-aligned, minimal storage |
 | Deleted files | `is_deleted` column in Parquet (Option B) | No separate metadata, queryable, self-contained |
 | Directory naming | `base/` and `branch/` (not hive-style) | Simple, intuitive, branch name from Git |
 | Multi-branch | Single base + single branch | Sufficient for current needs; hub handles multi-branch if needed later |
+| Stats/timestamps | Query Parquet or use file mtime | No stale data, DuckDB fast enough (~10-50ms) |
 
 ---
 

@@ -199,20 +199,19 @@ Without per-file partitioning, how do we know which files need reprocessing?
 
 ### 4.2 Solution: File Content Hash Index
 
-Store a content hash for each source file:
+> **SUPERSEDED (2025-12-13):** This section originally proposed storing hashes in meta.json. The approved design stores hashes in the `file_content_hash` column in nodes.parquet instead, and meta.json is now minimal: `{ "schemaVersion": "2.1" }` only.
 
-```json
-// .devac/meta.json
-{
-  "schemaVersion": "2.1",
-  "branch": "main",
-  "analyzedAt": "2025-12-13T10:30:00Z",
-  "fileHashes": {
-    "src/index.ts": "sha256:a1b2c3d4...",
-    "src/auth.ts": "sha256:e5f6g7h8...",
-    "src/utils.ts": "sha256:i9j0k1l2..."
-  }
-}
+Store a content hash for each source file **in Parquet**:
+
+```sql
+-- file_content_hash column in nodes.parquet
+SELECT DISTINCT file_path, file_content_hash 
+FROM read_parquet('base/nodes.parquet');
+
+-- Result:
+-- file_path       | file_content_hash
+-- src/index.ts    | sha256:a1b2c3d4...
+-- src/auth.ts     | sha256:e5f6g7h8...
 ```
 
 ### 4.3 Incremental Analysis Flow
@@ -243,9 +242,9 @@ Store a content hash for each source file:
 │    Merge with unchanged nodes (kept in memory or re-read)                  │
 │    Write new package Parquet files                                         │
 │                                                                             │
-│  Step 4: Update hash index                                                  │
-│  ────────────────────────                                                   │
-│  Write updated fileHashes to meta.json                                     │
+│  Step 4: Write Parquet with updated hashes                                 │
+│  ──────────────────────────────────────────                                 │
+│  Write nodes.parquet with file_content_hash column                         │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -735,21 +734,26 @@ CREATE TABLE edges (
 ### 8.3 Meta Schema (UPDATED 2025-12-13)
 
 ```json
-// .devac/meta.json
+// .devac/meta.json - Ultra-minimal format
 {
-  "schemaVersion": "2.1",
-  "analyzedBranch": "main",
-  "analyzedAt": "2025-12-13T10:30:00Z",
-  "packagePath": "packages/auth",
-  "stats": {
-    "nodeCount": 150,
-    "edgeCount": 200,
-    "refCount": 75
-  }
+  "schemaVersion": "2.1"
 }
 ```
 
-**Note:** File content hashes are now stored in the `file_content_hash` column in nodes.parquet, not in meta.json. This keeps all file-related data in a single queryable location and enables efficient SQL queries for change detection.
+**Design principle:** Single source of truth - all data lives in Parquet files or filesystem.
+
+| Removed Field | Alternative |
+|---------------|-------------|
+| packagePath | Derive from `.devac` folder's parent directory |
+| analyzedBranch | Implicit in directory structure + git query |
+| analyzedAt | Use file mtime of Parquet files |
+| stats.* | Query Parquet: `SELECT COUNT(*) FROM nodes.parquet` |
+| fileHashes | Stored in `file_content_hash` column in nodes.parquet |
+
+**Benefits:**
+- Zero sync risk - nothing can become stale
+- Minimum maintenance - one field, written once
+- DuckDB is fast - stats queries are ~10-50ms
 
 ### 8.4 Storage Layout (UPDATED 2025-12-13)
 
@@ -759,7 +763,7 @@ packages/auth/
 │   ├── index.ts
 │   └── auth.ts
 └── .devac/
-    ├── meta.json                       # Package metadata only (no file hashes)
+    ├── meta.json                       # Minimal: { "schemaVersion": "2.1" } only
     └── seed/
         ├── base/                       # Full content for base branch (main)
         │   ├── nodes.parquet          # All nodes, includes file_content_hash column

@@ -710,36 +710,41 @@ function generateScopedName(node: ASTNode, context: ParserContext): string {
 
 ### 5.3 Meta.json Format
 
-> **Updated 2025-12-13:** File content hashes are now stored as a column in nodes.parquet (`file_content_hash`), not in meta.json. This provides a single source of truth and eliminates sync issues.
+> **Updated 2025-12-13:** Ultra-minimal format approved. All other data is derivable from Parquet files or filesystem.
 
 ```json
 {
-  "schemaVersion": "2.1",
-  "packagePath": "packages/auth",
-  "baseBranch": "main",
-  "currentBranch": "feature-auth",
-  "baseAnalyzedAt": "2025-12-13T10:30:00Z",
-  "branchAnalyzedAt": "2025-12-13T11:00:00Z",
-  "stats": {
-    "base": {
-      "nodeCount": 150,
-      "edgeCount": 200,
-      "refCount": 75,
-      "fileCount": 12
-    },
-    "branch": {
-      "changedFiles": 2,
-      "newFiles": 1,
-      "deletedFiles": 0
-    }
-  }
+  "schemaVersion": "2.1"
 }
 ```
 
-**Key points:**
-- **No fileHashes** - Content hashes are in `nodes.parquet` (`file_content_hash` column)
-- **No branch_meta.json** - Deleted files tracked via `is_deleted` column in Parquet
-- **Simplified metadata** - Only package-level stats and timestamps
+**Design principle:** Single source of truth - all data lives in Parquet files.
+
+| Removed Field | Alternative |
+|---------------|-------------|
+| packagePath | Derive from `.devac` folder's parent directory |
+| baseBranch | Implicit in `base/` directory structure |
+| currentBranch | Query git: `git rev-parse --abbrev-ref HEAD` |
+| analyzedAt | Use file mtime of Parquet files |
+| stats.* | Query Parquet: `SELECT COUNT(*) FROM nodes.parquet` |
+| fileHashes | Stored in `file_content_hash` column in nodes.parquet |
+
+**Benefits:**
+- **Zero sync risk** - Nothing can become stale
+- **Minimum maintenance** - One field, written once
+- **DuckDB is fast** - Stats queries are ~10-50ms
+
+**Querying stats from Parquet:**
+```sql
+-- Get node/edge/ref counts
+SELECT 
+  (SELECT COUNT(*) FROM read_parquet('base/nodes.parquet')) as nodeCount,
+  (SELECT COUNT(*) FROM read_parquet('base/edges.parquet')) as edgeCount,
+  (SELECT COUNT(*) FROM read_parquet('base/external_refs.parquet')) as refCount;
+
+-- Get file count
+SELECT COUNT(DISTINCT file_path) FROM read_parquet('base/nodes.parquet');
+```
 
 ### 5.4 Size Estimates
 
