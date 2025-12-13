@@ -1,8 +1,13 @@
 # Storage Design Decisions: Hash Location & Delta Branch Storage
 
 **Date:** 2025-12-13  
-**Status:** UNDER REVIEW  
+**Status:** APPROVED  
 **Triggered by:** User challenges to current design
+
+> **User Confirmation (2025-12-13):**
+> - "deletedFiles using option B is a good idea" (deletion markers in Parquet)
+> - "multi-branch and or parallel analysis are not needed" (base/branch structure sufficient)
+> - Future multi-branch comparison can be handled at hub level
 
 ---
 
@@ -173,105 +178,110 @@ branch=feature-x/nodes.parquet  → 1000 nodes (full copy!)
 
 **Challenge:** Only store changed files in branch-specific Parquet files.
 
-### Proposed: Delta Storage Model
+### APPROVED: Delta Storage Model with is_deleted Column
 
 ```
-branch=main/nodes.parquet       → 1000 nodes (base truth)
-branch=feature-x/nodes.parquet  → 5 nodes (only changed/new files)
+base/nodes.parquet       → 1000 nodes (base truth for main branch)
+branch/nodes.parquet     → 5 nodes (only changed/new/deleted files)
 ```
 
 This mirrors Git's model where branches store deltas, not full copies.
 
 ### How It Works
 
-#### Branch Creation
-When creating/analyzing a feature branch:
-1. Compute file hashes for all source files
-2. Compare with base branch (main) hashes
-3. Only parse and store files that differ
-4. Track metadata: base branch, changed files, deleted files
+#### Directory Structure (Simplified)
 
-#### Branch Metadata
+```
+.devac/seed/
+├── base/                 # Full content for base branch (main/development)
+│   ├── nodes.parquet    # All nodes, branch column = 'main'
+│   ├── edges.parquet
+│   └── external_refs.parquet
+└── branch/               # Delta for current working branch
+    ├── nodes.parquet    # Only changed/new/deleted, branch column = 'feature-x'
+    ├── edges.parquet
+    └── external_refs.parquet
+```
+
+**Key simplifications:**
+- No hive-style `branch=main/` directories - just `base/` and `branch/`
+- No `branch_meta.json` - deleted files tracked via `is_deleted` column
+- Branch name stored in `branch` column of each Parquet file
+- Current branch name retrieved from Git
+
+#### Deleted Files: is_deleted Column (Option B - APPROVED)
+
+Instead of tracking deleted files in separate metadata, we use an `is_deleted` column:
 
 ```sql
--- In branch-specific meta or as a separate small Parquet
-CREATE TABLE branch_meta (
+CREATE TABLE nodes (
+  entity_id VARCHAR NOT NULL,
   branch VARCHAR NOT NULL,
-  base_branch VARCHAR NOT NULL,       -- "main" or "development"
-  base_commit VARCHAR,                -- Git commit SHA of base
-  changed_files JSON,                 -- ["src/auth.ts", "src/new.ts"]
-  deleted_files JSON,                 -- ["src/removed.ts"]
-  analyzed_at TIMESTAMP
+  file_path VARCHAR NOT NULL,
+  file_content_hash VARCHAR NOT NULL,
+  is_deleted BOOLEAN DEFAULT FALSE,  -- True = file deleted in this branch
+  scoped_name VARCHAR,               -- NULL if is_deleted=true
+  -- ... rest of columns
 );
 ```
 
-Or in meta.json per branch:
-```json
-{
-  "branch": "feature-x",
-  "baseBranch": "main",
-  "baseCommit": "abc123def",
-  "changedFiles": ["src/auth.ts", "src/newfile.ts"],
-  "deletedFiles": ["src/removed.ts"],
-  "analyzedAt": "2025-12-13T10:30:00Z"
-}
+For a deleted file, we insert a marker row:
+```sql
+INSERT INTO nodes (entity_id, branch, file_path, file_content_hash, is_deleted, kind, ...)
+VALUES ('repo:pkg:file:hash', 'feature-x', 'src/removed.ts', 'deleted', TRUE, 'file', ...);
 ```
 
 #### Querying a Branch (Unified View)
 
 ```sql
--- Get all nodes for feature-x (delta + base)
-WITH feature_files AS (
-  SELECT DISTINCT file_path 
-  FROM read_parquet('.devac/seed/branch=feature-x/nodes.parquet')
-),
-deleted_files AS (
-  -- From branch metadata
-  SELECT unnest(['src/removed.ts']) as file_path
-)
+-- Get all nodes for current branch (base + delta, excluding deleted)
 SELECT * FROM (
-  -- 1. Feature branch nodes (overrides)
-  SELECT *, 'feature-x' as _source_branch 
-  FROM read_parquet('.devac/seed/branch=feature-x/nodes.parquet')
+  -- 1. Branch delta nodes (not deleted)
+  SELECT * FROM read_parquet('.devac/seed/branch/nodes.parquet')
+  WHERE is_deleted = false
   
   UNION ALL
   
-  -- 2. Base branch nodes (not overridden, not deleted)
-  SELECT *, 'main' as _source_branch
-  FROM read_parquet('.devac/seed/branch=main/nodes.parquet')
-  WHERE file_path NOT IN (SELECT file_path FROM feature_files)
-    AND file_path NOT IN (SELECT file_path FROM deleted_files)
+  -- 2. Base branch nodes (not overridden in branch)
+  SELECT * FROM read_parquet('.devac/seed/base/nodes.parquet') base
+  WHERE NOT EXISTS (
+    SELECT 1 FROM read_parquet('.devac/seed/branch/nodes.parquet') br
+    WHERE br.file_path = base.file_path
+  )
 );
 ```
 
 #### Helper View/Function
 
 ```typescript
-// Create a unified query for any branch
-function getUnifiedBranchQuery(branch: string, baseBranch: string): string {
+// Create a unified query for current branch
+function getUnifiedBranchQuery(): string {
   return `
-    WITH branch_files AS (
-      SELECT DISTINCT file_path 
-      FROM read_parquet('.devac/seed/branch=${branch}/nodes.parquet')
+    SELECT * FROM (
+      SELECT * FROM read_parquet('.devac/seed/branch/nodes.parquet')
+      WHERE is_deleted = false
+      UNION ALL
+      SELECT * FROM read_parquet('.devac/seed/base/nodes.parquet') base
+      WHERE NOT EXISTS (
+        SELECT 1 FROM read_parquet('.devac/seed/branch/nodes.parquet') br
+        WHERE br.file_path = base.file_path
+      )
     )
-    SELECT * FROM read_parquet('.devac/seed/branch=${branch}/nodes.parquet')
-    UNION ALL
-    SELECT * FROM read_parquet('.devac/seed/branch=${baseBranch}/nodes.parquet')
-    WHERE file_path NOT IN (SELECT file_path FROM branch_files)
   `;
 }
 ```
 
-### Pros and Cons
+### Pros and Cons (APPROVED approach)
 
-| Aspect | Full Copy (Current) | Delta Only (Proposed) |
-|--------|--------------------|-----------------------|
-| Storage size | Large (N × branches) | Small (base + deltas) |
-| Query simplicity | Simple (single file) | Complex (UNION + filter) |
+| Aspect | Full Copy | Delta with is_deleted (APPROVED) |
+|--------|-----------|----------------------------------|
+| Storage size | Large (N × branches) | Small (base + delta) |
+| Query simplicity | Simple (single file) | Moderate (UNION + filter) |
 | Branch creation | Slow (copy all) | Fast (only changed) |
-| Base branch update | Independent | Need to consider stale deltas |
-| Deleted files | Implicit (not in file) | Explicit tracking needed |
+| Deleted files | Implicit | `is_deleted` column in Parquet |
+| Separate metadata | N/A | **NO branch_meta.json needed** |
 | Git alignment | Divergent | Aligned with Git model |
+| Multi-branch | Multiple directories | Single base + single branch |
 
 ### Edge Cases
 
@@ -279,45 +289,48 @@ function getUnifiedBranchQuery(branch: string, baseBranch: string): string {
 If `main` is updated after `feature-x` branched:
 - `feature-x` delta still valid for its changed files
 - Base nodes may be stale
-- Solution: Track `baseCommit` and warn/rebuild if main advanced
+- Solution: Warn user if base has changed since branch analysis
 
-#### 2. Deleted Files
+#### 2. Deleted Files (APPROVED: is_deleted column)
 File exists in `main`, deleted in `feature-x`:
-- Must explicitly track in metadata
-- Query must exclude deleted files from base
+- Insert marker row with `is_deleted=true` in branch/nodes.parquet
+- Query excludes deleted via `WHERE is_deleted = false`
+- **No separate metadata file needed**
 
 #### 3. Renamed Files
 File renamed from `old.ts` to `new.ts`:
-- `old.ts` appears as deleted
-- `new.ts` appears as new
+- `old.ts` gets `is_deleted=true` marker in branch/
+- `new.ts` appears as new file in branch/
 - Entity IDs will differ (file path in hash)
 - This is correct behavior - it's a different identity
 
 #### 4. Merge Back to Main
 When feature merges to main:
-- Regenerate main with merged source files
-- Feature branch can be pruned
+- Regenerate base/ with merged source files
+- Delete branch/ directory (or leave for reference)
 
-### Recommendation
-
-**Implement delta-only storage with explicit metadata tracking.**
+### APPROVED: Final Directory Structure
 
 ```
 .devac/
-├── meta.json                     # Package-level metadata (minimal)
+├── meta.json              # Package-level metadata only (no file hashes)
 └── seed/
-    ├── branch=main/
-    │   ├── nodes.parquet         # Full nodes for base branch
+    ├── base/              # Full content for base branch (main/development)
+    │   ├── nodes.parquet  # All nodes, branch='main'
     │   ├── edges.parquet
-    │   ├── external_refs.parquet
-    │   └── branch_meta.json      # {"branch": "main", "baseBranch": null}
+    │   └── external_refs.parquet
     │
-    └── branch=feature-x/
-        ├── nodes.parquet         # ONLY changed/new files
-        ├── edges.parquet         # ONLY edges from changed files
-        ├── external_refs.parquet # ONLY refs from changed files
-        └── branch_meta.json      # {"baseBranch": "main", "deletedFiles": [...]}
+    └── branch/            # Delta for current working branch
+        ├── nodes.parquet  # Only changed/new + is_deleted markers
+        ├── edges.parquet  # Only edges from changed files
+        └── external_refs.parquet
 ```
+
+**Key decisions:**
+- **No hive-style directories** - Simple `base/` and `branch/` names
+- **No branch_meta.json** - Deleted files tracked via `is_deleted` column
+- **File content hashes in Parquet** - `file_content_hash` column in nodes
+- **Branch name in column** - Each row has `branch` column with actual branch name
 
 ### Query Abstraction
 
@@ -325,34 +338,32 @@ Provide a helper that abstracts the delta logic:
 
 ```typescript
 // CLI/API provides unified view
-const nodes = await devac.queryBranch("feature-x", `
+const nodes = await devac.query(`
   SELECT * FROM nodes WHERE kind = 'function'
 `);
 
-// Internally expands to:
-// SELECT * FROM (unified_branch_view) WHERE kind = 'function'
+// Internally expands to unified branch view with is_deleted filtering
 ```
 
 ---
 
-## Summary of Decisions
+## Summary of APPROVED Decisions
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Hash storage | Column in nodes.parquet | Single source of truth, queryable, no sync issues |
-| Branch storage | Delta-only | Aligns with Git, smaller storage, faster branching |
-| Deleted files | Explicit in branch_meta.json | Required for correct delta queries |
-| Base tracking | baseCommit in metadata | Detect stale branches |
+| Hash storage | Column in nodes.parquet (`file_content_hash`) | Single source of truth, queryable, no sync issues |
+| Branch storage | Delta-only with `base/` and `branch/` directories | Simple, Git-aligned, minimal storage |
+| Deleted files | `is_deleted` column in Parquet (Option B) | No separate metadata, queryable, self-contained |
+| Directory naming | `base/` and `branch/` (not hive-style) | Simple, intuitive, branch name from Git |
+| Multi-branch | Single base + single branch | Sufficient for current needs; hub handles multi-branch if needed later |
 
 ---
 
-## Next Steps
+## Completed
 
-1. Update `devac-spec-v2.0.md` with these decisions
-2. Update schema in entity-id-lifecycle-analysis.md
-3. Update branch-partitioning-research.md
-4. Create query helper specifications
+- [x] Update `devac-spec-v2.0.md` with these decisions
+- [ ] Update branch-partitioning-research.md with simplified structure
 
 ---
 
-*End of Document*
+*End of Document - APPROVED 2025-12-13*

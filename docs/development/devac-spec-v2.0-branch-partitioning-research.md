@@ -23,16 +23,24 @@ The v2.0 spec proposed **per-source-file Parquet partitioning** for fast increme
 
 **IMPORTANT UPDATE (2025-12-13):** Based on further analysis in `devac-spec-v2.0-entity-id-lifecycle-analysis.md` Question 6, the recommendation has been **revised** - branch should NOT be part of entity_id. This aligns with Git's content-addressable philosophy where same content = same identity regardless of branch.
 
-### Recommended Architecture
+### Recommended Architecture (APPROVED 2025-12-13)
 
 ```
 .devac/seed/
-├── branch=main/
-│   └── package.parquet          # Single file per package per branch
-├── branch=development/
-│   └── package.parquet
-└── file-hashes.json             # Content hashes for all source files
+├── base/                        # Full content for base branch (main/development)
+│   ├── nodes.parquet           # All nodes, branch column = 'main'
+│   ├── edges.parquet
+│   └── external_refs.parquet
+└── branch/                      # Delta for current working branch
+    ├── nodes.parquet           # Only changed/new + is_deleted markers
+    ├── edges.parquet
+    └── external_refs.parquet
 ```
+
+**Key simplifications (APPROVED):**
+- No hive-style `branch=main/` - simple `base/` and `branch/` directories
+- No `branch_meta.json` - deleted files tracked via `is_deleted` column
+- File content hashes stored in `file_content_hash` column in Parquet
 
 ---
 
@@ -115,22 +123,26 @@ From [DuckDB Parquet Tips](https://duckdb.org/docs/stable/data/parquet/tips) and
 
 ## 3. Branch-Based Partitioning Analysis
 
-### 3.1 Concept Overview
+### 3.1 Concept Overview (UPDATED 2025-12-13)
 
-Instead of partitioning by source file, partition by **package + branch**:
+Instead of partitioning by source file, use **base + branch delta storage**:
 
 ```
 .devac/seed/
-├── branch=main/
-│   ├── nodes.parquet            # All nodes for this package on main
-│   ├── edges.parquet            # All edges for this package on main
-│   └── external_refs.parquet    # All refs for this package on main
-├── branch=feature-auth/
-│   ├── nodes.parquet
-│   ├── edges.parquet
-│   └── external_refs.parquet
-└── meta.json                    # Metadata including file hashes
+├── base/                        # Full content for base branch (main)
+│   ├── nodes.parquet           # All nodes for this package
+│   ├── edges.parquet           # All edges for this package  
+│   └── external_refs.parquet   # All refs for this package
+└── branch/                      # Delta for current working branch
+    ├── nodes.parquet           # Only changed/new + is_deleted markers
+    ├── edges.parquet           # Edges from changed files
+    └── external_refs.parquet   # Refs from changed files
 ```
+
+**Simplifications from original hive-style proposal:**
+- Simple `base/` and `branch/` directories (not `branch=main/`)
+- Deleted files tracked via `is_deleted` column in Parquet (not branch_meta.json)
+- File content hashes in `file_content_hash` column (not meta.json)
 
 ### 3.2 File Count Comparison
 
@@ -142,20 +154,30 @@ Instead of partitioning by source file, partition by **package + branch**:
 
 **Reduction: 100x fewer files** for typical single-branch workflows.
 
-### 3.3 Hive-Style Partitioning Benefits
+### 3.3 Simple Directory Structure Benefits (UPDATED 2025-12-13)
 
-Using `branch=` prefix enables [DuckDB Hive Partitioning](https://duckdb.org/docs/stable/data/partitioning/hive_partitioning):
+**Note:** The original research proposed hive-style `branch=main/` partitioning, but the final approved design uses simpler `base/` and `branch/` directories:
 
 ```sql
--- Query automatically filters to branch=main partition
-SELECT * FROM read_parquet('.devac/seed/branch=*/nodes.parquet', hive_partitioning=true)
-WHERE branch = 'main' AND kind = 'function';
+-- Query base branch (full content)
+SELECT * FROM read_parquet('.devac/seed/base/nodes.parquet')
+WHERE kind = 'function';
+
+-- Query unified branch view
+SELECT * FROM read_parquet('.devac/seed/branch/nodes.parquet')
+WHERE is_deleted = FALSE
+UNION ALL
+SELECT * FROM read_parquet('.devac/seed/base/nodes.parquet')
+WHERE file_path NOT IN (
+  SELECT file_path FROM read_parquet('.devac/seed/branch/nodes.parquet')
+);
 ```
 
 Benefits:
-- Partition pruning (only reads relevant branch files)
-- Automatic branch column extraction
-- Clean separation of branch data
+- Simple, intuitive directory names
+- No special glob patterns or hive partitioning syntax needed
+- Clear separation: base/ = full content, branch/ = delta only
+- is_deleted column handles file deletions
 
 ### 3.4 Trade-off: Update Latency
 
@@ -304,58 +326,68 @@ CREATE TABLE nodes (
 );
 ```
 
-### 5.4 Cross-Branch Query Patterns
+### 5.4 Query Patterns (UPDATED 2025-12-13)
 
-**Query single branch (most common):**
+**Query base branch (full content):**
 ```sql
--- Partition pruning keeps it fast
-SELECT * FROM read_parquet('.devac/seed/branch=main/nodes.parquet')
+SELECT * FROM read_parquet('.devac/seed/base/nodes.parquet')
 WHERE kind = 'function';
 ```
 
-**Query across branches (find all versions):**
+**Query current working branch (unified view):**
 ```sql
-SELECT entity_id, branch, scoped_name, file_path
-FROM read_parquet('.devac/seed/branch=*/nodes.parquet', hive_partitioning=true)
-WHERE entity_id = 'repo-api:packages/auth:function:a1b2c3d4';
-
--- Result: One row per branch that has this entity
--- entity_id                                | branch    | scoped_name | file_path
--- repo-api:packages/auth:function:a1b2c3d4 | main      | handleLogin | src/auth.ts
--- repo-api:packages/auth:function:a1b2c3d4 | feature-x | handleLogin | src/auth.ts
+-- Branch delta (non-deleted) + base (excluding overridden files)
+SELECT * FROM read_parquet('.devac/seed/branch/nodes.parquet')
+WHERE is_deleted = FALSE
+UNION ALL
+SELECT * FROM read_parquet('.devac/seed/base/nodes.parquet')
+WHERE file_path NOT IN (
+  SELECT file_path FROM read_parquet('.devac/seed/branch/nodes.parquet')
+);
 ```
 
-**Deduplicate for unique entities:**
+**Find entities modified in current branch:**
 ```sql
-SELECT DISTINCT entity_id, scoped_name
-FROM read_parquet('.devac/seed/branch=*/nodes.parquet', hive_partitioning=true)
-WHERE kind = 'function';
+SELECT entity_id, scoped_name, file_path
+FROM read_parquet('.devac/seed/branch/nodes.parquet')
+WHERE is_deleted = FALSE;
 ```
 
-### 5.5 Edge References
+**Find deleted files in current branch:**
+```sql
+SELECT DISTINCT file_path
+FROM read_parquet('.devac/seed/branch/nodes.parquet')
+WHERE is_deleted = TRUE;
+```
 
-Edges within a branch reference entities by entity_id. Since edges are stored per-branch, they implicitly reference entities on the same branch:
+### 5.5 Edge References (UPDATED 2025-12-13)
+
+Edges within a storage directory reference entities by entity_id. Since edges are stored in base/ or branch/, they implicitly reference entities in the same context:
 
 ```sql
--- edges.parquet (in branch=main/ partition)
+-- edges.parquet (in base/ directory)
 source_entity_id: repo:pkg:function:abc123  -- handleLogin
 target_entity_id: repo:pkg:function:def456  -- validateUser
 edge_type: CALLS
 
--- Both source and target are on 'main' branch (same partition)
+-- Both source and target are in base (full content for main branch)
+
+-- edges.parquet (in branch/ directory)  
+-- Only contains edges from files that changed in the current branch
 ```
 
-**Cross-branch edges are rare** but can be supported by adding an optional `target_branch` column when needed.
+**Note:** With the simplified base/branch model, cross-branch edge comparison is not needed. If future multi-branch comparison is required, it can be handled at the hub level.
 
-### 5.6 Benefits of This Approach
+### 5.6 Benefits of This Approach (UPDATED 2025-12-13)
 
 1. **Aligns with Git:** Same code = same identity, matching content-addressable storage
 2. **Simpler entity IDs:** No branch parsing needed
-3. **Natural deduplication:** Cross-branch queries can easily find unique entities
-4. **Cleaner edge references:** Edges within a branch just use entity_id
-5. **Storage efficiency:** Hive partitioning handles branch separation
+3. **Delta storage efficiency:** Only changed files stored in branch/
+4. **Cleaner edge references:** Edges within a directory just use entity_id
+5. **Simple directory structure:** base/ and branch/ are intuitive and easy to understand
+6. **Single source of truth:** is_deleted and file_content_hash columns in Parquet
 
-### 5.7 Implementation
+### 5.7 Implementation (UPDATED 2025-12-13)
 
 ```typescript
 // Entity ID generation (v2.1 - branch NOT included)
@@ -370,32 +402,43 @@ function generateEntityId(
   return `${repo}:${packagePath}:${kind}:${scopeHash}`;
 }
 
-// Query current branch
-const results = db.all(`
-  SELECT * FROM read_parquet(
-    '.devac/seed/branch=${currentBranch}/nodes.parquet'
-  )
+// Query base branch (full content)
+const baseResults = db.all(`
+  SELECT * FROM read_parquet('.devac/seed/base/nodes.parquet')
   WHERE kind = 'function'
 `);
 
-// Find entity across all branches
-const crossBranchResults = db.all(`
-  SELECT entity_id, branch, scoped_name 
-  FROM read_parquet('.devac/seed/branch=*/nodes.parquet', hive_partitioning=true)
-  WHERE entity_id = '${entityId}'
+// Query unified branch view (branch delta + base)
+const unifiedResults = db.all(`
+  SELECT * FROM read_parquet('.devac/seed/branch/nodes.parquet')
+  WHERE is_deleted = FALSE
+  UNION ALL
+  SELECT * FROM read_parquet('.devac/seed/base/nodes.parquet')
+  WHERE file_path NOT IN (
+    SELECT file_path FROM read_parquet('.devac/seed/branch/nodes.parquet')
+  )
+`);
+
+// Find what changed in current branch
+const changedEntities = db.all(`
+  SELECT entity_id, scoped_name, file_path
+  FROM read_parquet('.devac/seed/branch/nodes.parquet')
+  WHERE is_deleted = FALSE
 `);
 ```
 
 ### 5.8 Comparison with Original Options
 
-| Aspect | Option A (Branch IN ID) | Option B (Branch as Partition) ← CHOSEN |
-|--------|-------------------------|----------------------------------------|
+| Aspect | Option A (Branch IN ID) | Option B (Branch as Storage Key) ← CHOSEN |
+|--------|-------------------------|-------------------------------------------|
 | Same code, same identity | ❌ Different IDs per branch | ✅ Same ID |
 | Aligns with Git philosophy | ❌ No | ✅ Yes |
 | Cross-branch comparison | Requires logical_id | Natural (same entity_id) |
 | Storage uniqueness | By entity_id alone | By (entity_id, branch) |
 | Edge references | Unambiguous | Within-branch implicit |
-| Complexity | Higher (two ID columns) | Lower (single ID + partition) |
+| Complexity | Higher (two ID columns) | Lower (single ID + base/branch dirs) |
+
+**Note (2025-12-13):** The final implementation uses simple `base/` and `branch/` directories rather than hive-style `branch=main/` partitioning. This simplifies the directory structure while maintaining the same conceptual approach.
 
 ---
 
@@ -450,7 +493,7 @@ feature:   C (modified auth/utils.ts)
 ```
 
 **What Happens:**
-- Both branches have different `.devac/seed/branch=*/` content
+- Both branches have different `.devac/seed/` content
 - After merge, source files from both branches exist
 - Regeneration produces correct combined result
 
@@ -519,22 +562,24 @@ git lfs track "*.parquet"
 
 ## 7. Branch Lifecycle Management
 
-### 7.1 Branch-Aware Seed Storage
+### 7.1 Branch-Aware Seed Storage (UPDATED 2025-12-13)
 
 ```
 .devac/
 ├── seed/
-│   ├── branch=main/
-│   │   ├── nodes.parquet
+│   ├── base/                    # Full content for base branch (main)
+│   │   ├── nodes.parquet       # Includes file_content_hash column
 │   │   ├── edges.parquet
 │   │   └── external_refs.parquet
-│   ├── branch=development/
-│   │   └── ...
-│   └── branch=feature-auth/
-│       └── ...
-├── meta.json                    # Current branch, file hashes
+│   └── branch/                  # Delta for current working branch
+│       ├── nodes.parquet       # Only changed/new + is_deleted markers
+│       ├── edges.parquet
+│       └── external_refs.parquet
+├── meta.json                    # Package metadata only (no file hashes)
 └── manifest.json                # Package index
 ```
+
+**Note:** Multi-branch parallel analysis is not needed. If future multi-branch comparison is required, it can be handled at the hub level.
 
 ### 7.2 CLI Commands for Branch Management
 
@@ -542,17 +587,22 @@ git lfs track "*.parquet"
 # Analyze current branch (auto-detects git branch)
 devac analyze
 
-# Analyze specific branch
-devac analyze --branch feature-auth
+# Analyze for base branch (main/development)
+devac analyze --base
 
-# List analyzed branches
-devac branches
+# Query base branch
+devac query "SELECT * FROM read_parquet('.devac/seed/base/nodes.parquet')"
 
-# Remove stale branch seeds (branch deleted from git)
-devac prune-branches
-
-# Query across branches
-devac query "SELECT * FROM read_parquet('.devac/seed/branch=*/nodes.parquet')"
+# Query current working branch (unified view: branch delta + base)
+devac query "
+  SELECT * FROM read_parquet('.devac/seed/branch/nodes.parquet')
+  WHERE is_deleted = FALSE
+  UNION ALL
+  SELECT * FROM read_parquet('.devac/seed/base/nodes.parquet')
+  WHERE file_path NOT IN (
+    SELECT file_path FROM read_parquet('.devac/seed/branch/nodes.parquet')
+  )
+"
 ```
 
 ### 7.3 Automatic Branch Detection
@@ -589,29 +639,30 @@ function sanitizeBranchName(branch: string): string {
 }
 ```
 
-### 7.4 Branch Cleanup Policy
+### 7.4 Branch Cleanup Policy (UPDATED 2025-12-13)
+
+With the simplified base/branch model, cleanup is straightforward:
 
 ```typescript
-// src/commands/prune-branches.ts
+// src/commands/reset-branch.ts
 
-async function pruneStaleBranches(seedPath: string): Promise<void> {
-  // Get all analyzed branches
-  const analyzedBranches = await getAnalyzedBranches(seedPath);
+async function resetBranchDelta(seedPath: string): Promise<void> {
+  // Remove branch delta when switching to a different working branch
+  // or when merging back to main
+  const branchDir = `${seedPath}/branch`;
   
-  // Get all git branches
-  const gitBranches = await getGitBranches();
-  
-  // Find branches to prune
-  const staleBranches = analyzedBranches.filter(
-    b => !gitBranches.includes(b)
-  );
-  
-  for (const branch of staleBranches) {
-    console.log(`Removing stale branch seeds: ${branch}`);
-    await fs.rm(`${seedPath}/branch=${branch}`, { recursive: true });
+  if (await fs.exists(branchDir)) {
+    console.log("Resetting branch delta...");
+    await fs.rm(branchDir, { recursive: true });
   }
 }
+
+// When switching branches or after merge:
+// 1. Reset branch/ directory
+// 2. Re-analyze changed files to populate new branch delta
 ```
+
+**Note:** Multi-branch parallel analysis is not needed. The branch/ directory always represents the current working branch's delta from base/.
 
 ---
 
@@ -681,7 +732,7 @@ CREATE TABLE edges (
 );
 ```
 
-### 8.3 Meta Schema (New)
+### 8.3 Meta Schema (UPDATED 2025-12-13)
 
 ```json
 // .devac/meta.json
@@ -690,25 +741,17 @@ CREATE TABLE edges (
   "analyzedBranch": "main",
   "analyzedAt": "2025-12-13T10:30:00Z",
   "packagePath": "packages/auth",
-  "fileHashes": {
-    "src/index.ts": {
-      "contentHash": "sha256:a1b2c3d4e5f6...",
-      "size": 1234,
-      "mtime": "2025-12-13T10:00:00Z"
-    },
-    "src/auth.ts": {
-      "contentHash": "sha256:b2c3d4e5f6g7...",
-      "size": 5678,
-      "mtime": "2025-12-13T09:30:00Z"
-    }
-  },
-  "nodeCount": 150,
-  "edgeCount": 200,
-  "refCount": 75
+  "stats": {
+    "nodeCount": 150,
+    "edgeCount": 200,
+    "refCount": 75
+  }
 }
 ```
 
-### 8.4 Storage Layout (Updated)
+**Note:** File content hashes are now stored in the `file_content_hash` column in nodes.parquet, not in meta.json. This keeps all file-related data in a single queryable location and enables efficient SQL queries for change detection.
+
+### 8.4 Storage Layout (UPDATED 2025-12-13)
 
 ```
 packages/auth/
@@ -716,17 +759,22 @@ packages/auth/
 │   ├── index.ts
 │   └── auth.ts
 └── .devac/
-    ├── meta.json                       # Package metadata + file hashes
+    ├── meta.json                       # Package metadata only (no file hashes)
     └── seed/
-        ├── branch=main/
-        │   ├── nodes.parquet          # All nodes for this package
-        │   ├── edges.parquet          # All edges for this package
+        ├── base/                       # Full content for base branch (main)
+        │   ├── nodes.parquet          # All nodes, includes file_content_hash column
+        │   ├── edges.parquet          # All edges
         │   └── external_refs.parquet  # All external refs
-        └── branch=feature-x/
-            ├── nodes.parquet
+        └── branch/                     # Delta for current working branch
+            ├── nodes.parquet          # Only changed/new + is_deleted markers
             ├── edges.parquet
             └── external_refs.parquet
 ```
+
+**Key changes from original proposal:**
+- Simple `base/` and `branch/` directories (not hive-style `branch=main/`)
+- `file_content_hash` column in nodes.parquet (not in meta.json)
+- `is_deleted` column for tracking deleted files (not branch_meta.json)
 
 ---
 
@@ -822,16 +870,18 @@ packages/auth/
 
 ## 11. Conclusion
 
-### 11.1 Summary of Recommendations
+### 11.1 Summary of Recommendations (UPDATED 2025-12-13)
 
-| Aspect | v2.0 (Original) | v2.1 (Recommended) |
-|--------|-----------------|---------------------|
-| **Partitioning** | Per-source-file | Per-package-per-branch |
-| **File Count** | 3N per package | 3 per branch per package |
+| Aspect | v2.0 (Original) | v2.1 (APPROVED) |
+|--------|-----------------|-----------------|
+| **Partitioning** | Per-source-file | Per-package with base/branch delta |
+| **File Count** | 3N per package | 3 files in base/ + 3 files in branch/ |
 | **Entity ID** | {repo}:{pkg}:{kind}:{hash} (with line number) | {repo}:{pkg}:{kind}:{scope_hash} (with scoped name) |
-| **Branch in ID** | Not considered | NO - branch is partition key only |
+| **Branch in ID** | Not considered | NO - branch is storage directory only |
 | **Storage Uniqueness** | By entity_id | By composite (entity_id, branch) |
-| **Branch Handling** | Not addressed | Hive-style partition as storage key |
+| **Branch Handling** | Not addressed | Simple base/ + branch/ directories |
+| **Deletion Tracking** | Not addressed | is_deleted column in Parquet |
+| **File Hashes** | Not addressed | file_content_hash column in Parquet |
 | **Incremental Updates** | Replace partition file | Content hash skip + regenerate |
 | **Git Merge** | Not addressed | merge=ours + post-merge hook |
 | **Update Target** | <100ms | <300ms (with <50ms skip) |
@@ -840,21 +890,30 @@ packages/auth/
 
 | Original Risk | Mitigation |
 |---------------|------------|
-| 15K+ Parquet files | Reduced to ~30-100 files typical |
+| 15K+ Parquet files | Reduced to 6 files per package (3 base + 3 branch) |
 | OS file handle limits | No longer a concern |
-| Query planning overhead | Hive partitioning enables pruning |
-| Slow incremental updates | Content hash enables skip |
+| Query planning overhead | Simple directory structure, no glob patterns |
+| Slow incremental updates | Content hash in Parquet enables skip |
 | Git merge conflicts | Regeneration after merge |
 | Line numbers break entity ID stability | Use scoped names instead |
 | Same code different ID on branches | Branch NOT in entity_id |
+| Tracking deleted files | is_deleted column in Parquet |
+| File hash storage complexity | file_content_hash column in Parquet (single source of truth) |
 
-### 11.3 Next Steps
+### 11.3 Next Steps (UPDATED 2025-12-13)
 
-1. Update devac-spec-v2.0.md with branch-based partitioning
-2. Add content hashing specification
-3. Update performance targets
-4. Add git integration section
-5. Create implementation tasks for Phase 1
+**Completed:**
+1. ✅ Updated devac-spec-v2.0.md with base/branch directory structure
+2. ✅ Added is_deleted column for deletion tracking
+3. ✅ Added file_content_hash column for change detection
+4. ✅ Updated devac-spec-v2.0-storage-design-decisions.md with APPROVED status
+5. ✅ Documented simplified meta.json format (stats only)
+
+**Remaining:**
+1. Implement the extractor with base/branch storage
+2. Implement is_deleted markers for deleted files
+3. Add file_content_hash computation during extraction
+4. Create unified branch query helper functions
 
 ---
 

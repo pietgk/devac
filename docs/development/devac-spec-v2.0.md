@@ -231,20 +231,20 @@ Instead of adding PostgreSQL as a second database (v1.11-db-redesign proposal), 
 │                                                                             │
 │  packages/auth/.devac/                                                     │
 │  │                                                                          │
-│  │  meta.json                     ← Package metadata, file content hashes  │
+│  │  meta.json                     ← Package metadata only (no file hashes) │
 │  │                                                                          │
-│  │  seed/                         ← Hive-style branch partitioning         │
-│  │  ├── branch=main/              ← One set per branch                     │
-│  │  │   ├── nodes.parquet        ← All nodes for this package/branch      │
-│  │  │   ├── edges.parquet        ← All edges for this package/branch      │
-│  │  │   └── external_refs.parquet ← All refs for this package/branch      │
+│  │  seed/                         ← Simple base/branch structure           │
+│  │  ├── base/                     ← Full content for base branch (main)   │
+│  │  │   ├── nodes.parquet        ← All nodes for this package             │
+│  │  │   ├── edges.parquet        ← All edges for this package             │
+│  │  │   └── external_refs.parquet ← All refs for this package             │
 │  │  │                                                                       │
-│  │  └── branch=feature-x/         ← Additional branch if analyzed         │
-│  │      ├── nodes.parquet                                                  │
-│  │      ├── edges.parquet                                                  │
-│  │      └── external_refs.parquet                                          │
+│  │  └── branch/                   ← Delta for current working branch       │
+│  │      ├── nodes.parquet        ← Only changed/new/deleted files         │
+│  │      ├── edges.parquet        ← Edges from changed files               │
+│  │      └── external_refs.parquet ← Refs from changed files               │
 │  │                                                                          │
-│  Per-package-per-branch = ~100x fewer files than per-source-file!          │
+│  Per-package with delta storage = minimal duplication!          │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -282,42 +282,44 @@ The original v2.0 proposal used per-source-file partitioning. All reviewers flag
 │                                                                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  PER-PACKAGE-PER-BRANCH (v2.1 approach - ADOPTED)                          │
-│  ─────────────────────────────────────────────────                          │
+│  PER-PACKAGE WITH DELTA STORAGE (v2.1 approach - ADOPTED)                  │
+│  ─────────────────────────────────────────────────────────                  │
 │                                                                             │
 │  .devac/seed/                                                              │
-│  ├── branch=main/                                                          │
-│  │   ├── nodes.parquet         ← ALL nodes for package on this branch     │
-│  │   ├── edges.parquet         ← ALL edges for package on this branch     │
+│  ├── base/                     ← Full content for base branch (main)       │
+│  │   ├── nodes.parquet         ← ALL nodes for package                     │
+│  │   ├── edges.parquet         ← ALL edges for package                     │
 │  │   └── external_refs.parquet                                             │
-│  └── branch=feature-x/                                                     │
-│      └── ... (3 files per branch)                                          │
+│  └── branch/                   ← Delta for current working branch          │
+│      ├── nodes.parquet         ← Only changed/new/deleted files            │
+│      ├── edges.parquet         ← Edges from changed files                  │
+│      └── external_refs.parquet ← Refs from changed files                   │
 │                                                                             │
-│  FILE COUNT: 3 files × branches (typically 1-5) = 3-15 files per package  │
+│  FILE COUNT: 6 files max (3 base + 3 branch)                               │
 │  vs. 3 × N source files = thousands of files                              │
 │                                                                             │
-│  REDUCTION: ~100x fewer files for typical workflows                        │
+│  Delta storage: Only changed files stored in branch/                        │
 │                                                                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  INCREMENTAL UPDATES (Content Hash Skip)                                    │
-│  ────────────────────────────────────────                                   │
+│  INCREMENTAL UPDATES (Content Hash in Parquet)                              │
+│  ─────────────────────────────────────────────                              │
 │                                                                             │
-│  meta.json stores content hashes for each source file:                     │
-│  {                                                                          │
-│    "fileHashes": {                                                          │
-│      "src/auth.ts": "sha256:a1b2c3...",                                    │
-│      "src/utils.ts": "sha256:d4e5f6..."                                    │
-│    }                                                                        │
-│  }                                                                          │
+│  file_content_hash stored as column in nodes.parquet:                      │
+│  SELECT DISTINCT file_path, file_content_hash FROM nodes.parquet           │
 │                                                                             │
 │  UPDATE FLOW:                                                               │
 │  1. Compute current file hashes (~20ms)                                    │
-│  2. Compare with stored hashes                                              │
+│  2. Query existing hashes from Parquet                                      │
 │  3. IF no changes → SKIP (total: ~20-50ms)                                 │
 │  4. IF changes → Parse only changed files, regenerate package Parquet     │
 │                                                                             │
-│  Single file change: ~150-300ms (vs ~50ms per-file, but fewer files)       │
+│  DELTA STORAGE for branches:                                               │
+│  • base/ contains full package content                                     │
+│  • branch/ contains only changed/new files (delta)                         │
+│  • Deleted files marked with is_deleted=true in branch/                    │
+│                                                                             │
+│  Single file change: ~150-300ms (parse + merge + write)                    │
 │  Batch changes (10 files): ~150-300ms (same as single - batch wins!)       │
 │  No changes: ~20-50ms (hash check only)                                    │
 │                                                                             │
@@ -326,15 +328,22 @@ The original v2.0 proposal used per-source-file partitioning. All reviewers flag
 │  QUERY PATTERNS                                                             │
 │  ──────────────                                                             │
 │                                                                             │
-│  Single branch (most common):                                              │
-│  SELECT * FROM read_parquet('.devac/seed/branch=main/nodes.parquet')       │
-│  → Partition pruning, only reads one file                                  │
+│  Base branch only (most common):                                           │
+│  SELECT * FROM read_parquet('.devac/seed/base/nodes.parquet')              │
+│  → Single file read, fast                                                  │
 │                                                                             │
-│  Cross-branch (find same entity):                                          │
-│  SELECT entity_id, branch FROM read_parquet(                               │
-│    '.devac/seed/branch=*/nodes.parquet', hive_partitioning=true            │
-│  ) WHERE entity_id = 'repo:pkg:function:abc123'                            │
-│  → Returns one row per branch with that entity                             │
+│  Unified branch view (base + delta, excluding deleted):                    │
+│  SELECT * FROM (                                                           │
+│    SELECT * FROM read_parquet('.devac/seed/branch/nodes.parquet')          │
+│    WHERE is_deleted = false                                                │
+│    UNION ALL                                                               │
+│    SELECT * FROM read_parquet('.devac/seed/base/nodes.parquet') base       │
+│    WHERE NOT EXISTS (                                                      │
+│      SELECT 1 FROM read_parquet('.devac/seed/branch/nodes.parquet') br     │
+│      WHERE br.file_path = base.file_path                                   │
+│    )                                                                       │
+│  )                                                                         │
+│  → Returns unified view of current branch state                             │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -346,22 +355,28 @@ The original v2.0 proposal used per-source-file partitioning. All reviewers flag
 ### 4.1 Node Schema
 
 ```sql
--- nodes.parquet (per-package-per-branch: .devac/seed/branch=main/nodes.parquet)
+-- nodes.parquet (per-package: .devac/seed/base/nodes.parquet or .devac/seed/branch/nodes.parquet)
 
 CREATE TABLE nodes (
   -- Identity (v2.1 - branch NOT in entity_id)
   entity_id VARCHAR NOT NULL,        -- Global ID: "{repo}:{package}:{kind}:{scope_hash}"
-  branch VARCHAR NOT NULL,           -- Branch name (from hive partition, NOT in ID)
+  branch VARCHAR NOT NULL,           -- Branch name (e.g., "main", "feature-auth")
+  
+  -- File information
+  file_path VARCHAR NOT NULL,        -- Path relative to package root
+  file_content_hash VARCHAR NOT NULL, -- SHA-256 of source file content
+  
+  -- Delta storage support
+  is_deleted BOOLEAN DEFAULT FALSE,  -- True = file deleted in this branch (delta marker)
   
   -- Scope information (used for entity_id generation)
-  scoped_name VARCHAR NOT NULL,      -- "AuthService.login", "outer.inner", "fetchUser"
+  scoped_name VARCHAR,               -- "AuthService.login", "outer.inner", "fetchUser" (NULL if is_deleted)
   
   -- Classification
   kind VARCHAR NOT NULL,             -- Function, Class, Method, Variable, etc.
   name VARCHAR,                      -- Symbol name (nullable for anonymous)
   
   -- Location (informational, NOT part of entity_id)
-  file_path VARCHAR NOT NULL,        -- Path relative to package root
   start_line INTEGER NOT NULL,
   start_column INTEGER NOT NULL,
   end_line INTEGER NOT NULL,
@@ -392,12 +407,16 @@ CREATE TABLE nodes (
 ### 4.2 Edge Schema
 
 ```sql
--- edges.parquet (per-package-per-branch: .devac/seed/branch=main/edges.parquet)
+-- edges.parquet (per-package: .devac/seed/base/edges.parquet or .devac/seed/branch/edges.parquet)
 
 CREATE TABLE edges (
   -- Identity
   id VARCHAR NOT NULL,               -- Unique edge ID
-  branch VARCHAR NOT NULL,           -- Branch name (from hive partition)
+  branch VARCHAR NOT NULL,           -- Branch name (e.g., "main", "feature-auth")
+  
+  -- File information (for delta storage)
+  file_path VARCHAR NOT NULL,        -- Source file path (for delta tracking)
+  is_deleted BOOLEAN DEFAULT FALSE,  -- True = edge deleted in this branch (delta marker)
   
   -- Endpoints (entity_ids do NOT include branch)
   source_entity_id VARCHAR NOT NULL, -- From node: "{repo}:{pkg}:{kind}:{scope_hash}"
@@ -430,12 +449,15 @@ CREATE TABLE edges (
 ### 4.3 External Reference Schema
 
 ```sql
--- external_refs.parquet (per-package-per-branch: .devac/seed/branch=main/external_refs.parquet)
+-- external_refs.parquet (per-package: .devac/seed/base/external_refs.parquet or .devac/seed/branch/external_refs.parquet)
 
 CREATE TABLE external_refs (
   -- Identity
   id VARCHAR NOT NULL,
-  branch VARCHAR NOT NULL,           -- Branch name (from hive partition)
+  branch VARCHAR NOT NULL,           -- Branch name (e.g., "main", "feature-auth")
+  
+  -- Delta storage support
+  is_deleted BOOLEAN DEFAULT FALSE,  -- True = ref deleted in this branch (delta marker)
   
   -- Reference Origin
   source_entity_id VARCHAR NOT NULL, -- Node making the reference (no branch in ID)
@@ -660,14 +682,14 @@ function generateScopedName(node: ASTNode, context: ParserContext): string {
 │   │   │   │   └── utils.ts
 │   │   │   │
 │   │   │   └── .devac/
-│   │   │       ├── meta.json           # Package metadata + file content hashes
+│   │   │       ├── meta.json           # Package metadata only (no file hashes)
 │   │   │       └── seed/
-│   │   │           ├── branch=main/    # Hive-style branch partition
+│   │   │           ├── base/           # Full content for base branch (main)
 │   │   │           │   ├── nodes.parquet
 │   │   │           │   ├── edges.parquet
 │   │   │           │   └── external_refs.parquet
-│   │   │           └── branch=feature-auth/  # Additional branch if analyzed
-│   │   │               ├── nodes.parquet
+│   │   │           └── branch/         # Delta for current working branch
+│   │   │               ├── nodes.parquet      # Only changed/new/deleted
 │   │   │               ├── edges.parquet
 │   │   │               └── external_refs.parquet
 │   │   │
@@ -688,29 +710,36 @@ function generateScopedName(node: ASTNode, context: ParserContext): string {
 
 ### 5.3 Meta.json Format
 
+> **Updated 2025-12-13:** File content hashes are now stored as a column in nodes.parquet (`file_content_hash`), not in meta.json. This provides a single source of truth and eliminates sync issues.
+
 ```json
 {
   "schemaVersion": "2.1",
-  "analyzedBranch": "main",
-  "analyzedAt": "2025-12-13T10:30:00Z",
   "packagePath": "packages/auth",
-  "fileHashes": {
-    "src/index.ts": {
-      "contentHash": "sha256:a1b2c3d4e5f6...",
-      "size": 1234,
-      "mtime": "2025-12-13T10:00:00Z"
+  "baseBranch": "main",
+  "currentBranch": "feature-auth",
+  "baseAnalyzedAt": "2025-12-13T10:30:00Z",
+  "branchAnalyzedAt": "2025-12-13T11:00:00Z",
+  "stats": {
+    "base": {
+      "nodeCount": 150,
+      "edgeCount": 200,
+      "refCount": 75,
+      "fileCount": 12
     },
-    "src/auth.ts": {
-      "contentHash": "sha256:b2c3d4e5f6g7...",
-      "size": 5678,
-      "mtime": "2025-12-13T09:30:00Z"
+    "branch": {
+      "changedFiles": 2,
+      "newFiles": 1,
+      "deletedFiles": 0
     }
-  },
-  "nodeCount": 150,
-  "edgeCount": 200,
-  "refCount": 75
+  }
 }
 ```
+
+**Key points:**
+- **No fileHashes** - Content hashes are in `nodes.parquet` (`file_content_hash` column)
+- **No branch_meta.json** - Deleted files tracked via `is_deleted` column in Parquet
+- **Simplified metadata** - Only package-level stats and timestamps
 
 ### 5.4 Size Estimates
 
@@ -864,42 +893,53 @@ export interface SeedWriter {
 ### 7.1 Package-Local Queries
 
 ```sql
--- Find all exported functions in a package
+-- Find all exported functions in a package (base branch)
 SELECT name, file_path, start_line
-FROM read_parquet('packages/auth/.devac/seed/nodes/*.parquet')
+FROM read_parquet('packages/auth/.devac/seed/base/nodes.parquet')
 WHERE kind = 'function' AND is_exported = true
 ORDER BY name;
 
--- Find all imports from a specific module
+-- Find all imports from a specific module (base branch)
 SELECT source_file_path, imported_symbol, source_line
-FROM read_parquet('packages/auth/.devac/seed/external_refs/*.parquet')
+FROM read_parquet('packages/auth/.devac/seed/base/external_refs.parquet')
 WHERE module_specifier LIKE '%react%'
 ORDER BY source_file_path;
 
--- Count nodes by kind
-SELECT kind, count(*) as count
-FROM read_parquet('packages/auth/.devac/seed/nodes/*.parquet')
-GROUP BY kind
-ORDER BY count DESC;
+-- Unified view: current branch (base + delta, excluding deleted)
+SELECT name, file_path, start_line
+FROM (
+  -- Branch delta (not deleted)
+  SELECT * FROM read_parquet('packages/auth/.devac/seed/branch/nodes.parquet')
+  WHERE is_deleted = false
+  UNION ALL
+  -- Base nodes not overridden in branch
+  SELECT * FROM read_parquet('packages/auth/.devac/seed/base/nodes.parquet') base
+  WHERE NOT EXISTS (
+    SELECT 1 FROM read_parquet('packages/auth/.devac/seed/branch/nodes.parquet') br
+    WHERE br.file_path = base.file_path
+  )
+)
+WHERE kind = 'function' AND is_exported = true
+ORDER BY name;
 ```
 
 ### 7.2 Repository-Wide Queries
 
 ```sql
--- Find all React components across all packages
+-- Find all React components across all packages (base branches)
 SELECT entity_id, name, file_path
-FROM read_parquet('packages/*/.devac/seed/nodes/*.parquet')
+FROM read_parquet('packages/*/.devac/seed/base/nodes.parquet')
 WHERE kind = 'component'
 ORDER BY name;
 
--- Cross-package import analysis
+-- Cross-package import analysis (base branches)
 SELECT 
   refs.source_file_path,
   refs.module_specifier,
   refs.imported_symbol,
   nodes.file_path as target_file
-FROM read_parquet('packages/*/.devac/seed/external_refs/*.parquet') refs
-LEFT JOIN read_parquet('packages/*/.devac/seed/nodes/*.parquet') nodes
+FROM read_parquet('packages/*/.devac/seed/base/external_refs.parquet') refs
+LEFT JOIN read_parquet('packages/*/.devac/seed/base/nodes.parquet') nodes
   ON refs.resolved_entity_id = nodes.entity_id
 WHERE refs.is_internal = true
 ORDER BY refs.source_file_path;
@@ -908,25 +948,25 @@ ORDER BY refs.source_file_path;
 ### 7.3 Cross-Repository Queries (Federated)
 
 ```sql
--- Query across multiple repos (from central hub)
+-- Query across multiple repos (from central hub, base branches)
 SELECT 
   entity_id,
   name,
   file_path,
   split_part(entity_id, ':', 1) as repo
 FROM read_parquet([
-  '/path/to/repo-api/packages/*/.devac/seed/nodes/*.parquet',
-  '/path/to/repo-web/apps/*/.devac/seed/nodes/*.parquet',
-  '/path/to/repo-mobile/packages/*/.devac/seed/nodes/*.parquet'
+  '/path/to/repo-api/packages/*/.devac/seed/base/nodes.parquet',
+  '/path/to/repo-web/apps/*/.devac/seed/base/nodes.parquet',
+  '/path/to/repo-mobile/packages/*/.devac/seed/base/nodes.parquet'
 ])
 WHERE kind = 'function' AND name = 'handleLogin';
 
--- Find all consumers of a shared type
+-- Find all consumers of a shared type (base branches)
 SELECT 
   refs.source_file_path,
   refs.source_entity_id
 FROM read_parquet([
-  '*/packages/*/.devac/seed/external_refs/*.parquet'
+  '*/packages/*/.devac/seed/base/external_refs.parquet'
 ]) refs
 WHERE refs.module_specifier = '@shared/schema'
   AND refs.imported_symbol = 'User';
@@ -935,7 +975,7 @@ WHERE refs.module_specifier = '@shared/schema'
 ### 7.4 Graph Traversal (Recursive CTEs)
 
 ```sql
--- Call graph from entry point (up to 5 hops)
+-- Call graph from entry point (up to 5 hops, base branches)
 WITH RECURSIVE call_chain AS (
   -- Base: starting function
   SELECT 
@@ -944,7 +984,7 @@ WITH RECURSIVE call_chain AS (
     file_path, 
     1 as depth,
     ARRAY[entity_id] as path
-  FROM read_parquet('packages/*/.devac/seed/nodes/*.parquet')
+  FROM read_parquet('packages/*/.devac/seed/base/nodes.parquet')
   WHERE name = 'handleLogin'
   
   UNION ALL
@@ -957,9 +997,9 @@ WITH RECURSIVE call_chain AS (
     c.depth + 1,
     list_append(c.path, n.entity_id)
   FROM call_chain c
-  JOIN read_parquet('packages/*/.devac/seed/edges/*.parquet') e 
+  JOIN read_parquet('packages/*/.devac/seed/base/edges.parquet') e 
     ON e.source_entity_id = c.entity_id
-  JOIN read_parquet('packages/*/.devac/seed/nodes/*.parquet') n 
+  JOIN read_parquet('packages/*/.devac/seed/base/nodes.parquet') n 
     ON e.target_entity_id = n.entity_id
   WHERE e.edge_type = 'CALLS'
     AND c.depth < 5
@@ -1012,8 +1052,9 @@ export function formatForLLM(
 │  For each source file in package:                                          │
 │    currentHash = sha256(fileContent)                                       │
 │                                                                             │
-│  Step 2: Compare with stored hashes                                         │
-│  ──────────────────────────────────                                         │
+│  Step 2: Compare with stored hashes (from Parquet)                         │
+│  ─────────────────────────────────────────────────                          │
+│  Query: SELECT DISTINCT file_path, file_content_hash FROM base/nodes.parquet│
 │  changedFiles = files where currentHash != storedHash                      │
 │  newFiles = files not in storedHashes                                      │
 │  deletedFiles = storedHashes keys not in current files                     │
@@ -1026,18 +1067,18 @@ export function formatForLLM(
 │  ELSE:                                                                      │
 │    Parse ONLY changed/new files (~30-50ms per file)                        │
 │    Keep unchanged nodes in memory or re-read                               │
-│    Merge all nodes into single package Parquet                             │
+│    Merge all nodes into package Parquet                                    │
 │                                                                             │
 │  Step 4: Write package Parquet files                                        │
 │  ───────────────────────────────────                                        │
-│  DuckDB (memory) → branch=main/nodes.parquet                               │
-│  DuckDB (memory) → branch=main/edges.parquet                               │
-│  DuckDB (memory) → branch=main/external_refs.parquet                       │
+│  FOR BASE BRANCH: DuckDB (memory) → base/nodes.parquet (full)              │
+│  FOR FEATURE BRANCH: DuckDB (memory) → branch/nodes.parquet (delta only)   │
+│    - Include is_deleted=true markers for deleted files                     │
 │  Time: ~50-100ms (depends on package size)                                 │
 │                                                                             │
-│  Step 5: Update meta.json                                                   │
-│  ────────────────────────                                                   │
-│  Write updated fileHashes to meta.json                                     │
+│  Step 5: Update meta.json (stats only)                                      │
+│  ─────────────────────────────────────                                      │
+│  Update node/edge counts and timestamps (no file hashes - they're in Parquet)                                     │
 │                                                                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
@@ -1604,42 +1645,15 @@ WHERE source_file = 'src/auth.ts';  -- Only reads matching partition
 
 ### 14.1 Parquet File Count Performance
 
-**Question:** Does DuckDB perform well with hundreds of small Parquet files per package?
+**Question:** Does DuckDB perform well with current chosen per repo per package base and branch?
 
 **Hypothesis:** Yes, DuckDB handles file globs efficiently with parallel reading.
 
 **Validation Approach:**
 
-```typescript
-// tests/parquet-scale-test.ts
+create the appropriate test
 
-describe("Parquet Scale Performance", () => {
-  // Scenario 1: Single large file
-  test("1 file with 100K nodes", async () => {
-    const db = new DuckDB();
-    // Generate 100K nodes, write to single file
-    // Measure query time
-  });
-  
-  // Scenario 2: Many small files (v2.0 approach)
-  test("1000 files with 100 nodes each", async () => {
-    const db = new DuckDB();
-    // Generate 1000 files × 100 nodes
-    // Measure query time
-  });
-  
-  // Scenario 3: Very many tiny files
-  test("10000 files with 10 nodes each", async () => {
-    const db = new DuckDB();
-    // Extreme case
-    // Measure query time
-  });
-  
-  // Compare and decide
-});
-```
-
-**Fallback:** If per-file partitioning is too slow, use per-package single files with append-optimized Parquet (requires different update strategy).
+**Fallback:** we need to determine a better alternative (update spec after research).
 
 ### 14.2 Recursive CTE Depth
 
