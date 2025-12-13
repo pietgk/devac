@@ -759,6 +759,84 @@ SELECT COUNT(DISTINCT file_path) FROM read_parquet('base/nodes.parquet');
 
 **Compression:** Parquet with ZSTD compression provides ~10x reduction over JSON.
 
+### 5.5 Schema Evolution
+
+Managing Parquet schema changes across versions requires careful planning to avoid breaking existing seeds.
+
+#### Version Tracking
+
+The `meta.json` file tracks the seed schema version:
+
+```json
+{
+  "schemaVersion": "2.1"
+}
+```
+
+Version format: `MAJOR.MINOR`
+- **MAJOR:** Breaking changes requiring full regeneration
+- **MINOR:** Additive changes, backward compatible
+
+#### Compatibility Policy
+
+| Change Type | Example | Compatibility | Action Required |
+|-------------|---------|---------------|-----------------|
+| Add nullable column | Add `documentation` to nodes | Minor bump | None - old seeds work |
+| Add required column | Add `package_id` NOT NULL | Major bump | Regenerate all seeds |
+| Remove column | Remove deprecated field | Major bump | Regenerate all seeds |
+| Rename column | `file_path` → `source_path` | Major bump | Regenerate all seeds |
+| Change type | `line` INT → STRING | Major bump | Regenerate all seeds |
+
+#### Adding Columns
+
+New columns MUST be nullable to maintain backward compatibility:
+
+```sql
+-- DuckDB handles missing columns gracefully
+-- Old seeds without 'documentation' column return NULL
+SELECT entity_id, name, documentation
+FROM read_parquet('nodes.parquet');
+-- documentation = NULL for old seeds
+```
+
+#### Migration Strategy
+
+**On schema version mismatch:**
+
+```typescript
+async function checkSchemaVersion(seedPath: string): Promise<void> {
+  const meta = await readMeta(seedPath);
+  const currentVersion = "2.1";
+  
+  if (meta.schemaVersion !== currentVersion) {
+    const [seedMajor] = meta.schemaVersion.split(".");
+    const [currentMajor] = currentVersion.split(".");
+    
+    if (seedMajor !== currentMajor) {
+      // Major version mismatch - must regenerate
+      console.warn(
+        `Schema version mismatch: seed=${meta.schemaVersion}, ` +
+        `current=${currentVersion}. Run 'devac analyze --force' to regenerate.`
+      );
+      throw new SchemaVersionError(meta.schemaVersion, currentVersion);
+    }
+    
+    // Minor version difference - compatible, just log
+    console.debug(`Schema minor version difference, continuing...`);
+  }
+}
+```
+
+#### Design Principles
+
+1. **Regenerate over migrate:** Seeds can always be regenerated from source code. Complex migration scripts are unnecessary.
+
+2. **Warn, don't fail silently:** On version mismatch, warn the user and suggest `--force` regeneration.
+
+3. **Additive by default:** New features should add nullable columns rather than modify existing ones.
+
+4. **Document changes:** Schema changes must be documented in the spec's Document History section.
+
 ---
 
 ## 6. Parsing Pipeline
@@ -1028,6 +1106,213 @@ async function writeParquetAtomic(
   }
 }
 ```
+
+### 6.5 Semantic Resolution (Phase 4)
+
+The semantic resolution pass resolves external references to their target entities. This happens after the structural pass and requires cross-package/cross-repo knowledge.
+
+#### Resolution Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                             │
+│  SEMANTIC RESOLUTION PIPELINE                                               │
+│  ────────────────────────────                                               │
+│                                                                             │
+│  1. Read external_refs.parquet (unresolved imports)                        │
+│     │                                                                       │
+│     ▼                                                                       │
+│  2. For each unresolved ref:                                                │
+│     ├── Query local package nodes (same package exports)                   │
+│     ├── Query sibling packages (monorepo cross-package)                    │
+│     └── Query central hub (cross-repo dependencies)                        │
+│     │                                                                       │
+│     ▼                                                                       │
+│  3. Update external_refs with resolution results                           │
+│     ├── is_resolved = true/false                                           │
+│     └── target_entity_id = matched entity (if found)                       │
+│     │                                                                       │
+│     ▼                                                                       │
+│  4. Write updated external_refs.parquet                                    │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Resolution Algorithm
+
+```typescript
+interface SemanticResolver {
+  /**
+   * Resolve all external references in a package.
+   * Called after structural pass completes.
+   */
+  resolvePackage(packagePath: string): Promise<ResolutionResult>;
+}
+
+interface ResolutionResult {
+  total: number;
+  resolved: number;
+  unresolved: number;
+  errors: ResolutionError[];
+}
+
+async function resolveExternalRefs(
+  packagePath: string,
+  hub: CentralHub | null
+): Promise<ResolutionResult> {
+  const seedPath = path.join(packagePath, ".devac/seed/base");
+  const refs = await readExternalRefs(seedPath);
+  
+  let resolved = 0;
+  let unresolved = 0;
+  const errors: ResolutionError[] = [];
+  
+  for (const ref of refs) {
+    if (ref.is_resolved) {
+      resolved++;
+      continue;
+    }
+    
+    try {
+      // Step 1: Try local package
+      const localMatch = await findExportInPackage(
+        seedPath,
+        ref.module_specifier,
+        ref.imported_symbol
+      );
+      
+      if (localMatch) {
+        ref.is_resolved = true;
+        ref.target_entity_id = localMatch.entity_id;
+        resolved++;
+        continue;
+      }
+      
+      // Step 2: Try sibling packages (if monorepo)
+      const siblingMatch = await findExportInSiblings(
+        packagePath,
+        ref.module_specifier,
+        ref.imported_symbol
+      );
+      
+      if (siblingMatch) {
+        ref.is_resolved = true;
+        ref.target_entity_id = siblingMatch.entity_id;
+        resolved++;
+        continue;
+      }
+      
+      // Step 3: Try central hub (cross-repo)
+      if (hub) {
+        const hubMatch = await hub.findExport(
+          ref.module_specifier,
+          ref.imported_symbol
+        );
+        
+        if (hubMatch) {
+          ref.is_resolved = true;
+          ref.target_entity_id = hubMatch.entity_id;
+          resolved++;
+          continue;
+        }
+      }
+      
+      // Not found anywhere
+      unresolved++;
+      
+    } catch (error) {
+      errors.push({
+        ref,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      unresolved++;
+    }
+  }
+  
+  // Write updated refs back
+  await writeExternalRefs(seedPath, refs);
+  
+  return { total: refs.length, resolved, unresolved, errors };
+}
+```
+
+#### Cross-Package Resolution
+
+For monorepo cross-package imports (e.g., `@myorg/shared`):
+
+```typescript
+async function findExportInSiblings(
+  packagePath: string,
+  moduleSpecifier: string,
+  importedSymbol: string
+): Promise<NodeMatch | null> {
+  // Parse module specifier to find target package
+  const targetPackage = resolvePackagePath(packagePath, moduleSpecifier);
+  
+  if (!targetPackage) {
+    return null; // External dependency, not in monorepo
+  }
+  
+  const targetSeedPath = path.join(targetPackage, ".devac/seed/base");
+  
+  // Query target package's exports
+  const result = await db.all(`
+    SELECT entity_id, name, file_path
+    FROM read_parquet('${targetSeedPath}/nodes.parquet')
+    WHERE name = ?
+      AND is_exported = true
+  `, [importedSymbol]);
+  
+  return result[0] || null;
+}
+```
+
+#### Error Handling
+
+| Scenario | Behavior | Logged |
+|----------|----------|--------|
+| Import not found | `is_resolved = false`, continue | Debug |
+| Package not in hub | Skip hub lookup, try alternatives | Debug |
+| Circular dependency | Detect via visited set, skip | Warning |
+| Parse error in target | Keep unresolved, log error | Error |
+| Hub unavailable | Skip cross-repo, resolve local only | Warning |
+
+#### Batch Resolution Strategy
+
+For performance, resolve in batches grouped by target package:
+
+```typescript
+async function resolveBatch(refs: ExternalRef[]): Promise<void> {
+  // Group refs by module specifier
+  const byModule = groupBy(refs, r => r.module_specifier);
+  
+  // Resolve each module's refs together (single query per module)
+  for (const [moduleSpec, moduleRefs] of Object.entries(byModule)) {
+    const symbols = moduleRefs.map(r => r.imported_symbol);
+    const matches = await findExportsInModule(moduleSpec, symbols);
+    
+    for (const ref of moduleRefs) {
+      const match = matches.get(ref.imported_symbol);
+      if (match) {
+        ref.is_resolved = true;
+        ref.target_entity_id = match.entity_id;
+      }
+    }
+  }
+}
+```
+
+#### Phase Dependency
+
+Semantic resolution is implemented in **Phase 4 (Federation)** because:
+- Requires cross-package queries (Phase 2 prerequisite)
+- Requires central hub for cross-repo (Phase 4 core)
+- Python support should be complete (Phase 3)
+
+Phase 1-3 operate with `is_resolved = false` for all external refs. This is acceptable because:
+- Structural information (nodes, edges) is complete
+- Queries work without resolution
+- Validation can still detect type errors via TypeScript
 
 ---
 
