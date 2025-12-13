@@ -2041,7 +2041,103 @@ devac issues
 devac issues --file src/auth.ts
 ```
 
-### 11.5 MCP Server Integration
+### 11.5 Common Workflows & Recovery
+
+This section documents recommended workflows for common scenarios.
+
+#### Design Principle
+
+Seeds are **always derived from source code** (source-of-truth principle). There is no bidirectional sync - if seeds are out of date, they are simply regenerated from source. This makes recovery simple and predictable.
+
+#### Scenario: Daily Development
+
+```bash
+# Option 1: Watch mode (recommended for active development)
+devac watch
+
+# Option 2: On-demand after saving files
+devac analyze --if-changed
+```
+
+#### Scenario: Detecting Drift (Seeds Out of Sync)
+
+If you suspect seeds are out of sync with source code:
+
+```bash
+# Step 1: Verify seed integrity (read-only, no regeneration)
+devac verify
+
+# If verify passes: seeds are structurally valid
+# If verify fails: shows what's wrong (missing files, broken refs, etc.)
+```
+
+#### Scenario: Recovering from Drift
+
+```bash
+# Option 1: Smart recovery (fast, only regenerates changed files)
+# Uses content hashing to detect what actually changed
+devac analyze --if-changed
+# Time: 20-50ms if nothing changed, 150-500ms if files changed
+
+# Option 2: Full regeneration (guaranteed clean state)
+# Use when: schema version changed, suspected corruption, or --if-changed didn't fix it
+devac analyze --force
+# Time: 5-10s for typical package
+```
+
+#### Scenario: File Watcher Missed Events
+
+If the IDE was closed and file watcher wasn't running:
+
+```bash
+# Hash-based detection catches ALL changes, even if watcher missed them
+devac analyze --if-changed
+
+# This compares SHA-256 hashes of all source files against stored hashes
+# Only regenerates files that actually changed
+```
+
+#### Scenario: Schema Version Mismatch
+
+When upgrading DevAC and the schema version changes:
+
+```bash
+# DevAC will warn about version mismatch
+# Force regeneration to update to new schema
+devac analyze --force
+```
+
+#### Scenario: CI/CD Pipeline
+
+```bash
+# Ensure seeds exist and are valid before running queries
+devac verify || devac analyze --force
+
+# Or simply regenerate if changed (idempotent)
+devac analyze --if-changed --all
+```
+
+#### Why No `devac sync` Command?
+
+The spec intentionally does NOT include a `sync` or `reconcile` command because:
+
+1. **`devac analyze --if-changed`** already provides smart sync via content hashing
+2. **`devac verify`** provides read-only drift detection without regeneration
+3. **`devac analyze --force`** handles forced regeneration
+4. A separate `sync` command would duplicate existing functionality and create semantic confusion
+
+The command structure follows Unix philosophy: each command does one thing well.
+
+| Command | Purpose | Regenerates? |
+|---------|---------|--------------|
+| `devac analyze` | Regenerate seeds from source | Yes |
+| `devac analyze --if-changed` | Smart regeneration (hash-based) | Conditional |
+| `devac analyze --force` | Force full reanalysis | Yes |
+| `devac verify` | Check seed integrity | No |
+| `devac watch` | Continuous incremental updates | Incremental |
+| `devac clean` | Delete all seeds | No |
+
+### 11.6 MCP Server Integration
 
 The MCP (Model Context Protocol) server exposes CodeGraph functionality to AI assistants.
 
