@@ -828,6 +828,74 @@ export interface StructuralParser {
 }
 ```
 
+### 6.2.1 Language Router
+
+The Language Router maps file extensions to appropriate parsers and provides the list of supported extensions for file watching.
+
+```typescript
+// src/analyzer/language-router.ts
+
+export interface LanguageRouter {
+  /**
+   * Get the parser for a given file path.
+   * Returns null if file type is not supported.
+   */
+  getParser(filePath: string): LanguageParser | null;
+  
+  /**
+   * Get all supported file extensions for file watcher configuration.
+   */
+  getSupportedExtensions(): string[];
+  
+  /**
+   * Register a parser for specific extensions.
+   */
+  registerParser(parser: LanguageParser): void;
+}
+
+// Default implementation
+export function createLanguageRouter(
+  parsers: LanguageParser[]
+): LanguageRouter {
+  const extensionMap = new Map<string, LanguageParser>();
+  
+  for (const parser of parsers) {
+    for (const ext of parser.extensions) {
+      extensionMap.set(ext, parser);
+    }
+  }
+  
+  return {
+    getParser(filePath: string) {
+      const ext = path.extname(filePath).toLowerCase();
+      return extensionMap.get(ext) ?? null;
+    },
+    
+    getSupportedExtensions() {
+      return Array.from(extensionMap.keys());
+    },
+    
+    registerParser(parser: LanguageParser) {
+      for (const ext of parser.extensions) {
+        extensionMap.set(ext, parser);
+      }
+    }
+  };
+}
+
+// Usage with file watcher
+const router = createLanguageRouter([
+  new TypeScriptParser(),
+  new PythonParser(),
+]);
+
+const watcher = chokidar.watch(packagePath, {
+  ignored: /node_modules/,
+  // Only watch supported file types
+  // Uses glob patterns from router.getSupportedExtensions()
+});
+```
+
 ### 6.3 Language-Specific Parsers
 
 ```
@@ -870,6 +938,11 @@ export interface SeedWriter {
   /**
    * Write parse results to Parquet files.
    * Uses DuckDB in-memory for buffering, exports to Parquet.
+   * 
+   * MUST use atomic write pattern:
+   * 1. Write to temp file (.tmp suffix)
+   * 2. Atomic rename to final path
+   * 3. Clean up temp file on failure
    */
   writeFile(
     seedPath: string,
@@ -888,6 +961,71 @@ export interface SeedWriter {
     seedPath: string,
     result: StructuralParseResult
   ): Promise<void>;
+}
+
+/**
+ * Atomic write implementation pattern.
+ * Prevents corruption from interrupted writes.
+ * 
+ * WHY THIS PATTERN:
+ * - Parquet files cannot be appended to (metadata is at end of file)
+ * - DuckDB's COPY TO writes directly to target path (not atomic)
+ * - DuckDB enters "fatal mode" if writes fail mid-stream
+ * - fs.rename() is atomic on POSIX systems (wraps rename(2) syscall)
+ * 
+ * DURABILITY NOTE:
+ * - After rename, we fsync the directory to ensure the rename is durable
+ * - Without fsync, on power failure the old file may reappear
+ * - This follows POSIX guidelines for crash-safe file replacement
+ * 
+ * REFERENCES:
+ * - Node.js fs module (POSIX rename): https://nodejs.org/api/fs.html
+ * - npm write-file-atomic (industry standard): https://github.com/npm/write-file-atomic
+ * - DuckDB fatal mode on write failure: https://github.com/duckdb/duckdb/issues/12335
+ * - DuckDB parquet append limitation: https://github.com/duckdb/duckdb/discussions/7547
+ * - fsync directory requirement: https://github.com/npm/write-file-atomic/issues/64
+ * 
+ * ALTERNATIVES CONSIDERED:
+ * - Delta Lake: Overkill for single-file writes, adds complexity
+ * - Apache Iceberg: Designed for multi-TB distributed datasets
+ * - DuckDB ATTACH: Creates database files, not portable Parquet
+ * 
+ * For DevAC's use case (small per-file Parquet partitions, single writer
+ * per package), temp + rename + fsync is the correct and simplest choice.
+ */
+async function writeParquetAtomic(
+  db: Database,
+  finalPath: string,
+  tableName: string
+): Promise<void> {
+  const tempPath = `${finalPath}.tmp`;
+  const dir = path.dirname(finalPath);
+  
+  try {
+    // Step 1: Write to temp file
+    // DuckDB COPY TO is not atomic - writes directly to path
+    await db.run(`COPY ${tableName} TO '${tempPath}' (FORMAT PARQUET, COMPRESSION ZSTD)`);
+    
+    // Step 2: Atomic rename (POSIX rename(2) is atomic within same filesystem)
+    // If this succeeds, the file atomically appears at finalPath
+    // If interrupted, tempPath may remain but finalPath is untouched
+    await fs.rename(tempPath, finalPath);
+    
+    // Step 3: Fsync directory for durability
+    // Ensures rename is persisted to disk even on power failure
+    // Without this, filesystem journal replay might restore old state
+    const dirHandle = await fs.open(dir, "r");
+    try {
+      await dirHandle.sync();
+    } finally {
+      await dirHandle.close();
+    }
+  } catch (error) {
+    // Clean up temp file on any failure
+    // Use catch(() => {}) since temp file may not exist if COPY failed early
+    await fs.unlink(tempPath).catch(() => {});
+    throw error;
+  }
 }
 ```
 
@@ -1172,6 +1310,87 @@ async function handleFileDelete(
 }
 ```
 
+### 8.5 Error Handling
+
+The system must handle errors gracefully without corrupting seed data or leaving partial state.
+
+#### Error Categories
+
+| Error Type | Behavior | Recovery |
+|------------|----------|----------|
+| **Parse error** | Continue with partial results, log warning | Re-parse on next file change |
+| **Write failure** | Atomic write prevents corruption | Retry or regenerate from source |
+| **Read failure** | Return error to caller | Delete corrupt file, regenerate |
+| **Corruption detected** | Fail operation | Delete and regenerate from source |
+| **Disk space** | Check before write, fail gracefully | Warn user, abort operation |
+
+#### Parse Error Handling
+
+```typescript
+// Parse errors should not stop analysis of other files
+interface ParseResult {
+  success: boolean;
+  nodes: Node[];
+  edges: Edge[];
+  refs: ExternalRef[];
+  errors: ParseError[];  // Collect errors, don't throw
+}
+
+interface ParseError {
+  file: string;
+  line?: number;
+  column?: number;
+  message: string;
+  severity: "error" | "warning";
+}
+
+// Partial results are valid - a file with syntax errors
+// may still have parseable content above the error
+```
+
+#### Write Failure Recovery
+
+All Parquet writes use atomic write pattern (see Section 6.4 SeedWriter). If atomic rename fails:
+1. Temp file is left in place (`.tmp` suffix)
+2. On next analysis, detect orphan temp files and clean up
+3. Original Parquet file remains intact
+
+#### Corruption Recovery
+
+```bash
+# If seed files become corrupted:
+devac clean --package <path>   # Remove seed directory
+devac analyze <path>           # Regenerate from source
+
+# Source code is always the truth - seeds are 100% regenerable
+```
+
+#### File Locking
+
+To prevent corruption from concurrent access:
+
+```typescript
+// Lock pattern for seed writes
+async function withSeedLock<T>(
+  seedPath: string,
+  operation: () => Promise<T>
+): Promise<T> {
+  const lockFile = path.join(seedPath, ".devac.lock");
+  await acquireLock(lockFile, { timeout: 30000 });
+  try {
+    return await operation();
+  } finally {
+    await releaseLock(lockFile);
+  }
+}
+```
+
+**Lock behavior:**
+- Acquired before any write operation
+- Released after write completes (success or failure)
+- Timeout after 30s to prevent deadlocks
+- Stale locks (process crash) detected via PID in lock file
+
 ---
 
 ## 9. Multi-Language Support
@@ -1430,6 +1649,29 @@ devac watch --validate
 
 # Watch specific package
 devac watch --package packages/auth
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAINTENANCE
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Verify seed integrity
+devac verify
+devac verify --package packages/auth
+
+# Verification checks:
+# - All Parquet files readable
+# - Edge references point to existing nodes
+# - Source files have corresponding seed data
+# - No orphan temp files (.tmp)
+
+# Clean seed files (forces regeneration)
+devac clean
+devac clean --package packages/auth
+
+# Clean removes:
+# - All .devac/seed/ directories
+# - Lock files and temp files
+# - Does NOT remove source code
 ```
 
 ### 11.2 Query Commands
@@ -1514,6 +1756,122 @@ devac issues
 devac issues --file src/auth.ts
 ```
 
+### 11.5 MCP Server Integration
+
+The MCP (Model Context Protocol) server exposes CodeGraph functionality to AI assistants.
+
+#### MCP Tools
+
+```typescript
+// MCP tool definitions for AI assistants
+
+const mcpTools = [
+  {
+    name: "find_symbol",
+    description: "Find a symbol by name in the codebase",
+    input: {
+      name: { type: "string", description: "Symbol name to find" },
+      kind: { type: "string", optional: true, description: "Symbol kind filter (function, class, etc.)" },
+      exported: { type: "boolean", optional: true, description: "Filter to exported symbols only" }
+    }
+  },
+  {
+    name: "get_dependencies",
+    description: "Get all dependencies of a symbol",
+    input: {
+      symbol: { type: "string", description: "Symbol name or entity ID" },
+      depth: { type: "number", optional: true, default: 1, description: "Depth of dependency traversal" }
+    }
+  },
+  {
+    name: "get_dependents",
+    description: "Get all symbols that depend on a given symbol",
+    input: {
+      symbol: { type: "string", description: "Symbol name or entity ID" },
+      depth: { type: "number", optional: true, default: 1, description: "Depth of dependent traversal" }
+    }
+  },
+  {
+    name: "get_call_graph",
+    description: "Get the call graph for a function",
+    input: {
+      function: { type: "string", description: "Function name or entity ID" },
+      direction: { type: "string", enum: ["callers", "callees", "both"], default: "both" },
+      depth: { type: "number", optional: true, default: 3, description: "Max depth (capped at 5)" }
+    }
+  },
+  {
+    name: "get_file_symbols",
+    description: "Get all symbols defined in a file",
+    input: {
+      file: { type: "string", description: "File path" }
+    }
+  },
+  {
+    name: "query_sql",
+    description: "Run a raw SQL query against the CodeGraph",
+    input: {
+      sql: { type: "string", description: "DuckDB SQL query" }
+    }
+  }
+];
+```
+
+#### Query API
+
+MCP tools use the same query engine as CLI commands:
+
+```typescript
+// MCP handler implementation pattern
+async function handleMcpTool(
+  tool: string,
+  input: Record<string, unknown>
+): Promise<McpResult> {
+  switch (tool) {
+    case "find_symbol":
+      return await findSymbol(input.name, input.kind, input.exported);
+    
+    case "get_dependencies":
+      return await getDependencies(input.symbol, input.depth ?? 1);
+    
+    case "get_call_graph":
+      // Cap depth to prevent expensive queries
+      const depth = Math.min(input.depth ?? 3, 5);
+      return await getCallGraph(input.function, input.direction, depth);
+    
+    case "query_sql":
+      // Validate query is read-only
+      if (!isReadOnlyQuery(input.sql)) {
+        throw new Error("Only SELECT queries allowed");
+      }
+      return await runQuery(input.sql);
+    
+    default:
+      throw new Error(`Unknown tool: ${tool}`);
+  }
+}
+```
+
+#### Cross-Repo Queries
+
+For queries spanning multiple repositories, MCP uses the central hub:
+
+```typescript
+// Cross-repo query flow
+async function findSymbolAcrossRepos(name: string): Promise<Symbol[]> {
+  // 1. Query central hub for registered repos
+  const repos = await hub.getRegisteredRepos();
+  
+  // 2. Query each repo's seeds (parallel)
+  const results = await Promise.all(
+    repos.map(repo => queryRepoSeeds(repo, name))
+  );
+  
+  // 3. Merge and deduplicate results
+  return mergeResults(results);
+}
+```
+
 ---
 
 ## 12. Performance Considerations
@@ -1566,6 +1924,44 @@ SELECT * FROM read_parquet('**/nodes/*.parquet')
 WHERE source_file = 'src/auth.ts';  -- Only reads matching partition
 ```
 
+#### Recursive CTE Performance
+
+Recursive CTEs for call graph traversal can be expensive at depth > 3.
+
+**Performance characteristics:**
+- Depth 1-2: Fast (~50ms)
+- Depth 3-4: Moderate (~200-500ms)
+- Depth 5+: Expensive (~1-5s), may scan all edges multiple times
+
+**Mitigation strategies:**
+
+1. **Cap depth by default:** Limit to depth=3, require explicit flag for deeper
+2. **Warn on deep queries:** Log warning for depth > 3
+3. **Pre-compute in Phase 4:** Consider materialized call graph edges
+
+```sql
+-- Optimized recursive CTE with depth limit
+WITH RECURSIVE call_graph AS (
+  -- Base case
+  SELECT entity_id, name, 0 as depth
+  FROM nodes WHERE name = 'handleLogin'
+  
+  UNION ALL
+  
+  -- Recursive case with depth limit
+  SELECT n.entity_id, n.name, cg.depth + 1
+  FROM call_graph cg
+  JOIN edges e ON e.source_entity_id = cg.entity_id
+  JOIN nodes n ON n.entity_id = e.target_entity_id
+  WHERE e.edge_type = 'CALLS'
+    AND cg.depth < 3  -- Hard limit
+)
+SELECT * FROM call_graph;
+```
+
+**Future optimization (Phase 4):**
+Pre-compute transitive call relationships in a separate table to avoid recursive queries at runtime.
+
 ### 12.4 Caching Strategy
 
 ```
@@ -1574,11 +1970,12 @@ WHERE source_file = 'src/auth.ts';  -- Only reads matching partition
 │  CACHING LEVELS                                                             │
 │  ──────────────                                                             │
 │                                                                             │
-│  Level 1: DuckDB Connection Pool                                           │
-│  ────────────────────────────────                                           │
-│  • Reuse DuckDB connections                                                 │
-│  • Warm Parquet file handles                                               │
-│  • ~100ms → ~10ms for subsequent queries                                   │
+│  Level 1: DuckDB Connection Pool (Warm Start)                              │
+│  ─────────────────────────────────────────────                              │
+│  • Keep DuckDB connection warm in watch mode                                │
+│  • Reuse connections across queries                                         │
+│  • Pre-load Parquet file handles on startup                                │
+│  • Cold start: ~100ms, Warm: ~10ms                                         │
 │                                                                             │
 │  Level 2: Query Result Cache (Optional)                                     │
 │  ──────────────────────────────────────                                     │
@@ -1593,6 +1990,88 @@ WHERE source_file = 'src/auth.ts';  -- Only reads matching partition
 │  • No application-level management needed                                   │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 12.5 Observability
+
+Structured logging enables debugging and performance monitoring.
+
+#### Log Events
+
+```typescript
+// Structured log format for analysis operations
+interface AnalysisLogEvent {
+  event: "parse_file" | "write_seed" | "query" | "watch_event";
+  timestamp: string;
+  durationMs: number;
+  
+  // Context
+  file?: string;
+  package?: string;
+  
+  // Metrics
+  nodeCount?: number;
+  edgeCount?: number;
+  refCount?: number;
+  
+  // Status
+  success: boolean;
+  error?: string;
+}
+
+// Example log output (JSON lines format)
+// {"event":"parse_file","timestamp":"2025-01-15T10:30:00Z","durationMs":45,"file":"src/auth.ts","nodeCount":23,"edgeCount":15,"refCount":8,"success":true}
+// {"event":"write_seed","timestamp":"2025-01-15T10:30:00Z","durationMs":12,"package":"packages/auth","success":true}
+```
+
+#### Logging Levels
+
+| Level | Use Case |
+|-------|----------|
+| **error** | Parse failures, write failures, corruption |
+| **warn** | Partial parse results, slow operations (>1s) |
+| **info** | Analysis start/complete, watch events |
+| **debug** | Per-file timing, query plans, cache hits |
+
+#### Performance Metrics
+
+```typescript
+// Key metrics to track
+interface PerformanceMetrics {
+  // Parse performance
+  parseTimeMs: number;
+  filesPerSecond: number;
+  
+  // Write performance
+  writeTimeMs: number;
+  bytesWritten: number;
+  
+  // Query performance
+  queryTimeMs: number;
+  rowsScanned: number;
+  
+  // Watch mode
+  eventLatencyMs: number;  // Time from file change to seed update
+}
+
+// CLI flag for verbose timing
+// devac analyze --timing
+// Output:
+//   Parse:  2.3s (450 files, 195 files/sec)
+//   Write:  0.8s (12.4 MB)
+//   Total:  3.1s
+```
+
+#### Debug Mode
+
+```bash
+# Enable debug logging
+DEBUG=devac:* devac analyze
+
+# Debug specific components
+DEBUG=devac:parser devac analyze
+DEBUG=devac:writer devac analyze
+DEBUG=devac:query devac query "..."
 ```
 
 ---
@@ -1714,6 +2193,74 @@ describe("Recursive CTE Depth", () => {
 
 ### 15.1 Phase Overview
 
+#### Phase Dependencies
+
+```
+                                ┌──────────────────┐
+                                │  PHASE 1:        │
+                                │  Foundation      │
+                                │  (TS Parser,     │
+                                │   SeedWriter,    │
+                                │   DuckDB setup)  │
+                                └────────┬─────────┘
+                                         │
+                    ┌────────────────────┼────────────────────┐
+                    │                    │                    │
+                    ▼                    ▼                    │
+           ┌────────────────┐   ┌────────────────┐           │
+           │  PHASE 2:      │   │  PHASE 3:      │           │
+           │  Incremental   │   │  Python        │           │
+           │  Updates       │   │  Support       │           │
+           │  (File watch,  │   │  (Can run in   │           │
+           │   partitions)  │   │   parallel     │           │
+           └───────┬────────┘   │   with Phase 2)│           │
+                   │            └───────┬────────┘           │
+                   │                    │                    │
+                   └────────────────────┼────────────────────┘
+                                        │
+                                        ▼
+                              ┌──────────────────┐
+                              │  PHASE 4:        │
+                              │  Federation      │
+                              │  (Cross-repo,    │
+                              │   central hub)   │
+                              └────────┬─────────┘
+                                       │
+                                       ▼
+                              ┌──────────────────┐
+                              │  PHASE 5:        │
+                              │  Validation      │
+                              │  Integration     │
+                              │  (MCP, affected  │
+                              │   detection)     │
+                              └────────┬─────────┘
+                                       │
+                                       ▼
+                              ┌──────────────────┐
+                              │  PHASE 6:        │
+                              │  C# Support      │
+                              │  (Optional,      │
+                              │   can defer)     │
+                              └──────────────────┘
+```
+
+**Dependency Notes:**
+
+| Phase | Depends On | Can Parallelize With |
+|-------|------------|---------------------|
+| Phase 1 | - | - |
+| Phase 2 | Phase 1 (SeedWriter, partition structure) | Phase 3 |
+| Phase 3 | Phase 1 (LanguageRouter interface) | Phase 2 |
+| Phase 4 | Phase 1, 2, 3 (all parsers, incremental updates) | - |
+| Phase 5 | Phase 4 (federation for cross-repo queries) | - |
+| Phase 6 | Phase 1 (parser interface) | Can defer indefinitely |
+
+**Critical Path:** Phase 1 → Phase 2 → Phase 4 → Phase 5
+
+**Parallel Opportunity:** Phase 2 and Phase 3 can be developed concurrently after Phase 1 completes. This reduces total timeline by ~1 week if resources available.
+
+#### Phase Timeline
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                                                                             │
@@ -1800,13 +2347,23 @@ describe("Recursive CTE Depth", () => {
 |------|-------------|----------|
 | DuckDB Node.js setup | Install duckdb-async, configure | 1 day |
 | Parquet writer | DuckDB in-memory → Parquet export | 2 days |
+| Atomic write infrastructure | Temp file + rename pattern, lock files | 1 day |
 | Seed directory structure | Create/manage .devac/seed/ | 1 day |
 | Port TS parser | Adapt structural-parser.ts for new format | 3 days |
+| LanguageRouter implementation | Extension mapping, parser registry | 1 day |
 | Entity ID generation | Implement content-hash IDs with repo prefix | 1 day |
-| Basic CLI | analyze, query commands | 2 days |
+| Error handling framework | ParseResult errors, recovery patterns | 1 day |
+| Basic CLI | analyze, query, verify, clean commands | 2 days |
+| Structured logging | Debug/verbose modes for troubleshooting | 1 day |
 | Performance tests | Parquet scale validation | 2 days |
 | Integration tests | End-to-end analyze → query | 2 days |
-| **Total Phase 1** | | **14 days** |
+| **Total Phase 1** | | **18 days** |
+
+**Timeline Note:** Original estimate was 14 days. Added 4 days to account for:
+- Atomic write infrastructure and file locking (1 day)
+- LanguageRouter for future extensibility (1 day)
+- Error handling framework (1 day)
+- Structured logging for observability (1 day)
 
 ### 15.3 Success Criteria
 
@@ -1818,6 +2375,99 @@ describe("Recursive CTE Depth", () => {
 | 4 | Query returns results from 3+ registered repos |
 | 5 | Validation runs only on symbol-level affected files |
 | 6 | C# projects analyzed with cross-language refs |
+
+### 15.4 Test Strategy
+
+A comprehensive test strategy ensures reliability across all phases.
+
+#### Unit Tests
+
+| Component | Test Focus |
+|-----------|------------|
+| **Entity ID Generation** | Deterministic output, collision resistance, scoped name handling |
+| **Scoped Name Generation** | Nested functions, arrow functions, class methods, anonymous functions |
+| **Language Router** | Extension mapping, unsupported file handling |
+| **SeedWriter** | Atomic write pattern, error recovery |
+| **Hash Computation** | Consistency, performance |
+
+```typescript
+// Example unit test structure
+describe("generateEntityId", () => {
+  it("produces stable ID for same content", () => {
+    const id1 = generateEntityId("repo", "pkg", "function", "file.ts", "foo");
+    const id2 = generateEntityId("repo", "pkg", "function", "file.ts", "foo");
+    expect(id1).toBe(id2);
+  });
+  
+  it("produces different ID for different scoped names", () => {
+    const id1 = generateEntityId("repo", "pkg", "function", "file.ts", "foo");
+    const id2 = generateEntityId("repo", "pkg", "function", "file.ts", "bar");
+    expect(id1).not.toBe(id2);
+  });
+});
+```
+
+#### Integration Tests
+
+| Scenario | Validation |
+|----------|------------|
+| **Parse → Write → Query** | Full cycle produces queryable Parquet files |
+| **Incremental Update** | File change triggers correct delta update |
+| **Branch Switching** | base/branch directories update correctly |
+| **Error Recovery** | Corrupt file detection and regeneration |
+
+```typescript
+// Example integration test
+describe("full analysis cycle", () => {
+  it("produces queryable seed files", async () => {
+    await devac.analyze("./test-package");
+    
+    const result = await devac.query(`
+      SELECT COUNT(*) as count FROM read_parquet('./test-package/.devac/seed/base/nodes.parquet')
+    `);
+    
+    expect(result[0].count).toBeGreaterThan(0);
+  });
+});
+```
+
+#### Performance Tests
+
+| Scenario | Target | Validation |
+|----------|--------|------------|
+| **1K files** | <10s full analysis | Baseline performance |
+| **10K files** | <60s full analysis | Scale verification |
+| **50K files** | <5min full analysis | Enterprise scale |
+| **Incremental (1 file)** | <300ms | Watch mode responsiveness |
+| **Hash check (no changes)** | <50ms | Skip optimization |
+
+```typescript
+// Example performance test
+describe("performance", () => {
+  it("analyzes 1K files in under 10 seconds", async () => {
+    const start = Date.now();
+    await devac.analyze("./large-test-package");
+    const duration = Date.now() - start;
+    
+    expect(duration).toBeLessThan(10000);
+  });
+});
+```
+
+#### E2E Tests
+
+| Scenario | Validation |
+|----------|------------|
+| **CLI Commands** | `devac analyze`, `devac query`, `devac watch`, `devac verify`, `devac clean` |
+| **Watch Mode** | File changes trigger updates, output is correct |
+| **MCP Integration** | Tools return expected results |
+| **Cross-Repo Queries** | Central hub aggregates correctly |
+
+#### Test Data Strategy
+
+- **Fixture packages:** Small, deterministic test packages with known structure
+- **Generated packages:** Scripted generation of large packages for scale testing
+- **Real-world samples:** Anonymized extracts from production codebases (optional)
 
 ---
 
