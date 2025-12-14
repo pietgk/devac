@@ -87,6 +87,24 @@ export type {
 // Parsers
 export * from "./parsers/index.js";
 
+// CLI Commands
+export {
+  analyzeCommand,
+  queryCommand,
+  verifyCommand,
+  cleanCommand,
+} from "./cli/commands/index.js";
+export type {
+  AnalyzeOptions,
+  AnalyzeResult,
+  QueryOptions,
+  QueryResult as QueryCommandResult,
+  VerifyOptions,
+  VerifyResult,
+  CleanOptions,
+  CleanResult,
+} from "./cli/commands/index.js";
+
 // Utils (excludes generateScopeHash which is also in analyzer)
 export {
   writeFileAtomic,
