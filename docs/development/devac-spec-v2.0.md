@@ -2107,7 +2107,153 @@ export function formatForLLM(
 
 > **Updated 2025-12-13:** Changed from per-file partition updates to content-hash-based skip with package-level regeneration.
 
-### 8.1 Update Flow
+### 8.1 Initial Analysis Bootstrap
+
+The initial analysis (first run on a package) differs from incremental updates. This section describes the bootstrap sequence that populates seeds from scratch.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                             │
+│  INITIAL ANALYSIS BOOTSTRAP - Three-Phase Sequence                          │
+│  ─────────────────────────────────────────────────                          │
+│                                                                             │
+│  PHASE A: DISCOVERY                                                         │
+│  ──────────────────                                                         │
+│                                                                             │
+│  1. Scan configured package path for source files                          │
+│     - Use LanguageRouter.getSupportedExtensions() for file matching        │
+│     - Apply include/exclude patterns from config                           │
+│     - Respect .gitignore and .devacignore                                  │
+│                                                                             │
+│  2. Build file list with metadata                                          │
+│     - Compute content hash for each file (sha256)                          │
+│     - Record file paths relative to package root                           │
+│                                                                             │
+│  3. Initialize empty Export Index (in-memory)                              │
+│     - Map<scopedName, { entityId, filePath, exportKind }>                  │
+│     - Populated during Pass 1, consumed by Pass 2                          │
+│                                                                             │
+│  Output: FileList[], empty ExportIndex                                     │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  PHASE B: PASS 1 - STRUCTURAL (Parallel)                                    │
+│  ───────────────────────────────────────                                    │
+│                                                                             │
+│  For each file (parallelized with concurrency limit):                      │
+│                                                                             │
+│  1. Route to appropriate parser via LanguageRouter                         │
+│                                                                             │
+│  2. Parse AST and extract:                                                 │
+│     - Nodes (functions, classes, methods, variables)                       │
+│     - Edges (CONTAINS, CALLS within file)                                  │
+│     - External refs (imports - unresolved at this stage)                   │
+│                                                                             │
+│  3. Populate Export Index                                                  │
+│     - For each exported node: exportIndex.set(scopedName, entityInfo)      │
+│     - Enables Pass 2 to resolve imports                                    │
+│                                                                             │
+│  4. Buffer results in DuckDB (memory)                                      │
+│     - INSERT INTO nodes VALUES (...)                                       │
+│     - INSERT INTO edges VALUES (...)                                       │
+│     - INSERT INTO external_refs VALUES (...)                               │
+│                                                                             │
+│  5. Write Pass 1 seeds (atomic)                                            │
+│     - COPY nodes TO 'base/nodes.parquet'                                   │
+│     - external_refs have is_resolved = false                               │
+│                                                                             │
+│  Output: Populated seeds (unresolved refs), populated ExportIndex          │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  PHASE C: PASS 2 - SEMANTIC RESOLUTION (Debounced)                          │
+│  ─────────────────────────────────────────────────                          │
+│                                                                             │
+│  Trigger: After Pass 1 completes + 5s settle time (watch mode)             │
+│           Immediately after Pass 1 (CLI mode)                              │
+│                                                                             │
+│  1. Read unresolved external_refs from Parquet                             │
+│                                                                             │
+│  2. For each unresolved import:                                            │
+│     a. Query Export Index for matching scopedName                          │
+│     b. If found: set is_resolved=true, target_entity_id                    │
+│     c. If not found in package: query sibling packages                     │
+│     d. If not found in repo: query central hub (Phase 4)                   │
+│     e. If still not found: leave is_resolved=false                         │
+│                                                                             │
+│  3. Write updated external_refs.parquet (atomic)                           │
+│                                                                             │
+│  4. Mark analysis complete                                                 │
+│     - Update meta.json schemaVersion if needed                             │
+│     - Log completion statistics                                            │
+│                                                                             │
+│  Output: Fully populated seeds with resolved references                    │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  BOOTSTRAP vs INCREMENTAL                                                   │
+│  ────────────────────────                                                   │
+│                                                                             │
+│  Bootstrap (initial):                                                       │
+│  • No existing seeds - parse ALL files                                     │
+│  • Export Index built from scratch                                         │
+│  • Full Pass 2 resolution across all refs                                  │
+│  • Time: ~5-15s for 1000-file package                                      │
+│                                                                             │
+│  Incremental (watch mode):                                                  │
+│  • Existing seeds present - parse CHANGED files only                       │
+│  • Export Index loaded from existing nodes.parquet                         │
+│  • Pass 2 re-resolves only affected refs                                   │
+│  • Time: ~150-500ms per change batch                                       │
+│                                                                             │
+│  Detection:                                                                 │
+│  • IF base/nodes.parquet exists → incremental mode                         │
+│  • IF base/nodes.parquet missing → bootstrap mode                          │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Bootstrap Implementation
+
+```typescript
+async function bootstrapPackage(
+  packagePath: string,
+  orchestrator: AnalysisOrchestrator
+): Promise<BootstrapResult> {
+  const seedPath = getSeedPath(packagePath);
+  
+  // Check if bootstrap needed
+  const baseNodesPath = path.join(seedPath, "base/nodes.parquet");
+  if (await fileExists(baseNodesPath)) {
+    // Seeds exist - use incremental mode instead
+    return { mode: "incremental", skipped: true };
+  }
+  
+  // PHASE A: Discovery
+  const files = await discoverSourceFiles(packagePath);
+  const exportIndex = new Map<string, ExportInfo>();
+  
+  // PHASE B: Pass 1 - Structural
+  const parseResults = await orchestrator.analyzePackage(packagePath);
+  
+  // Export Index is populated during parsing via callback
+  // (parser calls exportIndex.set() for each exported node)
+  
+  // PHASE C: Pass 2 - Semantic Resolution
+  const resolutionResult = await orchestrator.resolveSemantics(packagePath);
+  
+  return {
+    mode: "bootstrap",
+    filesAnalyzed: parseResults.filesAnalyzed,
+    nodesCreated: parseResults.totalNodes,
+    refsResolved: resolutionResult.resolved,
+    refsUnresolved: resolutionResult.unresolved,
+    totalTimeMs: parseResults.totalTimeMs
+  };
+}
+```
+
+### 8.2 Update Flow
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -2161,7 +2307,7 @@ export function formatForLLM(
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 8.2 File Watcher Integration
+### 8.3 File Watcher Integration
 
 ```typescript
 // src/watcher/file-watcher.ts
@@ -2192,7 +2338,7 @@ export interface FileChangeEvent {
 // Implementation uses chokidar with debouncing
 ```
 
-### 8.3 Rename Detection
+### 8.4 Rename Detection
 
 ```typescript
 // src/watcher/rename-detector.ts
@@ -2215,7 +2361,7 @@ export interface RenameInfo {
 // No need to update entity IDs - they're content-based
 ```
 
-### 8.4 Delete Handling
+### 8.5 Delete Handling
 
 ```typescript
 // On file deletion:
@@ -2235,7 +2381,7 @@ async function handleFileDelete(
 }
 ```
 
-### 8.5 Error Handling
+### 8.6 Error Handling
 
 The system must handle errors gracefully without corrupting seed data or leaving partial state.
 
@@ -2491,6 +2637,98 @@ async function isLockStale(lockFile: string): Promise<boolean> {
 - Log cleaned files at DEBUG level
 - Log cleanup summary at INFO level if any files were cleaned
 - Log errors at WARN level (non-fatal, continue operation)
+
+### 8.7 Graceful Shutdown
+
+When the user interrupts DevAC (Ctrl+C / SIGINT), the system should shut down gracefully without leaving corrupt state. Data integrity is already protected by atomic writes (Section 6.4) and orphan cleanup (Section 8.6), but explicit shutdown handling improves user experience.
+
+#### Shutdown Behavior
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                             │
+│  GRACEFUL SHUTDOWN SEQUENCE                                                 │
+│  ──────────────────────────                                                 │
+│                                                                             │
+│  On SIGINT (Ctrl+C):                                                        │
+│                                                                             │
+│  1. STOP accepting new file events                                          │
+│     - Watcher stops queuing new changes                                    │
+│     - Pending debounce timer cancelled                                     │
+│                                                                             │
+│  2. COMPLETE in-flight operations (max 5s timeout)                         │
+│     - Allow current parse/write to finish                                  │
+│     - If timeout exceeded, abort (atomic writes protect state)             │
+│                                                                             │
+│  3. CLEANUP resources                                                       │
+│     - Close DuckDB connections                                             │
+│     - Release file watcher handles                                         │
+│     - Flush any buffered logs                                              │
+│                                                                             │
+│  4. EXIT with appropriate code                                              │
+│     - Exit code 130 (128 + SIGINT signal number 2)                         │
+│     - Standard Unix convention for signal termination                      │
+│                                                                             │
+│  User sees: "Shutting down... progress saved."                             │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Implementation
+
+```typescript
+function setupGracefulShutdown(
+  orchestrator: AnalysisOrchestrator,
+  pool: DuckDBPool
+): void {
+  let isShuttingDown = false;
+  
+  const shutdown = async (signal: string) => {
+    if (isShuttingDown) return; // Prevent double-shutdown
+    isShuttingDown = true;
+    
+    console.log("\nShutting down... progress saved.");
+    
+    // Stop accepting new work
+    orchestrator.stop?.();
+    
+    // Wait for in-flight operations (with timeout)
+    const SHUTDOWN_TIMEOUT_MS = 5000;
+    try {
+      await Promise.race([
+        orchestrator.waitForIdle?.() ?? Promise.resolve(),
+        sleep(SHUTDOWN_TIMEOUT_MS)
+      ]);
+    } catch {
+      // Timeout or error - continue shutdown anyway
+      // Atomic writes ensure no corruption
+    }
+    
+    // Cleanup resources
+    await pool.shutdown();
+    
+    // Exit with signal-appropriate code
+    const exitCode = signal === "SIGINT" ? 130 : 143; // 128 + signal number
+    process.exit(exitCode);
+  };
+  
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+}
+```
+
+#### Data Integrity Guarantees
+
+Even without explicit shutdown handling, data integrity is protected:
+
+| Scenario | Protection | Result |
+|----------|------------|--------|
+| Ctrl+C during parse | No Parquet written yet | Clean state, re-parse on next run |
+| Ctrl+C during write | Atomic write (temp + rename) | Either old or new file, never corrupt |
+| Ctrl+C after write | Temp file may remain | Orphan cleanup removes on next start |
+| Kill -9 (SIGKILL) | Cannot be caught | Atomic writes + orphan cleanup protect |
+
+**Key insight:** The graceful shutdown handler is primarily for UX (clean messaging, proper exit codes). Data integrity relies on atomic writes and orphan cleanup, which work regardless of how the process terminates.
 
 ---
 

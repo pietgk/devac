@@ -52,3 +52,35 @@ This to understand if i agree with the proposed solution and if we really need t
 make sure to include looking at the already addressed critical issues as for example H1 has overlap with C1
 
 lets plan this first as a research task where we gather the needed information to make an informed decision.
+
+
+# Medium
+
+i Piet updated CodeGraph/docs/development/devac-spec-v2.0-review-recap.md containing the recap of the review 
+of CodeGraph/docs/development/devac-spec-v2.0.md.
+
+the details of these reviews are in 
+CodeGraph/docs/development/devac-spec-v2.0-review-claude.md
+CodeGraph/docs/development/devac-spec-v2.0-review-gpt.md
+CodeGraph/docs/development/devac-spec-v2.0-review-gemini.md
+with human understandable docs in CodeGraph/docs/development/devac-spec-v2.0-review-doc.md
+
+se already handled the critical issues C1 to C4 and we analysed at handled the remaining HIGH issues H1 to H6
+
+i want to have a more thorough understanding why and how we should handle 
+the 4.4 MEDIUM Fixes Summary
+
+| Fix | Problem | Solution |
+|-----|---------|----------|
+| **M1: Branch detection** | Detached HEAD, worktrees | Utility function with fallbacks |
+| **M2: Python check** | Missing Python not detected | Check on startup, clear error |
+| **M3: Scoped name examples** | Edge cases unclear | Add unit test examples to spec |
+| **M4: Analysis flow doc** | Initial vs incremental unclear | Separate documentation sections |
+| **M5: Interruption handling** | Ctrl+C behavior undefined | Graceful shutdown, no corruption |
+
+for each issue i want to understand the why and how and any alternatives with pros and cons to consider?
+This to understand if i agree with the proposed solution and if we really need to do this
+
+make sure to include looking at the already addressed issues sas they can influence the validity of the medium issues
+
+lets plan this first as a research task where we gather the needed information to make an informed decision.
