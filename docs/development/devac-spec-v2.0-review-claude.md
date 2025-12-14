@@ -1,459 +1,542 @@
-# DevAC Spec v2.0 Review - Claude Analysis (Updated)
+# DevAC/CodeGraph Specification v2.0 - Architecture Review
 
-**Reviewer:** Claude (Architecture Review)  
+**Reviewer:** Claude (Anthropic)  
 **Date:** 2025-12-14  
-**Spec Version:** v2.1 (dated 2025-12-13)  
-**Previous Review:** 2025-12-13 (incorporated and updated)
+**Spec Version:** 2.0/2.1  
+**Review Scope:** Feasibility, Architecture, Implementation Phases, Performance, Missing Pieces, Integration Points
 
 ---
 
 ## Executive Summary
 
-The v2.0 spec represents a **well-considered architectural pivot** from Neo4j to DuckDB+Parquet. The core decisions are sound, and the spec has been significantly strengthened since the last review with additions for DuckDB session lifecycle (§5.6), graceful shutdown (§8.6), and known limitations (§14.0). This update consolidates previous findings with new analysis.
+The v2.0 spec represents a **well-reasoned architectural pivot** from Neo4j to DuckDB+Parquet. The federated, file-based approach solves real problems exposed by v1.x (NodeIndexCache overhead, complex sync logic). The design is sound for single-developer/team use cases.
 
-**Overall Assessment:** Ready for Phase 1 with minor clarifications needed.
+**Overall Assessment: Feasible with caveats**
 
-| Criterion | Rating | Notes |
-|-----------|--------|-------|
-| Feasibility | ✅ Good | Working components correctly identified |
-| Architecture | ✅ Good | Two-phase design preserved, boundaries clear |
-| Phase Ordering | ✅ Good | Critical path identified correctly |
-| Performance Targets | ⚠️ Needs Testing | Targets reasonable but need Phase 1 validation |
-| Error Handling | ✅ Good (improved) | Atomic writes, shutdown handling now covered |
-| Integration Points | ⚠️ Needs Detail | FileWatcher→Parser connection still underspecified |
+| Area | Rating | Notes |
+|------|--------|-------|
+| Architecture Soundness | ✅ Strong | Two-pass design is proven, DuckDB is excellent choice |
+| Component Boundaries | ⚠️ Needs Work | FileWatcher→Parser handoff underspecified |
+| Phase Dependencies | ✅ Correct | Critical path identified correctly |
+| Performance Targets | ⚠️ Aggressive | <200ms warm achievable; <100ms is stretch goal |
+| Error Handling | ❌ Gaps | Partial writes, corruption detection need detail |
+| Integration Points | ⚠️ Partial | Some handoffs well-defined, others vague |
 
 ---
 
 ## 1. Feasibility Analysis
 
-### 1.1 Working Components Correctly Identified
+### 1.1 Working Components Correctly Identified ✅
 
-The spec correctly identifies these as portable from v1.x:
+The spec correctly identifies what to preserve from v1.x:
 
-| Component | Location | Assessment |
-|-----------|----------|------------|
-| TypeScript Parser | `src/analyzer/parsers/*.ts` | ✅ Portable - uses ts-morph, output format needs adaptation |
-| Python Parser | `src/analyzer/python-parser.ts` + `python_parser.py` | ✅ Portable - subprocess model preserved |
-| Relationship Resolver | `src/analyzer/relationship-resolver.ts` | ✅ Portable - Pass 2 logic maps to semantic resolution |
-| Entity ID Generation | `src/analyzer/types.ts#ParserContext` | ⚠️ Needs revision - current format uses line numbers |
-| File Watcher | `src/devac/services/codegraph/` (chokidar) | ✅ Portable |
-| Test Fixtures | `test-fixtures/`, `test_fixtures/` | ✅ Reusable |
+| Component | v1.x Status | Spec Assessment | My Assessment |
+|-----------|-------------|-----------------|---------------|
+| TypeScript parser (ts-morph) | Working | Port | ✅ Correct |
+| Python parser (subprocess) | Working | Port | ✅ Correct |
+| StructuralParser (Babel) | Working | Port | ✅ Correct - fast path exists |
+| FileWatcher (chokidar) | Working | Keep | ✅ Correct |
+| Test fixtures | Working | Keep | ✅ Correct |
 
-**Verified in codebase:**
-- `src/analyzer/types.ts` defines `AstNode` with `entityId: string` - needs adaptation to new scoped-name format
-- `src/analyzer/parsers/` contains parsers for TS, Python, Java, Go, C#, C/C++, SQL
-- Tree-sitter parsers exist but are lower priority (Phase 3+)
+**Evidence from codebase:**
+- `src/analyzer/structural-parser.ts` - Babel-based, already produces nodes/relationships
+- `src/analyzer/python-parser.ts` - subprocess model working
+- `src/devac/services/codegraph/file-watcher.ts` - Disposable pattern, debouncing, complete
 
-### 1.2 Components Correctly Marked for Removal
+### 1.2 "Broken" Components Correctly Categorized ✅
 
-| Component | Reason | Risk |
-|-----------|--------|------|
-| Neo4j Client | Replaced by DuckDB | Low - clean separation in `src/database/neo4j-client.ts` |
-| StorageManager | Replaced by SeedWriter | Low - interface changes but logic reusable |
-| NodeIndexCache | Not needed in new architecture | None - was proposed in v1.11, never implemented |
+| Component | Spec Decision | My Assessment |
+|-----------|---------------|---------------|
+| Neo4j client | Remove | ✅ Correct |
+| NodeIndexCache | Remove | ✅ Correct - was a symptom of wrong DB choice |
+| StorageManager | Replace | ✅ Correct - Neo4j-specific |
+| XState Actors | Simplify | ⚠️ Partially - current code doesn't show XState usage |
 
-### 1.3 Interface Alignment Gap
+### 1.3 Technology Choices Validated
 
-The spec defines:
-```typescript
-interface StructuralParseResult {
-  nodes: ParsedNode[];
-  edges: ParsedEdge[];
-  externalRefs: ParsedExternalRef[];
-}
+**DuckDB + Parquet:** Excellent choice for this use case:
+- Columnar storage ideal for analytical queries (find all functions, cross-file refs)
+- Native Parquet support eliminates ETL
+- In-process - no server deployment
+- Handles 100K+ rows efficiently
+
+**Concern:** DuckDB's Node.js bindings (`duckdb-async`) are less mature than Python bindings. Edge cases around connection pooling and error recovery need careful testing.
+
+### 1.4 Feasibility Risks
+
+| Risk | Severity | Mitigation in Spec | Additional Mitigation Needed |
+|------|----------|-------------------|------------------------------|
+| DuckDB memory limits | Medium | ✅ 512MB default config | Add OOM handling guidance |
+| Parquet corruption | Medium | ✅ Atomic writes | Need integrity check on read |
+| Python parser latency | Low | ✅ Accept 200-500ms | Long-running worker optional |
+| Windows file locking | High | ✅ Deferred to Phase 4+ | ✅ Acceptable |
+
+---
+
+## 2. Architecture Analysis
+
+### 2.1 Two-Phase Parsing Design ✅ Sound
+
+```
+Pass 1 (Structural) ──► Pass 2 (Semantic)
+       │                      │
+   Per-file              Cross-file
+   Parallel              Batched
+   <50ms                 Deferred
 ```
 
-Current codebase uses:
+This is the correct architecture. Evidence:
+- Structural pass is embarrassingly parallel
+- Semantic resolution (imports → exports) fundamentally requires cross-file knowledge
+- The spec correctly defers resolution to save time on initial parse
+
+**Observation from existing code:** The current `StructuralParser` class already implements this pattern:
 ```typescript
-interface SingleFileParseResult {
+// src/analyzer/structural-parser.ts line 26-39
+export interface StructuralParseResult {
+  filePath: string;
   nodes: AstNode[];
   relationships: RelationshipInfo[];
+  importStrings: string[];           // ← Unresolved imports
+  exportedSymbols: ExportedSymbol[]; // ← For resolution
+  // ...
 }
 ```
 
-**Recommendation:** The spec acknowledges this in §14.0 (Interface Alignment Note). During Phase 1:
-1. Create new interfaces in `src/seed/types.ts`
-2. Create adapter functions to convert `AstNode` → `ParsedNode`
-3. `externalRefs` is a NEW concept - currently embedded in relationships, needs extraction
+The spec's `externalRefs` schema aligns with `importStrings` conceptually.
+
+### 2.2 Component Boundaries Analysis
+
+#### Well-Defined ✅
+
+| Interface | Definition Quality | Notes |
+|-----------|-------------------|-------|
+| LanguageParser | ✅ Clear | `parse(filePath): Promise<StructuralParseResult>` |
+| SeedWriter | ✅ Clear | Atomic write pattern specified |
+| DuckDBPool | ✅ Clear | Acquire/release semantics |
+
+#### Underspecified ⚠️
+
+| Interface | Gap | Recommendation |
+|-----------|-----|----------------|
+| FileWatcher → LanguageRouter | How events map to parse calls | Add event dispatcher interface |
+| LanguageRouter → Parser | Single file vs batch parse API | Clarify when to use each |
+| Parser → StorageManager | Streaming vs batch write | Spec mentions streaming but no interface |
+| Error propagation | Where errors bubble to | Add error channel design |
+
+### 2.3 Per-Package-Per-Branch Partitioning ✅ Correct
+
+The change from per-file to per-package partitioning was the right call:
+
+**Per-file (rejected):**
+```
+5000 source files × 3 Parquet files = 15,000 files
+DuckDB glob scan: ~500ms overhead
+```
+
+**Per-package (adopted):**
+```
+1 package × 6 files (base + branch) = 6 files
+DuckDB scan: ~10ms
+```
+
+### 2.4 Entity ID Design ⚠️ Minor Concern
+
+The scoped name approach is correct for stability:
+```
+{repo}:{package}:{kind}:{scope_hash}
+```
+
+**Concern:** The spec says scope_hash = `sha256(filePath + scopedName + kind)` but doesn't specify:
+- Encoding (UTF-8?)
+- Separator characters between components
+- Handling of special characters in file paths (Windows backslashes)
+
+**Recommendation:** Add an explicit normalization step:
+```typescript
+function normalizeForHash(filePath: string): string {
+  return filePath.replace(/\\/g, '/').normalize('NFC');
+}
+```
+
+### 2.5 Delta Storage Strategy ✅ Sound
+
+```
+base/   ← Full package content for main branch
+branch/ ← Delta for current working branch
+```
+
+The UNION ALL query pattern is correct:
+```sql
+SELECT * FROM branch WHERE NOT is_deleted
+UNION ALL  
+SELECT * FROM base WHERE file_path NOT IN (SELECT file_path FROM branch)
+```
+
+**Concern:** The `is_deleted` flag adds complexity. Consider:
+- What happens if a file is deleted and re-added?
+- How to garbage collect old deleted markers?
+
+**Recommendation:** Add periodic compaction (merge branch into base on PR merge).
 
 ---
 
-## 2. Architecture Assessment
+## 3. Implementation Phases Analysis
 
-### 2.1 Two-Phase Design: Sound
-
-The preserved Pass 1/Pass 2 architecture maps cleanly:
+### 3.1 Phase Dependencies ✅ Correctly Identified
 
 ```
-v1.x                              v2.0
-─────                             ─────
-Pass 1: Structural Parse    →     Pass 1: Structural Parse (unchanged)
-Pass 2: Relationship Resolve →    Pass 4: Semantic Resolution (deferred)
+Phase 1 (Foundation)
+    ↓
+Phase 2 (Incremental) ←→ Phase 3 (Python) [Parallel OK]
+    ↓
+Phase 4 (Federation)
+    ↓
+Phase 5 (Validation/MCP)
+    ↓
+Phase 6 (C#) [Optional]
 ```
 
-**Key Insight:** The spec correctly separates structural parsing (per-file, parallel) from semantic resolution (cross-file, batched). This is the right call - it enables incremental updates in Phase 2.
+The spec correctly identifies:
+- Phase 1 is blocking everything
+- Phases 2 and 3 can run in parallel (different concerns)
+- Phase 4 needs 2 & 3 complete for cross-language resolution
 
-**Improvement since last review:** §8.6 now covers graceful shutdown, addressing previous concern about mid-operation interruptions.
+### 3.2 Phase 1 Task Estimates ⚠️ Optimistic
 
-### 2.2 Component Boundaries: Clear with One Gap
+| Task | Spec Estimate | My Estimate | Delta |
+|------|---------------|-------------|-------|
+| DuckDB Node.js setup | 1 day | 1.5 days | Account for duckdb-async quirks |
+| Parquet writer | 2 days | 2 days | ✅ |
+| Atomic write infrastructure | 1 day | 2 days | Edge cases (fsync failures, temp file cleanup) |
+| Port TS parser | 3 days | 4 days | Need to adapt entity ID generation |
+| Error handling framework | 1 day | 2 days | Needs more design upfront |
+| **Total** | 18 days | 22-24 days | +20-30% buffer |
 
+### 3.3 Critical Path Risk
+
+The spec's critical path is:
 ```
-┌─────────────────────────────────────────────────────────────┐
-│ CLI Layer                                                    │
-│   devac analyze | devac watch | devac query                 │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-┌─────────────────────────▼───────────────────────────────────┐
-│ Orchestration Layer                                          │
-│   AnalyzerService → coordinates everything                   │
-│   [GAP: Need new Orchestrator for v2.0 or adapt existing]   │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-┌─────────────────────────▼───────────────────────────────────┐
-│ Processing Layer                                             │
-│   LanguageRouter → Parser → SeedWriter                      │
-│   FileWatcher (Phase 2)                                      │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-┌─────────────────────────▼───────────────────────────────────┐
-│ Storage Layer                                                │
-│   DuckDB (in-memory) → Parquet files                        │
-│   [NEW: Replaces Neo4j completely]                          │
-└─────────────────────────────────────────────────────────────┘
+Phase 1 → Phase 2 → Phase 4 → Phase 5
 ```
 
-**Gap Identified:** The spec doesn't specify whether to:
-- Adapt existing `AnalyzerService` for v2.0
-- Create new `DevACOrchestrator` 
-- Use XState actors from `src/devac/actors/`
+**Risk:** Phase 2 (incremental updates) depends on understanding the update patterns that emerge from Phase 1. If Phase 1 reveals performance issues with the Parquet write pattern, Phase 2 design may need revision.
 
-**Recommendation:** Given the scope of change, create a NEW orchestrator (`src/seed/orchestrator.ts`) rather than adapting `AnalyzerService`. Keep v1.x code intact until Phase 3 deprecation.
+**Recommendation:** Add a checkpoint between Phase 1 and 2:
+- Run Phase 1 with a real 10K file codebase
+- Measure actual write latencies
+- Adjust Phase 2 design if needed
 
-### 2.3 Storage Strategy: Well-Designed
+### 3.4 Missing Phase Details
 
-The per-package-per-branch partitioning is the right choice:
+#### Phase 2: Rename/Delete Handling
 
-| Approach | Files per 1K sources | Decision |
-|----------|---------------------|----------|
-| Per-file | 3,000 | ❌ Rejected (metadata overhead) |
-| Per-package | 6 (3 base + 3 branch) | ✅ Adopted |
+The spec mentions "Rename/delete handling" but doesn't specify:
+- How to detect file renames (vs delete+add)
+- How to update entity IDs when file path changes
+- Cascade behavior for relationships
 
-The delta storage (`base/` + `branch/`) design correctly handles:
-- Feature branch workflows (small deltas)
-- Main branch updates (full package rewrite)
-- Branch switching (query union pattern)
+**Recommendation:** Treat rename as delete+add for simplicity. Don't try to track renames.
 
-**Trade-off acknowledged in §12.1:** Base branch edits are slower (300-500ms vs 150-300ms for feature branches). This is acceptable given most development uses feature branches.
+#### Phase 4: Semantic Resolution Algorithm
 
-### 2.4 DuckDB Session Lifecycle: Now Addressed ✅
-
-**Improvement since last review:** §5.6 now comprehensively covers:
-- Connection pooling interface (`DuckDBPool`)
-- Memory configuration per operation
-- Fatal error recovery with retry logic
-- Session warmth management for watch mode
-
-This addresses previous concerns about DuckDB lifecycle management.
+Section 6.5 shows the resolution flow but lacks:
+- Caching strategy for resolved imports
+- Handling of circular dependencies
+- Re-resolution triggers (when does resolution become stale?)
 
 ---
 
-## 3. Implementation Phase Analysis
+## 4. Performance Targets Analysis
 
-### 3.1 Phase Ordering: Correct
+### 4.1 Target Breakdown
+
+| Metric | Spec Target | Achievability | Notes |
+|--------|-------------|---------------|-------|
+| Hash check (no changes) | <50ms | ✅ Achievable | File stat + content hash |
+| Structural parse (TS) | <50ms p50 | ⚠️ Stretch | Babel is fast, but 50ms is aggressive for 500+ LOC files |
+| Package Parquet write | <100ms | ⚠️ Depends | With ZSTD compression, 100ms for 50MB is tight |
+| Single file change (warm) | <300ms | ✅ Achievable | Sum of parts |
+| Single file change (cold) | <500ms | ⚠️ Stretch | DuckDB cold start is 100-200ms |
+
+### 4.2 Performance Validation Concerns
+
+The spec's latency budget (Section 12.1) shows:
 
 ```
-Phase 1 (Foundation) ─┬─► Phase 2 (Incremental) ─┬─► Phase 4 (Federation)
-                      │                           │
-                      └─► Phase 3 (Python) ───────┘
-                                                  │
-                                                  ▼
-                                         Phase 5 (Validation)
-                                                  │
-                                                  ▼
-                                         Phase 6 (C#, optional)
+Read file + compute hash       :  5-10ms
+Compare with stored hash       :  5-10ms
+Parse with ts-morph/Babel      : 50-200ms
+Load existing Parquet          : 20-50ms
+Merge nodes/edges              : 10-20ms
+Write new Parquet (ZSTD)       : 30-100ms
+fsync directory                : 10-30ms
+────────────────────────────────────────
+TOTAL (p50)                    : ~150-300ms
 ```
 
-**Critical Path:** Phase 1 → Phase 2 → Phase 4 → Phase 5
+**Concern:** This budget assumes warm DuckDB connection. The cold start path adds:
+- DuckDB connection init: 100-200ms
+- First Parquet metadata scan: 50-100ms
 
-**Parallelization Opportunity:** Phase 2 and Phase 3 can run concurrently after Phase 1. The spec correctly notes this could save ~1 week.
+### 4.3 Realistic Revised Targets
 
-### 3.2 Phase Dependencies: Complete
+| Metric | Spec Target | Recommended Target |
+|--------|-------------|-------------------|
+| Single file (warm) | <300ms p50 | <400ms p50, <600ms p95 |
+| Single file (cold) | <500ms p50 | <700ms p50, <1000ms p95 |
+| Hash check (no changes) | <50ms | <100ms (include Parquet metadata read) |
 
-| Phase | Hard Dependencies | Soft Dependencies |
-|-------|-------------------|-------------------|
-| Phase 1 | None | - |
-| Phase 2 | SeedWriter, DuckDB setup | LanguageRouter for watch filters |
-| Phase 3 | LanguageRouter interface | Can run parallel to Phase 2 |
-| Phase 4 | All parsers working | Incremental updates complete |
-| Phase 5 | Federation working | - |
-| Phase 6 | Parser interface | Can defer indefinitely |
+### 4.4 Base Branch Write Amplification
 
-### 3.3 Phase 1 Task Estimate: Reasonable
+The spec correctly identifies that base-branch edits are slower (300-500ms vs 150-300ms for feature branches). This is acceptable for the stated reason: most development uses feature branches.
 
-The spec estimates **18 days** for Phase 1. This is realistic with proper scoping:
-
-| Task | Estimate | Risk |
-|------|----------|------|
-| DuckDB setup | 1 day | Low |
-| Parquet writer | 2 days | Medium - ZSTD compression tuning |
-| Atomic write infrastructure | 1 day | Low - pattern is well-documented |
-| Seed directory structure | 1 day | Low |
-| Port TS parser | 3 days | **High** - entity ID format change |
-| LanguageRouter | 1 day | Low |
-| Entity ID generation | 1 day | Medium - scoped name edge cases |
-| Error handling | 1 day | Low |
-| Basic CLI | 2 days | Low |
-| Structured logging | 1 day | Low |
-| Performance tests | 2 days | Medium - may surface issues |
-| Integration tests | 2 days | Medium |
-
-**Recommendation:** The 18-day estimate is appropriate. Add 2-4 buffer days for:
-- Entity ID migration edge cases (anonymous functions, callbacks)
-- DuckDB Node.js async API learning curve
-
-**Revised Estimate:** 20-22 days (4 weeks with buffer)
+**Concern:** CI/CD pipelines often run on main/master. This means:
+- Every CI build that regenerates seeds will hit the slower path
+- Consider lazy base update (update base only on PR merge, not on every commit)
 
 ---
 
-## 4. Performance Targets Assessment
+## 5. Missing Pieces
 
-### 4.1 Targets Are Aspirational But Reasonable
+### 5.1 Error Handling Gaps ❌
 
-| Operation | Target (p50) | Feasibility | Notes |
-|-----------|--------------|-------------|-------|
-| Hash check | <50ms | ✅ Very likely | Simple SHA-256 + file read |
-| TS parse | <50ms | ⚠️ File-dependent | Large files with generics may exceed |
-| Python parse | <200ms | ⚠️ Likely higher | Subprocess overhead is 100-200ms alone |
-| Parquet write | <100ms | ⚠️ Size-dependent | 1MB+ files may exceed |
-| Single file change | <300ms | ⚠️ Cumulative risk | Depends on above working |
+| Scenario | Current Handling | Recommendation |
+|----------|-----------------|----------------|
+| Parse failure (syntax error) | Not specified | Skip file, log warning, continue |
+| Parquet write failure | Atomic write + cleanup | Add retry with backoff |
+| DuckDB fatal mode | ✅ Specified (Section 5.6) | Good |
+| Corrupt Parquet on read | Not specified | Add integrity check, auto-regenerate |
+| OOM during analysis | Not specified | Add memory pressure detection |
 
-### 4.2 Specific Concerns
+### 5.2 Rollback Scenarios ❌
 
-**1. Python Parser Latency**
+The spec doesn't address:
 
-The spec notes 200-500ms subprocess overhead. This is optimistic. Measured:
-- Node.js `spawn()` overhead: ~50-100ms
-- Python interpreter startup: ~100-200ms
-- AST parsing: ~50-100ms
-- JSON serialization: ~20-50ms
+**Scenario 1: Partial batch write failure**
+- 5 of 10 files parsed, 3rd file write fails
+- What's the state of seeds?
 
-**Realistic estimate:** 250-500ms per Python file
+**Recommendation:**
+```typescript
+// Transaction-like pattern for batch writes
+async function writeBatchAtomic(files: ParseResult[]): Promise<void> {
+  const tempDir = `${seedPath}/.tmp-${Date.now()}`;
+  try {
+    // Write all to temp
+    for (const file of files) {
+      await writeToTemp(tempDir, file);
+    }
+    // Atomic swap
+    await atomicSwap(tempDir, seedPath);
+  } catch (e) {
+    await cleanup(tempDir);
+    throw e;
+  }
+}
+```
 
-**Mitigation options (spec mentions these in §14.3):**
-- Long-running Python process with RPC (best option)
-- Batch multiple Python files per subprocess call
-- Accept higher latency for Python (recommended for Phase 1)
+**Scenario 2: Schema version mismatch recovery**
+- User updates DevAC
+- Runs query on old seeds
+- Query fails
 
-**2. Base Branch Performance Trade-off**
+**Current handling:** Log warning, suggest `--force`.
 
-§12.1 now explicitly documents the base vs feature branch performance difference:
-- Feature branch: 150-300ms (delta storage)
-- Base branch: 300-500ms (full package rewrite)
+**Missing:** Automatic migration for minor version bumps.
 
-This is acceptable and well-documented.
+### 5.3 Failure Modes Not Addressed ❌
 
-**3. Recursive CTE Performance**
+| Failure Mode | Impact | Recommendation |
+|--------------|--------|----------------|
+| Disk full | Write fails mid-stream | Pre-check available space |
+| File locked by IDE | Windows: EBUSY | Retry with backoff (Phase 4) |
+| Slow file system (NFS) | Latency exceeds targets | Detect and warn |
+| Concurrent writes | Race condition | File locking per package |
+| Git operations during analysis | File changes mid-parse | Pause watcher during git ops |
 
-The spec correctly warns about depth >3 degradation (§12.3). However:
-- Depth 5-6 queries are common for call graph analysis
-- Pre-computing transitive closure is expensive
+### 5.4 Concurrent Write Protection ❌
 
-**Recommendation:** For Phase 5 (validation), limit to depth 2 for affected detection. Deeper traversal can be async/background.
+The spec doesn't address what happens when:
+- Two terminal sessions run `devac analyze` simultaneously
+- Watch mode running + manual `devac analyze`
 
-### 4.3 Validation Strategy: Good
+**Recommendation:** Add lock file per package:
+```
+.devac/seed/.lock (advisory lock)
+```
 
-The spec proposes validating performance during Phase 1 (weeks 1-3). This is correct - better to discover issues early.
+### 5.5 Observability Gaps
 
-**Add to validation checklist:**
-- [ ] Measure actual Python subprocess overhead
-- [ ] Test ZSTD compression vs Snappy (speed trade-off)
-- [ ] Benchmark 10K file glob patterns
-
----
-
-## 5. Error Handling & Recovery
-
-### 5.1 Now Well-Covered ✅
-
-**Improvement since last review:** The spec now addresses most error scenarios:
-
-| Scenario | Coverage | Location |
-|----------|----------|----------|
-| Atomic write pattern | ✅ | §6.4 |
-| DuckDB fatal mode recovery | ✅ | §5.6 |
-| Orphan file cleanup | ✅ | §8.3 |
-| Graceful shutdown (SIGINT/SIGTERM) | ✅ | §8.6 |
-| Data integrity on interruption | ✅ | §8.6 |
-
-### 5.2 Remaining Gaps
-
-| Scenario | Missing | Recommendation |
-|----------|---------|----------------|
-| Corrupt Parquet file detection | How detected? | Add to `devac verify` |
-| Partial batch failure | If 3 of 10 files fail parsing? | Document: continue with partial results |
-| Permission errors | File watcher can't read file | Log warning, skip file, continue |
-| Git branch switch during analysis | Interrupt and restart? | Document expected behavior |
-
-### 5.3 Known Limitations: Well-Documented ✅
-
-§14.0 now explicitly lists Phase 1 limitations:
-- Windows file locking (use WSL)
-- Base branch write amplification (use feature branches)
-- Python parser latency (accept for now)
-- Recursive CTE depth (cap at 6)
-
-This is the right approach - acknowledge limitations rather than pretend they don't exist.
+While Section 12.5 specifies logging, missing:
+- Metrics export (Prometheus/OpenTelemetry)
+- Trace correlation (for debugging slow queries)
+- Health check endpoint (for MCP server)
 
 ---
 
 ## 6. Integration Points Analysis
 
-### 6.1 FileWatcher → LanguageRouter → Parser ⚠️ Still Needs Detail
+### 6.1 FileWatcher → LanguageRouter → Parser ⚠️
 
-**Spec Coverage:** Partial (§6.2.1, §8.1)
+**Current understanding from spec:**
 
-**Missing Details:**
+```
+FileWatcher (chokidar)
+    │
+    ├─► onEvent(FileChangeEvent)
+    │       │
+    │       ▼
+    │   LanguageRouter.getParser(filePath)
+    │       │
+    │       ▼
+    │   Parser.parse(filePath)
+    │       │
+    │       ▼
+    │   SeedWriter.writeFile(result)
+```
 
-1. **Event debouncing:** How to handle rapid file saves?
-   ```typescript
-   // Recommended: 300ms debounce per file
-   const debouncedParse = debounce(parseFile, 300);
-   watcher.on('change', debouncedParse);
-   ```
+**Gaps:**
+1. **Debouncing strategy:** The FileWatcher has debouncing, but spec doesn't say how this interacts with LanguageRouter
+2. **Error propagation:** What happens if parse fails? Does watch mode continue?
+3. **Priority handling:** If multiple files change, is there ordering?
 
-2. **Batch vs immediate:** Save immediately or batch every N seconds?
-   - Spec mentions batch is same performance as single (§3.3)
-   - Recommend: Debounce per-file (300ms), batch all pending every 500ms
-
-3. **Error propagation:** What if parser throws?
-   - Document: Don't crash watcher, log error, continue
-
-**Recommendation:** Add §8.7 "Watch Mode Event Handling" with debounce strategy.
-
-### 6.2 Parser → SeedWriter ⚠️ Interface Clarification Needed
-
-**One clarification needed:** 
-
-The spec shows `SeedWriter.writeFile()` but the per-package strategy requires:
-1. Read existing package Parquet
-2. Filter out old data for changed file
-3. Merge new data
-4. Write complete new Parquet
-
-This is **update**, not **write**. The interface should be:
+**Recommendation:** Add explicit event dispatcher:
 ```typescript
-interface SeedWriter {
-  updatePackage(
-    seedPath: string,
-    changedFile: string,
-    result: StructuralParseResult
-  ): Promise<void>;
+interface EventDispatcher {
+  dispatch(event: FileChangeEvent): Promise<void>;
+  setErrorHandler(handler: (error: Error) => void): void;
+  setPriority(pattern: string, priority: number): void;
 }
 ```
 
-### 6.3 Central Hub Integration
+### 6.2 Parser → StorageManager Connection ⚠️
 
-**Questions for Phase 4:**
-- When does central.duckdb get created? First `hub register`?
-- How are cross-repo edges computed? On query or background?
-- What's the refresh strategy for stale edges?
+**Spec defines:** SeedWriter interface with `writeFile`, `deleteFile`, `updateFile`
 
-**Recommendation:** Keep Phase 4 scope focused:
-1. `hub register` - just adds to registry
-2. Cross-repo queries - federate at query time (slower but simpler)
-3. Precomputed edges - Phase 5 optimization
+**Existing code:** `StorageManager` is Neo4j-specific
 
----
+**Missing:**
+- Streaming write API (parse 1 file → write immediately)
+- Batch write API (parse N files → write all at once)
+- Decision criteria for which to use
 
-## 7. Concurrency Considerations
+**Recommendation:** Default to batch writes per package, stream only in watch mode:
+```typescript
+interface SeedWriter {
+  // Batch mode (default for analyze)
+  beginBatch(): WriteBatch;
+  
+  // Stream mode (for watch)
+  writeFile(result: StructuralParseResult): Promise<void>;
+}
+```
 
-### 7.1 Still Under-Specified
+### 6.3 Branch Detection Integration ⚠️
 
-**Questions not answered:**
+The spec says branch is determined by `git rev-parse --abbrev-ref HEAD`, but doesn't specify:
+- When is this called?
+- How often is it cached?
+- What if git is unavailable?
 
-1. **Multiple `devac watch` instances:** What happens if two terminals run `devac watch` on same package?
-   - Need file-level locking or "already watching" detection
+**Recommendation:**
+```typescript
+interface BranchDetector {
+  getCurrentBranch(): Promise<string>;
+  isBaseBranch(branch: string): boolean;
+  onBranchChange(callback: (newBranch: string) => void): void;
+}
+```
 
-2. **Watch + query concurrent:** Can `devac query` run while `devac watch` is updating?
-   - DuckDB handles this (read committed isolation)
-   - But Parquet write-in-progress needs handling
+### 6.4 MCP Server Integration ✅ Well-Defined
 
-3. **Multi-package parallel analysis:** The spec mentions parallel parsing but not package-level parallelism
-   - Recommendation: Process packages sequentially in Phase 1, parallelize in Phase 4
+Section 11.6 defines clear MCP tools:
+- `find_symbol`
+- `get_dependencies`
+- `get_call_graph`
+- `query_sql`
 
-### 7.2 Git Integration Edge Cases
-
-| Scenario | Question | Recommendation |
-|----------|----------|----------------|
-| Detached HEAD | What branch name to use? | Use "detached" |
-| Worktree | Same repo, different branches | Ignore for Phase 1 |
-| Submodules | Are they separate packages? | Ignore for Phase 1 |
-| Shallow clone | File history incomplete | Fine - we only need current content |
-
----
-
-## 8. Recommendations Summary
-
-### 8.1 Before Phase 1 Starts
-
-| Priority | Action |
-|----------|--------|
-| High | Clarify SeedWriter interface for update (not just write) scenario |
-| High | Add §8.7 "Watch Mode Event Handling" with debounce strategy |
-| Medium | Define behavior for concurrent watch instances |
-| Medium | Add git edge cases (detached HEAD) to §14.0 |
-| Low | Add component diagram for v2.0 architecture |
-
-### 8.2 During Phase 1
-
-| Priority | Action |
-|----------|--------|
-| High | Validate Python parser latency early (week 1) |
-| High | Test atomic write on Windows (document limitations) |
-| Medium | Benchmark ZSTD vs Snappy compression |
-| Medium | Verify 10K file glob performance |
-
-### 8.3 Post-Phase 1
-
-| Priority | Action |
-|----------|--------|
-| Medium | Document recovery workflows explicitly |
-| Low | Consider Python RPC optimization if latency is issue |
-| Low | Add troubleshooting guide |
+The read-only validation for SQL queries is correct.
 
 ---
 
-## 9. What's Improved Since Last Review
+## 7. Specific Recommendations
 
-| Area | Previous Status | Current Status |
-|------|-----------------|----------------|
-| DuckDB session lifecycle | ❌ Not covered | ✅ §5.6 comprehensive |
-| Graceful shutdown | ❌ Not covered | ✅ §8.6 with signal handling |
-| Known limitations | ❌ Not documented | ✅ §14.0 explicit list |
-| Base branch performance | ⚠️ Unclear | ✅ §12.1 trade-off documented |
-| Fatal error recovery | ❌ Not covered | ✅ §5.6 retry logic |
-| Orphan cleanup | ❌ Not covered | ✅ §8.3 detailed |
-| Performance philosophy | ⚠️ Hard targets | ✅ §12.1 "guidelines, not limits" |
+### 7.1 High Priority (Block Phase 1)
+
+1. **Define concurrent write protection**
+   - Add lock file mechanism
+   - Document behavior when lock is held
+
+2. **Specify corrupt Parquet recovery**
+   - Add integrity check on seed load
+   - Auto-regenerate if corrupt
+
+3. **Clarify entity ID encoding**
+   - Document exact hash algorithm
+   - Add path normalization step
+
+### 7.2 Medium Priority (Before Phase 2)
+
+4. **Add event dispatcher interface**
+   - Decouple FileWatcher from Parser
+   - Enable error isolation
+
+5. **Define batch vs stream write criteria**
+   - Document when to use each
+   - Add to CLI flags
+
+6. **Add memory pressure detection**
+   - Monitor heap usage during parse
+   - Pause/reduce batch size if needed
+
+### 7.3 Low Priority (Document for Later)
+
+7. **Metrics/tracing export**
+   - OpenTelemetry integration
+   - Optional, but useful for large codebases
+
+8. **Health check for MCP server**
+   - Simple ping endpoint
+   - Useful for Claude Desktop integration
 
 ---
 
-## 10. Conclusion
+## 8. Conclusion
 
-The v2.0 spec is **ready for implementation** with the caveats noted above. The architectural decisions are sound:
+The v2.0 spec is a **solid foundation** for a major architectural improvement. The move from Neo4j to DuckDB+Parquet is well-reasoned and addresses real pain points from v1.x.
 
-1. ✅ DuckDB + Parquet is the right choice over Neo4j for this use case
-2. ✅ Per-package partitioning avoids file explosion
-3. ✅ Two-phase parsing preserves v1.x design that works
-4. ✅ Delta storage handles branch workflows well
-5. ✅ Error handling now comprehensive
-6. ⚠️ Performance targets need validation (especially Python)
-7. ⚠️ Watch mode event handling needs detail
+**Key Strengths:**
+- Two-pass architecture is proven
+- Per-package partitioning is right tradeoff
+- Atomic write pattern is correct
+- Phase dependencies are accurate
 
-The 18-day Phase 1 estimate is reasonable with 2-4 days buffer for unknowns. The critical path (Phase 1 → 2 → 4 → 5) is correctly identified.
+**Key Gaps:**
+- Error handling needs more specificity
+- Concurrent write protection not addressed
+- Some integration points underspecified
+- Performance targets may be 20-30% optimistic
 
-**Verdict:** Proceed with Phase 1. Use first week to validate performance assumptions and adjust targets as needed.
+**Recommendation:** Proceed with Phase 1, but:
+1. Add 20% buffer to estimates
+2. Define lock file mechanism before starting
+3. Add checkpoint after Phase 1 to validate assumptions
+4. Accept that cold-start latency will exceed targets initially
 
 ---
 
-*Review updated: 2025-12-14*  
-*Previous review: 2025-12-13*
+## Appendix: Existing Code Alignment
+
+| Spec Interface | Existing Code | Alignment |
+|----------------|---------------|-----------|
+| `StructuralParseResult` | `SingleFileParseResult` | Similar, needs `externalRefs` |
+| `LanguageParser` | `Parser` class methods | Needs refactor to interface |
+| `SeedWriter` | `StorageManager` | Complete replacement |
+| `FileWatcher` | `FileWatcher` class | ✅ Ready to use |
+| `LanguageRouter` | Not implemented | New |
+| `DuckDBPool` | Not implemented | New |
+
+---
+
+*End of Review*

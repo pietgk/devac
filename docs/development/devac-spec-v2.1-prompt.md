@@ -84,3 +84,43 @@ This to understand if i agree with the proposed solution and if we really need t
 make sure to include looking at the already addressed issues sas they can influence the validity of the medium issues
 
 lets plan this first as a research task where we gather the needed information to make an informed decision.
+
+# after new review feels repeat again
+
+we updated CodeGraph/docs/development/devac-spec-v2.0-review-recap.md containing the recap of the review 
+of the latest version of CodeGraph/docs/development/devac-spec-v2.0.md.
+
+the details of these reviews are in 
+CodeGraph/docs/development/devac-spec-v2.0-review-claude.md
+CodeGraph/docs/development/devac-spec-v2.0-review-gpt.md
+CodeGraph/docs/development/devac-spec-v2.0-review-gemini.md
+with human understandable docs in CodeGraph/docs/development/devac-spec-v2.0-review-doc.md
+
+in the recap we get the following issues to address:
+
+1. ✏️ Define AnalysisOrchestrator component (spec update ~2 hrs)
+2. ✏️ Add DuckDB session lifecycle section (spec update ~2 hrs)
+3. ✏️ Revise performance targets to realistic values (spec update ~1 hr)
+4. ✏️ Add orphan temp file cleanup requirement (spec update ~1 hr)
+
+but i thing something is off as we already addresses those issues.
+
+can you have a thorough look at the reviews and the latest state of the v2.0 spec. and determine if they are correct or if they missed the updates we already did?
+
+## i deleted the files and ran the reviews again
+
+# plan critical high and medium
+
+can you take a thorough look at CodeGraph/docs/development/devac-spec-v2.0-review-recap.md containing the recap of the review 
+of CodeGraph/docs/development/devac-spec-v2.0.md.
+
+the details of these reviews are in 
+CodeGraph/docs/development/devac-spec-v2.0-review-claude.md
+CodeGraph/docs/development/devac-spec-v2.0-review-gpt.md
+CodeGraph/docs/development/devac-spec-v2.0-review-gemini.md
+with human understandable docs in CodeGraph/docs/development/devac-spec-v2.0-review-doc.md
+
+lets plan updating the spec with the critical high and medium issues resolved by updating CodeGraph/docs/development/devac-spec-v2.0.md.
+please ake into account that addressing some issue will already resolve others so please be very thorough in analysing the complete set and make sure to not get into a look af creating issues from solving issues and going into a spec fix loop and only solve an issue at 1 place.
+
+be focussed on getting the specs in a state that we can implement from them and we do not need to repeat this fix from review and them need to fix more as this is the 3rd time we are doing this and we should try to come to a state where we can implement from the spec without needing to do more spec fixes from more reviews.

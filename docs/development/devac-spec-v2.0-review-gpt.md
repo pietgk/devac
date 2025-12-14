@@ -1,38 +1,53 @@
-# DevAC Spec v2.0 Review (GPT)
+# DevAC v2.0 Spec Review (GPT)
 
-## 1) Feasibility (working vs broken)
-- **Working/clear:** Package seed layout (base/branch), atomic Parquet writes, scoped entity IDs without branch, LanguageRouter/Parser contracts, two-pass parsing, central hub storing only computed edges, CLI surface, hash-based skip flow, crash-safe temp+rename+fsync.
-- **Likely brittle/missing:** Python parser latency acknowledged but not mitigated (no worker pool/warm process); Babel+ts-morph dual-path not described for error reconciliation; external ref resolution flow depends on `findExportInSiblings/Hub` implementations that are unspecified; Windows rename/locking called out as known limitation with only a future retry plan.
+## 1) Feasibility & component status
+- Working pieces correctly identified: DuckDB/Parquet, per-package seeds, content-hash skip, atomic writes, two-pass parsing, LanguageRouter, SeedWriter, structured logging, partitioned seeds, MCP/CLI surface.  
+- “Broken/known limits” mostly accurate (Windows rename/lock issues, base-branch write amplification, Python latency, deep CTE costs). Watch/update targets (<100ms) conflict with later table that sets 150–300ms p50; treat earlier <100ms claim as unrealistic with current components.  
+- Risk: Python parser via per-invocation subprocess likely >200ms cold; needs warm worker to meet even relaxed goals. Cross-repo edge cache invalidation path only “manual/background” → correctness risk for real usage.
 
-## 2) Architecture (two-phase and boundaries)
-- Two-phase split (structural per-file → semantic cross-file) is sound and mirrors v1; boundaries between FileWatcher → LanguageRouter → StructuralParser → SeedWriter are conceptually clear.
-- Semantic Resolver responsibilities are under-specified: who orchestrates reading/writing updated external_refs and coordinating hub lookups? The “phase 4” location is noted but no owning component/module boundary is named.
-- Storage layering (package seeds, repo manifest, central hub) is coherent; however, the hub contract (API/schema, cache invalidation rules) needs explicit interface definitions.
+## 2) Architecture
+- Two-phase design (structural then semantic) is sound and mirrors v1. Pass boundaries clear: per-file structural, batched cross-file resolution.  
+- Boundaries blur at “SeedWriter writes per-file partitions” text; later spec adopts per-package-per-branch files—need to remove leftover per-file mentions to avoid implementation mismatch.  
+- Entity IDs exclude branch (good) but relies on scoped-name stability—needs deterministic generator parity across languages to avoid cross-parser drift.  
+- Federation layering is coherent (package → repo manifest → hub) but hub read paths for node/edge data are implicit (hub stores only computed edges); spell out how queries combine hub state with package globs.
 
-## 3) Implementation phases/dependencies
-- Phase graph is mostly correct: P1 foundation → P2 incremental → P4 federation → P5 validation is the critical path; P2 and P3 parallelization is plausible.
-- Missing explicit prerequisites: P2 incremental depends on a stable SeedWriter API and deterministic entity IDs; P4 federation depends on external_ref resolution semantics being implemented (not just structural data); P5 validation depends on cross-repo resolution availability and affected-file queries over unified base+branch views.
+## 3) Implementation phases & dependencies
+- Phase graph mostly correct: Phase 1 prerequisite for Phase 2/3, Phase 4 depends on 1–3, Phase 5 on 4.  
+- Text still references per-file partitions in Phase 2 tasks; should align with adopted per-package+delta storage.  
+- Incremental updates rely on hash comparison before parse; dependency on LanguageRouter + hashing + SeedWriter should be made explicit in Phase 2 checklist.
 
-## 4) Performance targets realism (<200ms/<100ms)
-- Hash-check (<50ms) and Parquet write (<100-200ms) are plausible; TS parse <50-200ms/file is realistic for median files.
-- End-to-end 150-300ms warm / 300-500ms cold per file change is optimistic but feasible only if: (a) DuckDB connection warm, (b) Parquet write size small, (c) no semantic resolution executed on the hot path. If semantic resolution or cross-package queries occur per change, targets will slip.
-- Batch 10-file change in <500-800ms assumes parallel parsing and a single merged Parquet write; spec doesn’t describe batching mechanics in SeedWriter/merger.
+## 4) Performance targets
+- <200ms/<100ms targets are inconsistent with later table (single file warm 150–300ms p50, 300–500ms p95). Python cold parse (200–500ms) already exceeds <200ms. Base-branch rewrites (300–500ms) contradict <200ms write target. Treat tables as achievable; retire earlier headline targets or restate as stretch.  
+- Batch 10-file change <500–800ms assumes full parallelism and small packages; needs justification or measurement plan.
 
 ## 5) Missing pieces / failure modes
-- **Error handling:** No contract for parser partial failures (per-file timeouts, malformed AST) or how to mark files as “errored” in seeds; no structured error schema in Parquet.
-- **Rollback/atomicity:** Writes are atomic per file, but multi-file operations lack a transaction story—partial package rewrites can leave branch/base divergence; no orphan-cleanup procedure for failed semantic resolution writes.
-- **Recovery:** No boot-time reconciliation for dangling `.tmp`, mismatch between manifest and seeds, or corrupted Parquet detection beyond DuckDB fatal handling.
-- **Validation of hub data:** Cross-repo edges staleness detection and invalidation policy are not specified (only “manual rebuild” suggestion).
-- **Watch gaps:** If watcher misses events, the hash-scan path exists, but the cadence/trigger for running it in watch mode is unspecified.
+- Error handling: good fatal DuckDB recovery, but no plan for partial semantic resolution failures (retry/backoff, mark unresolved with reason).  
+- Rollback: atomic writes covered; missing strategy for corrupted/partial branch seeds (auto-verify + regenerate).  
+- Cross-repo staleness: no invalidation triggers; hub cache rebuild policy needs SLA and detection.  
+- Watcher gaps: no documented recovery if chokidar misses events besides hash sweep cadence.  
+- Security/permissions not covered (seed file ACLs, temp dir exposure).  
+- Concurrency: single-writer assumption stated but not enforced (no locks around SeedWriter).  
+- Validation failure paths: what happens if validators crash—no isolation of partial results.
 
-## 6) Integration points (FileWatcher → LanguageRouter → Parser → SeedWriter)
-- Router/Parser interface is defined, but FileWatcher contract (event coalescing, rename handling, debounce) and how it passes work units (paths + branch context) to parsers is absent.
-- SeedWriter API covers single-file operations, but merge/update semantics for package-level Parquet rewriting (especially base branch amplification) are not fully described.
-- Semantic resolver-to-SeedWriter update path (who rewrites external_refs.parquet and ensures read-after-write visibility) is unspecified.
+## 6) Integration points (FileWatcher → LanguageRouter → Parser → StorageManager/SeedWriter)
+- Interfaces exist but need contract clarity: watcher should filter using router.getSupportedExtensions; seed path resolution per package/branch must be explicit.  
+- Semantic resolver path to hub for cross-repo edges is underspecified (API, caching, invalidation).  
+- StorageManager/SeedWriter naming: spec mixes terms; pick one to avoid ambiguity.
 
-## Practical implementation risks / recommendations
-- Define explicit module owners: `watcher -> work queue -> parser workers -> seed writer -> semantic resolver -> hub updater`, with backpressure and retries.
-- Add an error lane: per-file status table (in Parquet or sidecar) for parse failures/timeouts; ensure `verify` surfaces them.
-- Specify batching/merging strategy for multi-file updates to hit the batch latency targets; otherwise per-file rewrites will exceed budgets.
-- Document hub API (tables, invalidation) and cross-repo edge rebuild triggers to avoid stale resolutions.
-- Add Windows retry/backoff plan to the mainline spec or explicitly mark Phase 1 as *nix-only and fail-fast on Windows.
+## Practical implementation challenges
+- Scoped-name generation must be identical across parsers and stable under minor edits; define shared fixtures/tests early.  
+- Per-package rewrite on base branch may be slow for large packages; consider chunking or background base consolidation.  
+- Python cold-start overhead likely breaks tight watch budgets; need warm worker/pool.  
+- DuckDB fatal-mode handling exists, but multi-file parallel writes may contend on temp/dir fsync; ensure per-package serialization.  
+- Cross-branch queries require consistent branch filtering; ensure all tables partition by branch and APIs expose branch selection defaults.  
+- Windows/WSL gap: retries/backoff plan needed before broader rollout.
+
+## Recommendations (minimal spec edits)
+1) Remove or clearly mark <100ms/<200ms targets as stretch; keep table values as primary.  
+2) Delete remaining per-file partition wording; align Phase 2 tasks and SeedWriter description with per-package-per-branch + delta.  
+3) Specify cross-repo edge cache invalidation policy (manual command + optional periodic) and hub query flow.  
+4) Add contract/tests for scoped-name generation across languages.  
+5) Document watcher recovery via hash sweep cadence (e.g., on start and periodic).  
+6) Clarify single-writer constraint and locking strategy for SeedWriter (per-package mutex).  
+7) Note Python warm-worker requirement to hit targets; otherwise adjust expectations.  
+8) Define error classification for semantic resolution (retryable vs terminal) and how unresolved refs are surfaced.

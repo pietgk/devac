@@ -549,6 +549,49 @@ CREATE TABLE external_refs (
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+#### Entity ID Encoding Rules
+
+To ensure deterministic and portable entity IDs across platforms:
+
+| Component | Encoding Rule |
+|-----------|---------------|
+| **All strings** | UTF-8 normalized (NFC form) |
+| **Path separators** | Always forward slash `/` (even on Windows) |
+| **Special characters** | Preserved as-is in scoped names (no URL encoding) |
+| **Whitespace** | Trimmed from start/end of each component |
+| **Case sensitivity** | Preserved (case-sensitive matching) |
+
+**Normalization process:**
+```typescript
+function normalizeEntityId(
+  repo: string,
+  packagePath: string,
+  kind: string,
+  scopeHash: string
+): string {
+  // 1. Convert path separators to forward slash
+  const normalizedPath = packagePath.replace(/\\/g, "/");
+  
+  // 2. Apply Unicode NFC normalization to all components
+  const components = [repo, normalizedPath, kind, scopeHash]
+    .map(c => c.normalize("NFC").trim());
+  
+  // 3. Concatenate with colon separator
+  return components.join(":");
+}
+
+// Hash generation uses UTF-8 bytes of normalized string
+function generateScopeHash(filePath: string, scopedName: string, kind: string): string {
+  const normalized = [filePath, scopedName, kind]
+    .map(s => s.normalize("NFC").trim())
+    .join(" ");
+  
+  const hash = crypto.createHash("sha256");
+  hash.update(normalized, "utf8");
+  return hash.digest("hex").slice(0, 8);
+}
+```
+
 ### 4.5 Scoped Name Generation Rules
 
 ```typescript
@@ -750,12 +793,14 @@ SELECT COUNT(DISTINCT file_path) FROM read_parquet('base/nodes.parquet');
 
 | Component | Typical Size | Notes |
 |-----------|--------------|-------|
-| Nodes Parquet (per file) | 1-50KB | Depends on file complexity |
-| Edges Parquet (per file) | 0.5-20KB | Depends on relationships |
-| External Refs (per file) | 0.1-10KB | Depends on imports |
+| Nodes Parquet (per source file)* | 1-50KB | Depends on file complexity |
+| Edges Parquet (per source file)* | 0.5-20KB | Depends on relationships |
+| External Refs (per source file)* | 0.1-10KB | Depends on imports |
 | Package total | 1-50MB | ~1000 files |
 | Repository total | 10-200MB | Multiple packages |
 | Central Hub | ~1MB | Only computed edges |
+
+*Size estimates are per source file analyzed. Storage is per-package-per-branch (see Section 4.3), not per-file partitions.
 
 **Compression:** Parquet with ZSTD compression provides ~10x reduction over JSON.
 
@@ -1195,10 +1240,14 @@ export interface SeedWriter {
    * Write parse results to Parquet files.
    * Uses DuckDB in-memory for buffering, exports to Parquet.
    * 
-   * MUST use atomic write pattern:
-   * 1. Write to temp file (.tmp suffix)
-   * 2. Atomic rename to final path
-   * 3. Clean up temp file on failure
+   * MUST use atomic write pattern with locking:
+   * 1. Acquire seed lock (see Section 8.6 File Locking)
+   * 2. Write to temp file (.tmp suffix)
+   * 3. Atomic rename to final path
+   * 4. Release seed lock
+   * 5. Clean up temp file on failure
+   * 
+   * Lock acquisition prevents concurrent writes to same package.
    */
   writeFile(
     seedPath: string,
@@ -1222,6 +1271,9 @@ export interface SeedWriter {
 /**
  * Atomic write implementation pattern.
  * Prevents corruption from interrupted writes.
+ * 
+ * IMPORTANT: Caller MUST hold seed lock before calling this function.
+ * See Section 8.6 for withSeedLock() implementation.
  * 
  * WHY THIS PATTERN:
  * - Parquet files cannot be appended to (metadata is at end of file)
@@ -2435,6 +2487,57 @@ devac analyze <path>           # Regenerate from source
 
 # Source code is always the truth - seeds are 100% regenerable
 ```
+
+#### Parquet Integrity Validation
+
+Before reading seed Parquet files, validate integrity to detect corruption early:
+
+```typescript
+/**
+ * Validate Parquet file integrity using DuckDB metadata read.
+ * DuckDB reads and validates the Parquet footer on open, catching:
+ * - Truncated files (incomplete writes)
+ * - Corrupted metadata
+ * - Invalid schemas
+ * - Magic number mismatches
+ */
+async function validateParquetIntegrity(filePath: string): Promise<boolean> {
+  try {
+    const db = await getConnection();
+    // DuckDB validates Parquet footer on metadata read
+    // A corrupted file will throw during this operation
+    await db.run(`SELECT COUNT(*) FROM read_parquet('${filePath}') LIMIT 0`);
+    return true;
+  } catch (error) {
+    console.error(`Corrupt Parquet detected: ${filePath}`, error);
+    return false;
+  }
+}
+
+/**
+ * Read seeds with automatic corruption recovery.
+ * If Parquet is corrupt, delete and return null to trigger regeneration.
+ */
+async function readSeedsWithRecovery(packagePath: string): Promise<Seeds | null> {
+  const parquetPath = getSeedPath(packagePath);
+  
+  if (!await validateParquetIntegrity(parquetPath)) {
+    // Auto-recover: delete corrupt file, return null to trigger regeneration
+    console.warn(`Auto-recovering corrupt seed: ${parquetPath}`);
+    await fs.unlink(parquetPath).catch(() => {});
+    return null;
+  }
+  
+  return await loadSeeds(parquetPath);
+}
+```
+
+**Why DuckDB-based validation:**
+- DuckDB reads and validates Parquet footer metadata on open
+- Catches truncated files, corrupted metadata, invalid schemas
+- No external dependencies (uses existing DuckDB connection)
+- Fast: only reads metadata, not full file content
+- Automatic: no separate validation tool needed
 
 #### File Locking
 
@@ -3916,7 +4019,7 @@ describe("Recursive CTE Depth", () => {
 | Phase | Success Criteria |
 |-------|------------------|
 | 1 | Can analyze TS package, query with DuckDB, <50ms per file |
-| 2 | <100ms incremental update on file change |
+| 2 | <100ms per-file parse, <500ms package write on base branch |
 | 3 | Python files produce same query format as TS |
 | 4 | Query returns results from 3+ registered repos |
 | 5 | Validation runs only on symbol-level affected files |
