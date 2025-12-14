@@ -46,6 +46,7 @@
     "commander": "^11.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
+    "duckdb-async": "^1.4.2",
     "express": "^5.1.0",
     "fastify": "^4.0.0",
     "ignore": "^7.0.3",

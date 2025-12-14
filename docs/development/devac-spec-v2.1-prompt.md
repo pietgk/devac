@@ -124,3 +124,13 @@ lets plan updating the spec with the critical high and medium issues resolved by
 please ake into account that addressing some issue will already resolve others so please be very thorough in analysing the complete set and make sure to not get into a look af creating issues from solving issues and going into a spec fix loop and only solve an issue at 1 place.
 
 be focussed on getting the specs in a state that we can implement from them and we do not need to repeat this fix from review and them need to fix more as this is the 3rd time we are doing this and we should try to come to a state where we can implement from the spec without needing to do more spec fixes from more reviews.
+
+## final review v2.0 latest version
+
+can you take a thorough look at 
+CodeGraph/docs/development/devac-spec-v2.0.md.
+
+Review this architecture/integration spec thoroughly.
+
+Store your review in 
+CodeGraph/docs/development/devac-spec-v2.0-final-review-claude.md
