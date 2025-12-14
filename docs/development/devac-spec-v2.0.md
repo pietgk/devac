@@ -2316,6 +2316,86 @@ async function withSeedLock<T>(
 - Timeout after 30s to prevent deadlocks
 - Stale locks (process crash) detected via PID in lock file
 
+**Lock acquisition implementation:**
+
+```typescript
+interface LockOptions {
+  timeout: number;        // Max wait time in ms (default: 30000)
+  retryDelay: number;     // Initial retry delay in ms (default: 50)
+  maxRetryDelay: number;  // Max retry delay in ms (default: 1000)
+}
+
+async function acquireLock(
+  lockFile: string,
+  options: Partial<LockOptions> = {}
+): Promise<void> {
+  const { timeout = 30000, retryDelay = 50, maxRetryDelay = 1000 } = options;
+  const startTime = Date.now();
+  let currentDelay = retryDelay;
+  
+  while (Date.now() - startTime < timeout) {
+    try {
+      // Atomic create-exclusive: fails if file exists
+      const fd = await fs.open(lockFile, "wx");
+      
+      // Write lock metadata
+      const lockData = JSON.stringify({
+        pid: process.pid,
+        timestamp: new Date().toISOString(),
+        hostname: os.hostname()
+      });
+      await fd.write(lockData);
+      await fd.close();
+      
+      return; // Lock acquired successfully
+    } catch (error: any) {
+      if (error.code === "EEXIST") {
+        // Lock file exists - check if stale
+        if (await isLockStale(lockFile)) {
+          // Stale lock - remove and retry immediately
+          try {
+            await fs.unlink(lockFile);
+            continue; // Retry without delay
+          } catch {
+            // Another process may have removed it - continue
+          }
+        }
+        
+        // Fresh lock held by another process - wait with backoff
+        await sleep(currentDelay);
+        currentDelay = Math.min(currentDelay * 2, maxRetryDelay);
+      } else {
+        throw error; // Unexpected error
+      }
+    }
+  }
+  
+  throw new Error(`Lock acquisition timeout after ${timeout}ms: ${lockFile}`);
+}
+
+async function releaseLock(lockFile: string): Promise<void> {
+  try {
+    await fs.unlink(lockFile);
+  } catch (error: any) {
+    if (error.code !== "ENOENT") {
+      // Log but don't throw - lock may have been force-released
+      console.warn(`Failed to release lock ${lockFile}:`, error);
+    }
+  }
+}
+```
+
+**Why this approach:**
+- `fs.open(..., "wx")` is atomic create-exclusive (fails if file exists)
+- Exponential backoff (50ms → 100ms → 200ms → ... → 1000ms) reduces contention
+- Stale lock detection allows recovery from crashed processes
+- 30s timeout prevents indefinite blocking
+- Lock file contains PID for stale detection and hostname for debugging
+
+**Platform notes:**
+- **macOS/Linux**: Works reliably with `fs.rename` for atomic writes
+- **Windows**: May require additional retry logic for `fs.rename` (see known limitations)
+
 #### Startup Cleanup
 
 On startup, DevAC must clean orphan artifacts from previous interrupted operations. This ensures a clean state before any analysis begins.
@@ -3005,6 +3085,40 @@ Performance targets serve as design guidelines during development. We accept tha
 3. Python parsing latency (200-500ms) is acceptable for now; optimize later if needed
 4. Base-branch edits may be slower than feature-branch edits (trade-off accepted)
 
+#### Base Branch vs Feature Branch Performance
+
+Due to the per-package Parquet partitioning strategy, **editing files directly on main/base branch has different performance characteristics** than editing on feature branches:
+
+| Branch Type | Storage Strategy | Single File Change | Why |
+|-------------|-----------------|-------------------|-----|
+| **Feature branch** | Delta storage (`branch/` directory) | 150-300ms (p50) | Only writes changed file's data to branch delta |
+| **Base branch** | Full package (`base/` directory) | 300-500ms (p50) | Rewrites entire package Parquet (write amplification) |
+
+**Why this trade-off exists:**
+- Per-package Parquet files minimize metadata overhead vs per-file partitioning
+- Parquet files cannot be incrementally updated (metadata is at end of file)
+- Feature branches use delta storage (small, fast writes)
+- Base branch must maintain complete package state (larger writes)
+
+**When does base branch get updated?**
+- In watch mode: When current git branch is `main`, `master`, or configured base branch
+- Detection: `git rev-parse --abbrev-ref HEAD` determines current branch
+- Updates go to `base/` directory, triggering full package rewrite
+
+**Why this is acceptable:**
+1. **Most development uses feature branches** - small PRs with delta storage
+2. **Base branch edits are infrequent** - typically only on merge
+3. **300-500ms is still responsive** - well within acceptable user experience
+4. **Large refactors on main are rare** - and performance penalty is acceptable when they occur
+
+**Future optimization (Phase 4+):**
+If base-branch performance becomes problematic for specific workflows:
+- Consider "working set" optimization for frequently-edited files
+- Explore background async base updates
+- Evaluate chunked Parquet writing strategies
+
+**Recommendation:** Use feature branches for development. Direct main-branch editing works but may feel slightly slower on large packages.
+
 #### Target Performance Table
 
 | Operation | Target (p50) | Target (p95) | Notes |
@@ -3289,6 +3403,37 @@ DEBUG=devac:query devac query "..."
 ---
 
 ## 14. Open Questions & Validation
+
+### 14.0 Known Limitations (Phase 1)
+
+The following limitations are **accepted for Phase 1** and may be addressed in later phases:
+
+| Limitation | Impact | Mitigation | Future Phase |
+|------------|--------|------------|--------------|
+| **Windows file locking** | `fs.rename` may fail with EBUSY/EPERM if readers hold locks | Use macOS/Linux for Phase 1; WSL works on Windows | Phase 4+ |
+| **Base branch write amplification** | 300-500ms per file change on main branch | Use feature branches for development | Phase 4+ optimization |
+| **Python parser latency** | 200-500ms subprocess overhead | Accept for now; optimize later if needed | Phase 3+ |
+| **Recursive CTE depth >6** | Performance degrades exponentially | Cap depth at 6 for interactive queries | Phase 4+ |
+
+#### Windows Platform Support
+
+Windows support is **out of scope for Phase 1**. The atomic write pattern (`temp file → fs.rename → fsync`) works reliably on macOS and Linux but has known issues on Windows:
+
+- **EBUSY/EPERM errors**: Windows file system doesn't allow renaming files that are open by other processes (e.g., DuckDB readers)
+- **Proposed solution**: Retry with exponential backoff (50ms → 100ms → 200ms → 1000ms, up to 30s)
+- **Alternative**: Use `write-file-atomic` npm package which handles Windows quirks
+
+**For Windows users during Phase 1:**
+- Use WSL (Windows Subsystem for Linux) - works identically to Linux
+- Or wait for Phase 4+ when Windows retry logic is implemented
+
+#### Interface Alignment Note
+
+The spec defines `StructuralParseResult` with `nodes: ParsedNode[]`, `edges: ParsedEdge[]`, `externalRefs: ParsedExternalRef[]`. Existing code may have different interface names (`AstNode`, `RelationshipInfo`). During Phase 1 implementation:
+
+- **Spec is authoritative** - code interfaces should align with spec
+- `externalRefs` tracking is required for Phase 4 semantic resolution
+- Interface alignment is an implementation task, not a spec change
 
 ### 14.1 Parquet File Count Performance
 

@@ -1,3 +1,9 @@
+# prompt for update spec background
+
+copy pasted to claude opus4.5
+
+## critical
+
 i Piet updated CodeGraph/docs/development/devac-spec-v2.0-review-recap.md containing the recap of the review 
 of CodeGraph/docs/development/devac-spec-v2.0.md.
 
@@ -13,8 +19,7 @@ CodeGraph/docs/development/devac-spec-v2.0.md as using the git history and diff 
 be thorough and use the specific reviews to make sure the issues are resolved properly.
 
 
-
-
+## High
 
 
 i Piet updated CodeGraph/docs/development/devac-spec-v2.0-review-recap.md containing the recap of the review 
@@ -25,6 +30,8 @@ CodeGraph/docs/development/devac-spec-v2.0-review-claude.md
 CodeGraph/docs/development/devac-spec-v2.0-review-gpt.md
 CodeGraph/docs/development/devac-spec-v2.0-review-gemini.md
 with human understandable docs in CodeGraph/docs/development/devac-spec-v2.0-review-doc.md
+
+se already handled the critical issues C1 to C4
 
 i want to have a more thorough understanding why and how we should handle 
 the 4.3 HIGH Fixes Summary:
