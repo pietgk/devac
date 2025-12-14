@@ -1,942 +1,808 @@
-# DevAC/CodeGraph v2.0 - Comprehensive Architecture Documentation
+# DevAC/CodeGraph v2.0 - Comprehensive Review Documentation
 
-**Date:** 2025-12-12  
-**Purpose:** Enable informed decision-making for v2.1 specification or implementation  
-**Based On:** v2.0 Spec + Consolidated Review Feedback from Claude, GPT, and Gemini
+**Date:** 2025-12-13 (Updated)  
+**Purpose:** Enable decision-making for v2.1 spec or implementation  
+**Based On:** Consolidated review from Claude, GPT-4, and Gemini  
+**Status:** DECISION-READY
 
 ---
 
 ## Table of Contents
 
-1. [Executive Overview](#1-executive-overview)
-2. [Current Architecture (v1.x)](#2-current-architecture-v1x)
-3. [Proposed Architecture (v2.0)](#3-proposed-architecture-v20)
-4. [Critical Issues Identified](#4-critical-issues-identified)
-5. [Impact Analysis: With vs Without Fixes](#5-impact-analysis-with-vs-without-fixes)
-6. [Detailed Diagrams](#6-detailed-diagrams)
-7. [Decision Matrix](#7-decision-matrix)
-8. [Implementation Scenarios](#8-implementation-scenarios)
-9. [Recommendations](#9-recommendations)
+1. [Executive Summary](#1-executive-summary)
+2. [Current System Architecture (v1.x)](#2-current-system-architecture-v1x)
+3. [Proposed v2.0 Architecture](#3-proposed-v20-architecture)
+4. [Impact of Review Fixes](#4-impact-of-review-fixes)
+5. [System Behavior Diagrams](#5-system-behavior-diagrams)
+6. [Before vs After Fix Comparison](#6-before-vs-after-fix-comparison)
+7. [Risk Assessment](#7-risk-assessment)
+8. [Decision Framework](#8-decision-framework)
+9. [Appendix: Detailed Fix Specifications](#9-appendix-detailed-fix-specifications)
 
 ---
 
-## 1. Executive Overview
+## 1. Executive Summary
 
-### 1.1 What is DevAC/CodeGraph?
+### 1.1 What Is DevAC/CodeGraph?
 
-DevAC/CodeGraph is a **multi-language static code analysis tool** that:
-- Parses codebases to extract AST nodes (classes, functions, variables, etc.)
-- Stores them as queryable knowledge graphs
-- Enables AI-powered code comprehension through the Model Context Protocol (MCP)
+DevAC/CodeGraph is a **multi-language static code analysis tool** that parses codebases and stores them as queryable knowledge graphs. It enables AI-powered code comprehension through the Model Context Protocol (MCP).
 
 ### 1.2 Why v2.0?
 
-The v1.x architecture has a fundamental problem: **Neo4j is optimized for graph traversal but slow for point lookups**. This led to the proposed v1.11 NodeIndexCache - an in-memory cache duplicating all nodes. This duplication signals an architectural mismatch.
+The v1.x architecture used **Neo4j** as the graph database. This created a fundamental mismatch:
+- CodeGraph needs **fast point lookups** (find entity by ID)
+- CodeGraph needs **graph traversals** (call graphs, dependencies)
+- Neo4j optimizes for graphs but point lookups require cache (NodeIndexCache proposal)
 
-**v2.0 proposes:** Replace Neo4j with DuckDB + Parquet files.
+**v2.0 Solution:** Replace Neo4j with **DuckDB + Parquet files**
+- Files ARE the database (no sync)
+- Point lookups via hash-based IDs
+- Graph queries via recursive CTEs
+- Source code is truth (seeds regenerable)
 
-### 1.3 Review Consensus
+### 1.3 Review Verdict
 
-| Aspect | Verdict |
-|--------|---------|
-| Core Architecture | APPROVED |
-| Technology Choice | APPROVED |
-| Performance Targets | NEEDS REVISION |
-| Error Handling | MISSING |
-| Atomic Writes | MISSING |
-
----
-
-## 2. Current Architecture (v1.x)
-
-### 2.1 Component Overview
-
-```
-+-------------------------------------------------------------------------+
-|                        CURRENT ARCHITECTURE (v1.x)                       |
-+-------------------------------------------------------------------------+
-|                                                                         |
-|  +------------+    +----------------+    +------------------------+     |
-|  |    CLI     |--->| AnalyzerService|--->|      Neo4j DB          |     |
-|  | (Commander)|    |                |    | (bolt://localhost)     |     |
-|  +------------+    +----------------+    +------------------------+     |
-|                            |                        ^                   |
-|                            v                        |                   |
-|                    +---------------+                |                   |
-|                    |    Parser     |                |                   |
-|                    |  (Two-Pass)   |                |                   |
-|                    +---------------+                |                   |
-|                            |                        |                   |
-|           +----------------+----------------+       |                   |
-|           v                v                v       |                   |
-|    +------------+  +----------------+ +----------+  |                   |
-|    | TypeScript |  |    Python      | | Tree-    |  |                   |
-|    |  ts-morph  |  |   subprocess   | | sitter   |  |                   |
-|    +------------+  +----------------+ +----------+  |                   |
-|                            |                        |                   |
-|                            v                        |                   |
-|                    +---------------+                |                   |
-|                    |StorageManager |-----------------                   |
-|                    | (batch writes)|                                    |
-|                    +---------------+                                    |
-|                                                                         |
-+-------------------------------------------------------------------------+
-```
-
-### 2.2 Current Data Flow
-
-**PHASE 1: SCANNING**
-```
-Directory ---> FileScanner ---> FileInfo[]
-  path         (micromatch)     {path, ext, name}
-```
-
-**PHASE 2: PASS 1 (STRUCTURAL)**
-```
-FileInfo[] ---> Parser.parse() ---> AstNode[]
-               (ts-morph/Babel)     RelationshipInfo[]
-                      |
-                      v
-                StorageManager
-                .saveNodes()
-                      |
-                      v
-                  Neo4j DB
-```
-
-**PHASE 3: PASS 2 (SEMANTIC)**
-```
-RelationshipResolver -----> Neo4j DB
-.resolveRelationships()     (writes resolved relationships)
-```
-
-### 2.3 Current Key Files
-
-| File | Purpose |
-|------|---------|
-| src/analyzer/analyzer-service.ts | Orchestrates the analysis pipeline |
-| src/analyzer/parser.ts | Coordinates language-specific parsers |
-| src/analyzer/structural-parser.ts | Babel-based fast structural parsing |
-| src/analyzer/relationship-resolver.ts | Pass 2: resolves cross-file references |
-| src/analyzer/storage-manager.ts | Batched writes to Neo4j |
-| src/database/neo4j-client.ts | Neo4j driver lifecycle |
-| src/scanner/file-scanner.ts | Recursive directory scanning |
-
-### 2.4 Current Problems
-
-| Problem | Impact | Evidence |
-|---------|--------|----------|
-| Neo4j slow for lookups | High | v1.11 proposed NodeIndexCache |
-| Neo4j requires server | Medium | Not truly "local-first" |
-| Complex transaction logic | Medium | Rollback scenarios complex |
-| No incremental updates | High | Full re-analysis required |
+| Aspect | Status |
+|--------|--------|
+| Core Architecture | ✅ **APPROVED** by all reviewers |
+| Technology Choice | ✅ **VALIDATED** (DuckDB + Parquet) |
+| Implementation Gaps | ⚠️ **4 CRITICAL** issues identified |
+| Timeline | ⚠️ **+7 days** buffer recommended |
+| Recommendation | ✅ **GO WITH MODIFICATIONS** |
 
 ---
 
-## 3. Proposed Architecture (v2.0)
+## 2. Current System Architecture (v1.x)
 
-### 3.1 Component Overview
+### 2.1 Current Data Flow
 
 ```
-+-------------------------------------------------------------------------+
-|                      PROPOSED ARCHITECTURE (v2.0)                        |
-+-------------------------------------------------------------------------+
-|                                                                         |
-|  +------------+    +----------------+    +------------------------+     |
-|  |    CLI     |--->| AnalyzerService|--->|    Parquet Files       |     |
-|  | (Commander)|    |  (simplified)  |    |  (.devac/seed/)        |     |
-|  +------------+    +----------------+    +------------------------+     |
-|                            |                        ^                   |
-|                            v                        |                   |
-|                    +---------------+                |                   |
-|                    |    Parser     |                |                   |
-|                    |  (Two-Pass)   |                |                   |
-|                    +---------------+                |                   |
-|                            |                        |                   |
-|           +----------------+----------------+       |                   |
-|           v                v                v       |                   |
-|    +------------+  +----------------+ +----------+  |                   |
-|    | TypeScript |  |    Python      | | Tree-    |  |                   |
-|    |  Babel     |  |   subprocess   | | sitter   |  |                   |
-|    +------------+  +----------------+ +----------+  |                   |
-|                            |                        |                   |
-|                            v                        |                   |
-|                    +---------------+                |                   |
-|                    |  SeedWriter   |-----------------                   |
-|                    |(DuckDB->Parq) |                                    |
-|                    +---------------+                                    |
-|                            |                                            |
-|                            v                                            |
-|                    +---------------+                                    |
-|                    |  DuckDB Query |<--- read_parquet()                 |
-|                    |    Engine     |                                    |
-|                    +---------------+                                    |
-|                                                                         |
-+-------------------------------------------------------------------------+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    CURRENT v1.x ARCHITECTURE                           │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  ┌──────────┐    ┌──────────┐    ┌──────────────┐    ┌────────────┐   │
+│  │  Source  │───▶│  Parser  │───▶│   Storage    │───▶│   Neo4j    │   │
+│  │  Files   │    │ (ts-morph│    │   Manager    │    │  Database  │   │
+│  │          │    │  Python) │    │              │    │            │   │
+│  └──────────┘    └──────────┘    └──────────────┘    └────────────┘   │
+│                       │                                     │          │
+│                       ▼                                     ▼          │
+│                  ┌──────────┐                        ┌────────────┐   │
+│                  │ Temp JSON│                        │   Cypher   │   │
+│                  │  Files   │                        │  Queries   │   │
+│                  └──────────┘                        └────────────┘   │
+│                                                                        │
+└─────────────────────────────────────────────────────────────────────────┘
+
+PROBLEMS IDENTIFIED:
+├── Point lookups require full index scan or cache
+├── Sync complexity between source and database
+├── Neo4j operational overhead (server process)
+├── NodeIndexCache proposal = data duplication
+└── No native multi-repo federation
+```
+
+### 2.2 Current Component Map
+
+```
+src/
+├── analyzer/
+│   ├── analyzer-service.ts    ← Orchestrates analysis pipeline
+│   ├── parser.ts              ← Coordinates language parsers
+│   ├── parsers/               ← Language-specific parsers (TS, Python, etc.)
+│   ├── relationship-resolver.ts ← Pass 2 cross-file resolution
+│   ├── storage-manager.ts     ← ❌ NEO4J-SPECIFIC (to be replaced)
+│   └── types.ts               ← Core type definitions (reusable)
+├── database/
+│   └── neo4j-client.ts        ← ❌ TO BE REMOVED
+├── scanner/
+│   └── file-scanner.ts        ← ✅ Keep (directory scanning)
+└── config/
+    └── index.ts               ← ✅ Keep (configuration)
+```
+
+---
+
+## 3. Proposed v2.0 Architecture
+
+### 3.1 New Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    PROPOSED v2.0 ARCHITECTURE                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  ┌──────────┐    ┌──────────┐    ┌──────────────┐    ┌────────────┐   │
+│  │  Source  │───▶│  Parser  │───▶│    DuckDB    │───▶│  Parquet   │   │
+│  │  Files   │    │ (ts-morph│    │  (In-Memory) │    │   Files    │   │
+│  │          │    │  Python) │    │              │    │            │   │
+│  └──────────┘    └──────────┘    └──────────────┘    └────────────┘   │
+│       │                                                    │          │
+│       │ (watch)                                           │          │
+│       ▼                                                    ▼          │
+│  ┌──────────┐                                       ┌────────────┐   │
+│  │  File    │                                       │   DuckDB   │   │
+│  │ Watcher  │                                       │  read_pq() │   │
+│  │(chokidar)│                                       │  Queries   │   │
+│  └──────────┘                                       └────────────┘   │
+│                                                                        │
+│  CHANGES FROM v1.x:                                                   │
+│  ├── ✅ No server process (DuckDB is embedded)                        │
+│  ├── ✅ No sync step (files ARE the database)                         │
+│  ├── ✅ Parquet files are portable and regenerable                   │
+│  └── ✅ Native federation via glob patterns                          │
+│                                                                        │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 3.2 Three-Layer Federation Model
 
 ```
-LAYER 3: CENTRAL HUB (Optional - ~/.devac/)
-+-------------------------------------------------------------+
-| ~/.devac/central.duckdb                                     |
-|                                                             |
-| Tables:                                                     |
-| - repo_registry (known repos)                               |
-| - cross_repo_edges (computed import->export mappings)       |
-|                                                             |
-| Does NOT store raw nodes - queries Parquet directly!        |
-+-------------------------------------------------------------+
-                    ^
-                    | register
---------------------+---------------------------------------------
-
-LAYER 2: REPOSITORY MANIFEST (repo/.devac/)
-+-------------------------------------------------------------+
-| repo/.devac/manifest.json                                   |
-|                                                             |
-| {                                                           |
-|   "name": "my-repo",                                        |
-|   "packages": [                                             |
-|     {"path": "packages/auth", "seedPath": ".../.devac/seed"}|
-|   ]                                                         |
-| }                                                           |
-+-------------------------------------------------------------+
-                    ^
-                    | discover
---------------------+---------------------------------------------
-
-LAYER 1: PACKAGE SEEDS (Ground Truth)
-+-------------------------------------------------------------+
-| packages/auth/.devac/seed/                                  |
-|                                                             |
-| nodes/              edges/              external_refs/      |
-| +-- src_auth_ts.pq  +-- src_auth_ts.pq  +-- src_auth_ts.pq |
-| +-- src_index_ts.pq +-- src_index_ts.pq +-- src_index_ts.pq|
-|                                                             |
-| meta.json (timestamps, stats)                               |
-+-------------------------------------------------------------+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    FEDERATION LAYERS                                   │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  LAYER 3: CENTRAL HUB (~/.devac/)                                      │
+│  ├── central.duckdb     ← Only cross-repo computed edges               │
+│  ├── config.json        ← Registered repositories                      │
+│  └── cache/             ← Query result cache (optional)                │
+│                                                                         │
+│  LAYER 2: REPOSITORY (repo/.devac/)                                    │
+│  ├── manifest.json      ← Package list, last analyzed                  │
+│                                                                         │
+│  LAYER 1: PACKAGE (packages/auth/.devac/)                              │
+│  ├── meta.json          ← Schema version only                          │
+│  └── seed/                                                              │
+│      ├── base/          ← Full content for main branch                 │
+│      │   ├── nodes.parquet                                             │
+│      │   ├── edges.parquet                                             │
+│      │   └── external_refs.parquet                                     │
+│      └── branch/        ← Delta for current feature branch             │
+│          ├── nodes.parquet      ← Only changed/new/deleted             │
+│          ├── edges.parquet                                             │
+│          └── external_refs.parquet                                     │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.3 Proposed Data Flow
+### 3.3 Entity ID Format (v2.1)
 
-**PHASE 1: SCANNING (unchanged)**
 ```
-Directory ---> FileScanner ---> FileInfo[]
-```
+FORMAT: {repo}:{package_path}:{kind}:{scope_hash}
 
-**PHASE 2: PASS 1 (STRUCTURAL) - NEW OUTPUT FORMAT**
-```
-FileInfo    ---> StructuralParser ---> StructuralParseResult
-(single)         (Babel-based)         {nodes, edges, externalRefs}
-                                              |
-                                              v
-                                        SeedWriter
-                                              |
-                                        DuckDB (mem)
-                                              |
-                                        COPY TO Parquet
-                                              |
-                                              v
-                                        .parquet files
-```
+WHERE: scope_hash = sha256(filePath + scopedName + kind).slice(0,8)
 
-**PHASE 3: PASS 2 (SEMANTIC) - PARQUET UPDATE**
-```
-SemanticResolver  <---> .devac/seed/
-(read external_refs     +-- nodes/
- resolve targets)       +-- edges/
-       |                +-- external_refs/
-       |
-       v
-Update is_resolved, resolved_entity_id
-       |
-       v
-SeedWriter.update()
-```
+IMPORTANT: Branch is NOT part of entity_id
+├── Same code = same entity_id regardless of branch
+├── Branch is a storage partition key only
+└── Enables cross-branch identity matching
 
-**PHASE 4: QUERY**
-```
-DuckDB Engine
-    |
-SELECT * FROM read_parquet('**/*.parquet')
+EXAMPLES:
+├── repo-api:packages/auth:function:a1b2c3d4
+├── repo-web:apps/main:class:e5f6g7h8
+└── repo-mobile:packages/ui:component:i9j0k1l2
+
+SCOPED NAME RULES:
+├── Top-level function: "handleLogin"
+├── Class method: "AuthService.login"
+├── Nested function: "processUser.validate"
+├── Arrow in variable: "fetchUser"
+├── Callback: "users.map.$arg0"
+└── Computed property: "Foo.[key]"
 ```
 
 ---
 
-## 4. Critical Issues Identified
+## 4. Impact of Review Fixes
 
-### 4.1 Issue Matrix
+This section explains **what changes** when the CRITICAL, HIGH, and MEDIUM fixes are applied.
 
-| ID | Issue | Severity | All Reviewers Agree? |
-|----|-------|----------|---------------------|
-| C1 | Per-file Parquet may not scale | CRITICAL | Yes |
-| C2 | <100ms target unrealistic | CRITICAL | Yes |
-| C3 | Atomic writes missing | CRITICAL | Yes |
-| C4 | Error handling undefined | CRITICAL | Yes |
-| H1 | Semantic resolver underspecified | HIGH | Claude + GPT |
-| H2 | Entity ID stability issue | HIGH | Claude only |
-| H3 | File locking for concurrency | HIGH | Claude + Gemini |
-| M1 | Python parser latency | MEDIUM | Claude only |
-| M2 | Schema versioning missing | MEDIUM | Claude only |
+### 4.1 Fix Categories Overview
 
-### 4.2 C1: Per-File Parquet Scaling
+| Priority | Count | Impact Level |
+|----------|-------|--------------|
+| **CRITICAL** | 4 | Blocks implementation if not fixed |
+| **HIGH** | 6 | Causes significant issues if not fixed |
+| **MEDIUM** | 5 | Causes minor issues or technical debt |
 
-**Problem:**
-The spec proposes one Parquet file per source file. For a monorepo with 5,000 files:
+### 4.2 CRITICAL Fixes Explained
+
+#### C1: Define AnalysisOrchestrator Component
+
+**Problem:** The spec defines individual components (Parser, SeedWriter, FileWatcher) but doesn't specify WHO coordinates them.
 
 ```
-5,000 files x 3 partitions = 15,000 Parquet files
+WITHOUT FIX:                              WITH FIX:
+─────────────                             ─────────
+
+FileWatcher ──?──▶ ???                    FileWatcher ──▶ AnalysisOrchestrator
+Parser      ──?──▶ ???                                    ├── receives events
+SeedWriter  ──?──▶ ???                                    ├── calls LanguageRouter
+                                                          ├── invokes Parser
+Unclear ownership,                                        ├── handles errors
+race conditions,                                          ├── calls SeedWriter
+duplicate processing                                      └── logs/metrics
 ```
 
-**Risk Assessment:**
+**Impact if NOT fixed:**
+- No single component owns the data flow
+- Race conditions between file changes
+- Error handling fragmented
+- Logging/metrics scattered
 
-| Scenario | Parquet Files | Expected Query Time | Risk |
-|----------|---------------|---------------------|------|
-| Small Package (100 files) | 300 | <50ms | LOW |
-| Medium Package (1,000 files) | 3,000 | 100-200ms | MEDIUM |
-| Large Monorepo (10,000 files) | 30,000 | 500ms-2s | HIGH |
+#### C2: Add DuckDB Session Lifecycle Section
 
-**FALLBACK STRATEGY:**
-If per-file fails, switch to per-package single files with row-level filtering by source_file column.
+**Problem:** DuckDB connections have specific behaviors not addressed:
+- Fatal mode on write failure
+- Memory management for large datasets
+- Connection pooling for watch mode
 
-### 4.3 C2: Performance Target Unrealistic
+**Impact if NOT fixed:**
+- System hangs after write error
+- Memory exhaustion on large repos
+- No recovery from system sleep
 
-**Spec Target:** <100ms incremental update per file
+#### C3: Revise Performance Targets
 
-**Realistic Breakdown:**
-
-| Step | Time (ms) | Notes |
-|------|-----------|-------|
-| 1. File change detected | 0 | |
-| 2. Debounce wait | 50 | Prevent rapid fire |
-| 3. Read file | 5 | |
-| 4. Babel parse | 30 | Structural only |
-| 5. Generate nodes/edges/refs | 10 | |
-| 6. Delete old Parquet (3) | 5 | 3 files x ~2ms |
-| 7. DuckDB connection | 15 | Cold start (0 if warm) |
-| 8. Insert to DuckDB | 10 | |
-| 9. Export 3 Parquet files | 30 | 3 x 10ms |
-| **TOTAL (cold)** | **155** | EXCEEDS 100ms |
-| **TOTAL (warm, no debounce)** | **90** | POSSIBLE |
-
-**RECOMMENDATION:** Revise target to <200ms
-
-### 4.4 C3: Atomic Writes Missing
-
-**Problem:** Spec says "rm then write". Crash between delete and write = corrupt state.
-
-**CURRENT (DANGEROUS):**
 ```
-1. rm old.parquet          <- FILE DELETED
-2. [PROCESS CRASH]         <- OLD DATA GONE, NEW DATA NOT WRITTEN
-3. write new.parquet       <- NEVER HAPPENS
-Result: Data loss, corrupt state
+CURRENT SPEC TARGETS:                     REVISED (REALISTIC) TARGETS:
+─────────────────────                     ─────────────────────────────
+
+Single file change: <300ms                Single file change: <500ms
+Batch (10 files):   <500ms                Batch (10 files):   <800ms
+TS parse per file:  <50ms                 TS parse (p95):     <200ms
+Python parse:       <200ms                Python parse:       200-500ms
 ```
 
-**FIXED (ATOMIC):**
+**Impact if NOT fixed:**
+- Development team chasing impossible targets
+- User expectations not met
+
+#### C4: Add Orphan Temp File Cleanup
+
+**Problem:** Atomic write pattern creates `.tmp` files. If interrupted, orphans remain.
+
 ```
-1. write new.parquet.tmp   <- TEMP FILE CREATED
-2. fsync()                 <- ENSURE WRITTEN TO DISK
-3. rename(tmp -> target)   <- ATOMIC OPERATION
+WITHOUT FIX:                              WITH FIX:
+─────────────                             ─────────
 
-If crash at step 1-2: temp file exists, old file intact
-If crash at step 3: rename is atomic, either old or new exists
-Result: Always consistent state
+1. Write to nodes.parquet.tmp             1. Write to nodes.parquet.tmp
+2. System crash/Ctrl+C                    2. System crash/Ctrl+C
+3. nodes.parquet.tmp remains              3. nodes.parquet.tmp remains
+4. Future analysis:                       4. On startup:
+   └── Confusion about state                 └── Scan for .tmp files
+                                                 └── Delete all .tmp files
 ```
 
-### 4.5 C4: Error Handling Undefined
+### 4.3 HIGH Fixes Summary
 
-**Missing Error Scenarios:**
+| Fix | Problem | Solution |
+|-----|---------|----------|
+| **H1: Pass 2 trigger** | When does semantic resolution run? | Debounced background (5s settle) |
+| **H2: Lock file format** | Concurrent writes corrupt data | Lock file with PID + timestamp |
+| **H3: Parallel parsing** | Batch changes too slow | Parse up to 4 files concurrently |
+| **H4: Windows retry** | `fs.rename` fails if file locked | Retry with exponential backoff |
+| **H5: Base branch behavior** | Write amplification unclear | Document 300-500ms acceptable |
+| **H6: Interface unification** | Spec vs code mismatch | Align `StructuralParseResult` |
 
-| Scenario | Current Handling | Required |
-|----------|------------------|----------|
-| Parse error in file | Undefined | Emit partial result + mark as error |
-| Parquet write fails | Undefined | Atomic write prevents corruption |
-| DuckDB connection fails | Undefined | Retry with backoff |
-| Corrupt Parquet file | Undefined | Regenerate from source |
-| Disk full | Undefined | Fail gracefully, preserve existing |
+### 4.4 MEDIUM Fixes Summary
+
+| Fix | Problem | Solution |
+|-----|---------|----------|
+| **M1: Branch detection** | Detached HEAD, worktrees | Utility function with fallbacks |
+| **M2: Python check** | Missing Python not detected | Check on startup, clear error |
+| **M3: Scoped name examples** | Edge cases unclear | Add unit test examples to spec |
+| **M4: Analysis flow doc** | Initial vs incremental unclear | Separate documentation sections |
+| **M5: Interruption handling** | Ctrl+C behavior undefined | Graceful shutdown, no corruption |
 
 ---
 
-## 5. Impact Analysis: With vs Without Fixes
+## 5. System Behavior Diagrams
 
-### 5.1 Scenario A: Implement WITHOUT Fixes
-
-**WHAT HAPPENS:**
-
-1. **Per-file Parquet (C1 not addressed)**
-   - Small repos: Works fine
-   - Medium repos: Noticeable slowdown
-   - Large repos: Query times >1s, possibly unusable
-
-2. **<100ms target (C2 not revised)**
-   - Developers expect fast updates
-   - Actual: 150-250ms
-   - Perceived as "slow" vs promise
-
-3. **Non-atomic writes (C3 not fixed)**
-   - Normal operation: Works
-   - System crash/sleep: POTENTIAL DATA LOSS
-   - Recovery: Manual regeneration required
-
-4. **No error handling (C4 not addressed)**
-   - Happy path: Works
-   - Parse errors: ANALYSIS FAILS COMPLETELY
-   - Partial failures: UNDEFINED BEHAVIOR
-
-**OVERALL RISK: HIGH**
-- Works for demos and small projects
-- Breaks on real-world codebases
-- Data corruption risk on crashes
-
-### 5.2 Scenario B: Implement WITH Critical Fixes
-
-**WHAT HAPPENS:**
-
-1. **Per-file Parquet + Fallback (C1 addressed)**
-   - Benchmark before Phase 1 completion
-   - If >500ms for 10K files: Switch to per-package
-   - Guaranteed acceptable performance
-
-2. **Revised target: <200ms (C2 addressed)**
-   - Achievable with warm DuckDB connection
-   - Document warm vs cold expectations
-   - Meets revised expectations
-
-3. **Atomic writes (C3 addressed)**
-   - Write to temp, rename to target
-   - System crash: Either old or new state, never corrupt
-   - Data integrity guaranteed
-
-4. **Error handling strategy (C4 addressed)**
-   - Parse errors: Skip file, log warning, continue
-   - Write errors: Retry with backoff, then skip
-   - Graceful degradation
-
-**OVERALL RISK: LOW**
-- Production-ready implementation
-- Handles real-world edge cases
-- Data integrity maintained
-
-### 5.3 HIGH Priority Fixes Impact
-
-**H1: Semantic Resolver Interface**
-
-WITHOUT:
-```
-Parse file --?--> How to resolve imports? --?--> Who owns this?
-               No clear interface
-```
-
-WITH:
-```
-Parse file ---> SemanticResolver.resolve() ---> Resolved refs
-               Clear contract, testable
-```
-
-**H2: Entity ID Stability**
-
-CURRENT (line-based): `hash(file + name + startLine)`
-- Problem: Add comment above function -> line changes -> ID changes
-
-FIXED (position-independent): `hash(file + qualifiedName + signature)`
-- Result: Stable IDs across minor edits
-
-**H3: File Locking**
-
-WITHOUT:
-```
-devac watch (writing)  |  devac query (reading)
-         |             |         |
-         v             |         v
-    Write file     <conflict>   Read file
-    (partial)          |       (corrupt)
-```
-
-WITH:
-```
-devac watch           |  devac query
-     |                |      |
-     v                |      v
-  acquire lock -------|-- wait for lock
-     |                |      |
-  write file          |      |
-     |                |      |
-  release lock -------|-> acquire lock
-                      |      |
-                      |   read file (consistent)
-```
-
----
-
-## 6. Detailed Diagrams
-
-### 6.1 Sequence Diagram: Full Analysis Pipeline (v2.0)
+### 5.1 Sequence Diagram: File Change (Watch Mode)
 
 ```
-User          CLI           Analyzer        Parser        SeedWriter
- |             |               |              |              |
- | devac       |               |              |              |
- | analyze     |               |              |              |
- |------------>|               |              |              |
- |             |               |              |              |
- |             |  analyze()    |              |              |
- |             |-------------->|              |              |
- |             |               |              |              |
- |             |               | scan files   |              |
- |             |               |------------->|              |
- |             |               |              |              |
- |             |               |<-------------|              |
- |             |               | FileInfo[]   |              |
- |             |               |              |              |
- |             |               |----------------------------------|
- |             |               |  LOOP: for each file             |
- |             |               |                                  |
- |             |               |  parseStructural()               |
- |             |               |------------->|                   |
- |             |               |              |                   |
- |             |               |<-------------|                   |
- |             |               | ParseResult  |                   |
- |             |               |              |                   |
- |             |               | writeFile()  |                   |
- |             |               |-------------------------->|      |
- |             |               |              |             |      |
- |             |               |              | DuckDB->    |      |
- |             |               |              | Parquet     |      |
- |             |               |              |             |      |
- |             |               |<--------------------------|      |
- |             |               |----------------------------------|
- |             |               |                                  |
- |             |               | resolveSemantics()               |
- |             |               |-------------------->|             |
- |             |               |                     |             |
- |             |               | read external_refs  |             |
- |             |               |<--------------------|             |
- |             |               |                     |             |
- |             |               | query other packages|             |
- |             |               |---------------------|------------>|
- |             |               |                     |             |
- |             |               | update refs         |             |
- |             |               |---------------------------------->|
- |             |               |                                   |
- |             |<--------------|                                   |
- |             | complete      |                                   |
- |<------------|               |                                   |
- | Analysis    |               |                                   |
- | complete    |               |                                   |
+  User         FileWatcher      Orchestrator    Parser      SeedWriter
+    │              │                │             │             │
+    │  save file   │                │             │             │
+    │─────────────▶│                │             │             │
+    │              │   change event │             │             │
+    │              │───────────────▶│             │             │
+    │              │                │ debounce    │             │
+    │              │                │ (100ms)     │             │
+    │              │                │             │             │
+    │              │                │ acquire lock│             │
+    │              │                │─────────────────────────────▶
+    │              │                │             │             │
+    │              │                │ compute hash│             │
+    │              │                │             │             │
+    │              │                │ [if changed]│             │
+    │              │                │ getParser() │             │
+    │              │                │─────────────▶             │
+    │              │                │  parse file │             │
+    │              │                │─────────────▶             │
+    │              │                │◀────────────│ ParseResult │
+    │              │                │  write seed │             │
+    │              │                │─────────────│────────────▶│
+    │              │                │             │ atomic write│
+    │              │                │             │  .tmp ──▶ .parquet
+    │              │                │◀────────────│─────────────│
+    │              │                │ release lock│             │
+    │              │   done         │             │             │
+
+  TOTAL TIME: 300-500ms (single file, feature branch)
 ```
 
-### 6.2 Sequence Diagram: Incremental Update (v2.0)
+### 5.2 State Diagram: Analysis Lifecycle
 
 ```
-FileSystem    Watcher       Parser         SeedWriter      Parquet
-    |            |            |               |              |
-    | file       |            |               |              |
-    | change     |            |               |              |
-    |----------->|            |               |              |
-    |            |            |               |              |
-    |            | debounce   |               |              |
-    |            | (50ms)     |               |              |
-    |            |------|     |               |              |
-    |            |      |     |               |              |
-    |            |<-----|     |               |              |
-    |            |            |               |              |
-    |            | parse()    |               |              |
-    |            |----------->|               |              |
-    |            |            |               |              |
-    |            |            | Babel parse   |              |
-    |            |            |------|        |              |
-    |            |            |      |        |              |
-    |            |            |<-----|        |              |
-    |            |            |               |              |
-    |            |<-----------|               |              |
-    |            | ParseResult|               |              |
-    |            |            |               |              |
-    |            | updateFile()               |              |
-    |            |-------------------------->|              |
-    |            |            |               |              |
-    |            |            |               | write temp   |
-    |            |            |               |------------>|
-    |            |            |               |              |
-    |            |            |               | fsync        |
-    |            |            |               |------------>|
-    |            |            |               |              |
-    |            |            |               | rename       |
-    |            |            |               | (atomic)     |
-    |            |            |               |------------>|
-    |            |            |               |              |
-    |            |<---------------------------|              |
-    |            | complete (~150ms total)    |              |
-
-TIMING BREAKDOWN:
-Debounce:    50ms
-Parse:       30ms
-DuckDB:      25ms
-Write:       30ms (3 files x 10ms)
------------------
-TOTAL:      135ms (warm path)
+                          ┌───────────┐
+                          │   IDLE    │
+                          └─────┬─────┘
+                                │
+                    file change │ or devac analyze
+                                ▼
+                          ┌───────────┐
+                          │ ACQUIRING │
+                          │   LOCK    │
+                          └─────┬─────┘
+                                │
+               ┌────────────────┼────────────────┐
+               │                │                │
+         lock held         lock acquired    timeout
+               │                │                │
+               ▼                ▼                ▼
+        ┌───────────┐    ┌───────────┐    ┌───────────┐
+        │  WAITING  │    │  HASHING  │    │   ERROR   │
+        │ (retry)   │    │           │    │           │
+        └───────────┘    └─────┬─────┘    └───────────┘
+                               │
+              ┌────────────────┼────────────────┐
+              │                │                │
+         no changes       has changes      hash error
+              │                │                │
+              ▼                ▼                ▼
+        ┌───────────┐    ┌───────────┐    ┌───────────┐
+        │   SKIP    │    │  PARSING  │    │   ERROR   │
+        │ (release) │    │           │    │           │
+        └───────────┘    └─────┬─────┘    └───────────┘
+                               │
+                               ▼
+                         ┌───────────┐
+                         │  WRITING  │
+                         └─────┬─────┘
+                               │
+                               ▼
+                          ┌───────────┐
+                          │  SUCCESS  │
+                          │ (release) │
+                          └─────┬─────┘
+                                │
+                                ▼
+                          ┌───────────┐
+                          │   IDLE    │
+                          └───────────┘
 ```
 
-### 6.3 State Diagram: File Watcher States
+### 5.3 Flow Diagram: Two-Pass Parsing
 
 ```
-                      +-------------+
-                      |             |
-      start()         |    IDLE     |<-----------+
- +------------------>|             |            |
- |                   +-------------+            |
- |                         |                    |
- |                         | file change event  | complete
- |                         v                    |
- |                   +-------------+            |
- |                   |             |            |
- |                   |  DEBOUNCING |            |
- |                   |  (50ms wait)|            |
- |                   |             |            |
- |                   +-------------+            |
- |                         |                    |
- |                         | timeout            |
- |                         v                    |
- |                   +-------------+            |
- |                   |             |            |
- |                   |   PARSING   |------------+
- |                   |             |  success   |
- |                   +-------------+            |
- |                         |                    |
- |                         | error              |
- |                         v                    |
- |                   +-------------+            |
- |                   |             |            |
- |                   |    ERROR    |------------+
- |                   | (log, skip) |  recover
- |                   |             |
- |                   +-------------+
- |
- |  stop()
- +------------------------------------------+
-                                            |
-                                            v
-                                      +-------------+
-                                      |             |
-                                      |   STOPPED   |
-                                      |             |
-                                      +-------------+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        PASS 1: STRUCTURAL                               │
+│                     (Per-File, Parallelizable)                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Source File ──▶ Language Parser ──▶ DuckDB (mem) ──▶ Parquet
+
+OUTPUTS:
+├── nodes.parquet       (functions, classes, variables, etc.)
+├── edges.parquet       (CONTAINS, HAS_METHOD, DEFINES, etc.)
+└── external_refs.parquet (imports - UNRESOLVED)
+
+TIME: ~50ms per TS file (p50), ~200ms (p95)
+
+                              │
+                              ▼
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        PASS 2: SEMANTIC                                 │
+│                    (Cross-File, Batched)                                │
+└─────────────────────────────────────────────────────────────────────────┘
+
+external_refs.parquet ──▶ Resolution ──▶ Updated Parquet
+                              │
+                              ▼
+                     Query other packages'
+                     exported symbols
+
+RESOLUTION FLOW:
+1. For each unresolved ref:
+   ├── Query local package (same package exports)
+   ├── Query sibling packages (monorepo cross-package)
+   └── Query central hub (cross-repo dependencies)
+2. Update external_refs with resolution results
+
+TIMING (with fixes):
+├── IMMEDIATE: Structural queries work after Pass 1
+└── DEBOUNCED: Pass 2 runs 5s after last change (background)
 ```
 
-### 6.4 State Diagram: Parquet File Lifecycle
+### 5.4 Flow Diagram: Incremental Update
 
 ```
-                     +---------------+
-                     |               |
-    initial analysis |  NOT EXISTS   |<-------------+
-    +--------------->|               |              |
-    |                +---------------+              |
-    |                       |                       |
-    |                       | parse + write         |
-    |                       v                       |
-    |                +---------------+              |
-    |                |               |              |
-    |                |   TEMP FILE   |              |
-    |                |  (.parquet    |              |
-    |                |   .tmp)       |              |
-    |                |               |              |
-    |                +---------------+              |
-    |                       |                       |
-    |       +---------------+---------------+       |
-    |       |                               |       |
-    |       v                               v       |
-    | +---------------+             +---------------+
-    | |               |             |               |
-    | |   WRITTEN     |  fsync fail |   ORPHANED    |
-    | |  (rename ok)  |<------------|  (crash/err)  |
-    | |               |             |               |
-    | +---------------+             +---------------+
-    |       |                               |
-    |       |                               | cleanup
-    |       |                               v
-    |       |                       +---------------+
-    |       |                       |               |
-    |       |                       |   DELETED     |--+
-    |       |                       |               |  | next analysis
-    |       |                       +---------------+  |
-    |       |                                          |
-    |       +------------------------------------------+
-    |       |
-    |       | source file changed
-    |       v
-    | +---------------+
-    | |               |
-    | |    STALE      |
-    | |               |
-    | +---------------+
-    |       |
-    |       | update triggered
-    |       v
-    | +---------------+
-    | |               |
-    | |   UPDATING    |---> back to WRITTEN
-    | |               |
-    | +---------------+
-    |
-    | source file deleted
-    +------------------------------------------------------+
-```
+Step 1: Compute Hash (~10-20ms)
+───────────────────────────────
+SHA-256 of source file content
 
-### 6.5 Flow Diagram: Query Resolution
+                              │
+                              ▼
 
-```
-+---------------------------------------------------------------------+
-|  devac find handleLogin --kind function                             |
-+---------------------------------------------------------------------+
-                            |
-                            v
-+---------------------------------------------------------------------+
-|  Determine scope: package / repo / cross-repo                       |
-+---------------------------------------------------------------------+
-                            |
-        +-------------------+-------------------+
-        v                   v                   v
-+---------------+   +---------------+   +---------------+
-|  PACKAGE      |   |  REPOSITORY   |   |  CROSS-REPO   |
-|  (local .dev- |   |  (all pkgs in |   |  (central hub |
-|   ac/seed/)   |   |   repo)       |   |   + all repos)|
-+---------------+   +---------------+   +---------------+
-        |                   |                   |
-        v                   v                   v
-+---------------------------------------------------------------------+
-|  Build glob pattern(s)                                              |
-|                                                                     |
-|  Package:    '.devac/seed/nodes/*.parquet'                          |
-|  Repo:       'packages/*/.devac/seed/nodes/*.parquet'               |
-|  Cross-repo: ['/path/repo1/**', '/path/repo2/**', ...]              |
-+---------------------------------------------------------------------+
-                            |
-                            v
-+---------------------------------------------------------------------+
-|  Execute DuckDB query                                               |
-|                                                                     |
-|  SELECT entity_id, name, file_path, start_line                      |
-|  FROM read_parquet(${glob})                                         |
-|  WHERE name = 'handleLogin'                                         |
-|    AND kind = 'function'                                            |
-+---------------------------------------------------------------------+
-                            |
-                            v
-+---------------------------------------------------------------------+
-|  Format output                                                      |
-|                                                                     |
-|  Found 3 matches:                                                   |
-|                                                                     |
-|  1. packages/auth/src/auth.ts:45                                    |
-|     function handleLogin(user: User): Promise<Token>                |
-|                                                                     |
-|  2. packages/api/src/handlers.ts:102                                |
-|     function handleLogin(req: Request): Response                    |
-|                                                                     |
-|  3. apps/web/src/pages/login.tsx:78                                 |
-|     const handleLogin = async () => { ... }                         |
-+---------------------------------------------------------------------+
+Step 2: Compare with Stored Hash (~20-30ms)
+───────────────────────────────────────────
+Query: SELECT file_content_hash FROM nodes.parquet
+       WHERE file_path = ?
+
+         ┌─────────────────┬─────────────────┐
+         │                 │                 │
+    Hash matches      Hash differs     File new
+         │                 │                 │
+         ▼                 ▼                 ▼
+    ┌─────────┐       ┌─────────┐       ┌─────────┐
+    │  SKIP   │       │  PARSE  │       │  PARSE  │
+    │ (done)  │       │         │       │         │
+    └─────────┘       └────┬────┘       └────┬────┘
+                           │                 │
+    TIME: ~40ms            │                 │
+                           ▼                 ▼
+
+Step 3: Parse Changed File (~50-200ms)
+──────────────────────────────────────
+Language Router → Parser → ParseResult
+
+                              │
+                              ▼
+
+Step 4: Merge with Existing (~20-50ms)
+─────────────────────────────────────
+Load existing nodes.parquet
+Remove old entries for file
+Add new entries
+
+                              │
+                              ▼
+
+Step 5: Write Package Parquet (~50-100ms)
+────────────────────────────────────────
+FOR BASE BRANCH: Full package write
+FOR FEATURE BRANCH: Delta only (is_deleted markers)
+
+ATOMIC WRITE:
+1. DuckDB → nodes.parquet.tmp
+2. fs.rename(nodes.parquet.tmp, nodes.parquet)
+3. fsync(directory)
+
+─────────────────────────────────────────────────────────────────
+TOTAL TIMES:
+├── No changes:        ~40-50ms (hash check only)
+├── 1 file changed:    ~200-400ms (parse + merge + write)
+├── 10 files changed:  ~300-600ms (batch optimized)
+└── Full regeneration: ~5-10s (all files)
 ```
 
 ---
 
-## 7. Decision Matrix
+## 6. Before vs After Fix Comparison
 
-### 7.1 Implementation Decision Points
+### 6.1 System Behavior: WITHOUT Fixes
 
-| Decision | Option A | Option B | Recommendation |
-|----------|----------|----------|----------------|
-| **Parquet Strategy** | Per-file (spec) | Per-package (fallback) | Start per-file, benchmark, fallback if >500ms |
-| **Update Target** | <100ms (spec) | <200ms (revised) | Revise to <200ms |
-| **Error Handling** | Skip file, continue | Fail fast | Skip file, log, continue |
-| **Atomic Writes** | None (spec) | Write-temp-rename | Write-temp-rename |
-| **File Locking** | None | Lock per package | Lock per package |
-| **Entity IDs** | Line-based | Position-independent | Position-independent |
+```
+SCENARIO: User saves file during active analysis
 
-### 7.2 Phase Gate Criteria
+1. devac watch running
+2. User saves auth.ts
+3. User immediately saves utils.ts
+4. ??? Who coordinates?
+     ├── Both fire simultaneously
+     ├── No lock → concurrent writes
+     └── Corrupted Parquet possible
 
-| Gate | Criteria | Pass Condition |
-|------|----------|----------------|
-| **Phase 0->1** | Critical fixes in spec | C1-C4 addressed in spec |
-| **Phase 1->2** | Parquet benchmark | Query time <500ms for 10K files |
-| **Phase 1->2** | Atomic writes work | Crash test shows no corruption |
-| **Phase 2->3** | Incremental <200ms | Measured on real codebase |
+5. DuckDB write fails mid-stream
+6. ??? Connection in "fatal mode"
+7. All subsequent queries fail
+8. Only fix: restart devac
 
----
+9. System crashes during write
+10. nodes.parquet.tmp left behind
+11. ??? Orphan file confusion
 
-## 8. Implementation Scenarios
+RESULT: Unreliable, requires manual intervention
+```
 
-### 8.1 Recommended Path
+### 6.2 System Behavior: WITH Fixes Applied
 
-**WEEK 0 (Pre-Phase 1): Fix Spec**
-- [ ] Add atomic write pattern to spec
-- [ ] Add error handling section to spec
-- [ ] Revise performance target to <200ms
-- [ ] Create Parquet benchmark script
+```
+SCENARIO: User saves file during active analysis
 
-**WEEK 1-2: Phase 1A (Foundation)**
-- [ ] DuckDB integration with atomic writes
-- [ ] SeedWriter implementation
-- [ ] Run Parquet benchmark
-- [ ] GATE: If >500ms, pivot to per-package
+1. devac watch running
+2. User saves auth.ts → event queued
+3. User saves utils.ts → event queued
+4. Orchestrator debounces (100ms)
+5. Orchestrator acquires lock
+     └── Lock file: .devac/seed/.lock
+6. Orchestrator processes batch [auth.ts, utils.ts]
+7. Parse both files (parallel if H3 fix applied)
+8. Single merged write to Parquet
+9. Release lock
 
-**WEEK 3: Phase 1B (Parser Port)**
-- [ ] Port TS structural parser
-- [ ] Implement SemanticResolver interface
-- [ ] Position-independent entity IDs
+SCENARIO: DuckDB write fails
+10. Error caught by SeedWriter
+11. Connection disposed (not reused)
+12. Temp file cleaned up
+13. Error logged with context
+14. Next operation gets fresh connection
 
-**WEEK 4-5: Phase 2 (Incremental)**
-- [ ] File watcher integration
-- [ ] File locking
-- [ ] Validate <200ms target
-- [ ] GATE: If >300ms, optimize or adjust expectations
+SCENARIO: System crashes
+15. nodes.parquet.tmp left behind
+16. On next startup: cleanup scan
+     └── Delete all .tmp files
+17. Clean state guaranteed
 
-**WEEK 6+: Phase 3-6 (Python, Federation, etc.)**
-- [ ] As specified in v2.0 spec
+RESULT: Self-healing, no manual intervention
+```
 
-### 8.2 Risk Mitigation Checkpoints
+### 6.3 Performance Comparison
 
-| Checkpoint | Risk | Mitigation |
-|------------|------|------------|
-| End of Week 1 | Parquet doesn't scale | Switch to per-package |
-| End of Week 4 | Incremental too slow | Add DuckDB connection pool |
-| End of Week 6 | Python parser too slow | Add long-running process |
+```
+OPERATION              │ SPEC TARGET │ WITHOUT FIX │ WITH FIX
+───────────────────────┼─────────────┼─────────────┼─────────────────
+Hash check (no change) │    <50ms    │    ✅ ~40ms │    ✅ ~40ms
+Single file change     │   <300ms    │   ❌ ~400ms │    ⚠️ ~400ms
+  (revised target)     │   <500ms    │    ✅ ~400ms│    ✅ ~400ms
+Batch (10 files)       │   <500ms    │   ❌ ~2s    │    ✅ ~600ms
+  (revised + parallel) │   <800ms    │    ✅ ~600ms│    ✅ ~600ms
+TS parse (p50)         │    <50ms    │    ✅ ~40ms │    ✅ ~40ms
+TS parse (p95)         │   <200ms    │    ✅ ~150ms│    ✅ ~150ms
+Python parse           │   <200ms    │   ❌ ~350ms │    ⚠️ ~350ms
+  (accepted trade-off) │  200-500ms  │    ✅ ~350ms│    ✅ ~350ms
 
----
-
-## 9. Recommendations
-
-### 9.1 For Specification v2.1
-
-1. **Add Section 8.5: Error Handling**
-   - Define behavior for parse errors, write errors, corrupt files
-   - Specify retry logic and fallback strategies
-
-2. **Revise Section 12.1: Performance Targets**
-   - Change <100ms to <200ms
-   - Add warm vs cold distinction
-   - Add Windows-specific notes
-
-3. **Add Section 5.4: Atomic Write Pattern**
-   - Specify write-temp-rename pattern
-   - Include fsync requirements
-
-4. **Add Section 6.5: SemanticResolver Interface**
-   - Define clear input/output contract
-   - Specify batching and concurrency
-
-5. **Revise Section 4.4: Entity ID Format**
-   - Remove line number from hash input
-   - Use qualified name + signature instead
-
-### 9.2 For Implementation
-
-1. **Before starting:** Run Parquet benchmark with 10K files
-2. **Week 1 priority:** Atomic writes and error handling
-3. **Continuous:** Measure actual performance vs targets
-4. **Gate decisions:** Don't proceed if gates fail
-
-### 9.3 Final Verdict
-
-| Aspect | Recommendation |
-|--------|----------------|
-| **Proceed with v2.0?** | YES, with modifications |
-| **Critical fixes required?** | YES, before Phase 1 |
-| **Timeline adjustment?** | Add 1 week for fixes |
-| **Risk level after fixes?** | LOW |
+LEGEND:
+✅ = Meets target    ⚠️ = Meets revised target    ❌ = Misses target
+```
 
 ---
 
-## Appendix: Key Files to Modify for v2.0
+## 7. Risk Assessment
 
-### Files to Remove
-- `src/database/neo4j-client.ts`
-- `src/analyzer/storage-manager.ts` (replace with SeedWriter)
+### 7.1 Risk Matrix
 
-### Files to Modify
-- `src/analyzer/analyzer-service.ts` -> Remove Neo4j, add SeedWriter
-- `src/analyzer/structural-parser.ts` -> Add externalRefs extraction
-- `src/analyzer/relationship-resolver.ts` -> Add SemanticResolver interface
-- `src/config/index.ts` -> Remove Neo4j config, add seed config
+```
+                       I M P A C T
+                   Low         Medium        High
+             ┌───────────┬───────────┬───────────┐
+        Low  │ L1,L3,L5  │    M3     │           │
+  L          ├───────────┼───────────┼───────────┤
+  I   Medium │    M1     │  H1,H5    │  C3,H2    │
+  K          ├───────────┼───────────┼───────────┤
+  E    High  │    M2     │    H4     │ C1,C2,C4  │
+  L          └───────────┴───────────┴───────────┘
 
-### Files to Add
-- `src/seed/seed-writer.ts` -> DuckDB to Parquet writer
-- `src/seed/seed-reader.ts` -> Parquet query helper
-- `src/seed/atomic-write.ts` -> Write-temp-rename utilities
-- `src/watcher/file-watcher.ts` -> Chokidar-based watcher
-- `src/query/duckdb-engine.ts` -> Query execution
+KEY:
+C1 = AnalysisOrchestrator undefined
+C2 = DuckDB lifecycle undefined
+C3 = Performance targets unrealistic
+C4 = Orphan temp files
+H1 = Pass 2 trigger undefined
+H2 = Lock file format undefined
+H4 = Windows file locking
+H5 = Base branch write amplification
+```
+
+### 7.2 Mitigation Status
+
+| Risk ID | Risk | Mitigation | Status |
+|---------|------|------------|--------|
+| C1 | No orchestrator | Define in spec | **Pending** |
+| C2 | DuckDB fatal mode | Connection pooling, dispose on error | **Pending** |
+| C3 | Unrealistic targets | Revise to consensus values | **Pending** |
+| C4 | Orphan temp files | Startup cleanup | **Pending** |
+| H1 | Pass 2 timing | Debounced background | **Proposed** |
+| H2 | Concurrent writes | Lock file with PID | **Proposed** |
+| H4 | Windows locking | Retry with backoff | **Proposed** |
+| H5 | Write amplification | Document trade-off | **Proposed** |
 
 ---
 
-## Appendix: Interface Definitions
+## 8. Decision Framework
 
-### StructuralParseResult (v2.0 proposal)
+### 8.1 Options
+
+| Option | Description | Effort | Risk |
+|--------|-------------|--------|------|
+| **A: Full Fix** | Address all CRITICAL + HIGH before Phase 1 | 1-2 weeks | Low |
+| **B: Critical Only** | Address 4 CRITICAL before Phase 1, HIGH during | 3-4 days | Medium |
+| **C: Proceed As-Is** | Start Phase 1 with current spec | 0 days | High |
+| **D: Delay** | Full re-review and spec rewrite | 2-3 weeks | Low |
+
+### 8.2 Recommendation: Option B (Critical Only)
+
+**Rationale:**
+1. 4 CRITICAL items are spec updates (4-6 hours)
+2. HIGH items can be addressed during Phase 1
+3. Architecture is sound - reviewers agree
+4. v1.11 not implemented - clean slate
+
+**Timeline Impact:**
+- Spec updates: +1 day
+- Phase 1 buffer: +7 days (18 → 25 days)
+- Total delay: ~1 week
+
+### 8.3 Decision Checklist
+
+Before starting Phase 1, confirm:
+
+- [ ] C1: AnalysisOrchestrator defined in spec
+- [ ] C2: DuckDB lifecycle section added
+- [ ] C3: Performance targets revised
+- [ ] C4: Orphan temp cleanup specified
+- [ ] Team has reviewed updated spec
+
+### 8.4 Success Criteria for Phase 1
+
+| Criterion | Target | Measurement |
+|-----------|--------|-------------|
+| TS package analysis | Works | devac analyze → Parquet files |
+| Query execution | <100ms | Package query benchmark |
+| Watch mode | Works | File change → updated seed |
+| Error recovery | Works | Simulated failure → clean recovery |
+
+---
+
+## 9. Appendix: Detailed Fix Specifications
+
+### 9.1 C1: AnalysisOrchestrator Specification
 
 ```typescript
-interface StructuralParseResult {
-  filePath: string;
-  sourceFileHash: string;           // For partition naming
+/**
+ * AnalysisOrchestrator coordinates the analysis pipeline.
+ * Owns the state machine and coordinates all components.
+ */
+interface AnalysisOrchestrator {
+  /**
+   * Handle a single file change event.
+   * Debounces internally (100ms default).
+   */
+  handleFileChange(event: FileChangeEvent): Promise<void>;
   
-  nodes: ParsedNode[];
-  edges: ParsedEdge[];
-  externalRefs: ParsedExternalRef[];
+  /**
+   * Handle multiple file changes as a batch.
+   * Used for initial analysis or forced refresh.
+   */
+  handleBatchChanges(events: FileChangeEvent[]): Promise<void>;
   
-  metadata: {
-    parseTimeMs: number;
-    language: string;
-    nodeCount: number;
-    edgeCount: number;
-    refCount: number;
-  };
+  /**
+   * Get current analysis state.
+   */
+  getCurrentState(): AnalysisState;
+  
+  /**
+   * Graceful shutdown.
+   */
+  shutdown(): Promise<void>;
+}
+
+type AnalysisState = 
+  | { status: 'idle' }
+  | { status: 'acquiring_lock' }
+  | { status: 'hashing', files: string[] }
+  | { status: 'parsing', current: string, progress: number }
+  | { status: 'writing', package: string }
+  | { status: 'error', error: Error };
+```
+
+### 9.2 C2: DuckDB Lifecycle Specification
+
+```typescript
+// Pattern 1: Query connections (pooled, warm)
+class QueryConnectionPool {
+  private warmConnection: Database | null = null;
+  
+  async getConnection(): Promise<Database> {
+    if (this.warmConnection) return this.warmConnection;
+    this.warmConnection = new Database(':memory:');
+    return this.warmConnection;
+  }
+}
+
+// Pattern 2: Write connections (ephemeral, disposed on error)
+async function withWriteConnection<T>(
+  operation: (db: Database) => Promise<T>
+): Promise<T> {
+  const db = new Database(':memory:');
+  try {
+    return await operation(db);
+  } finally {
+    await db.close(); // Always close - prevents fatal mode
+  }
+}
+
+// Pattern 3: Error recovery with retry
+async function safeWrite(
+  operation: () => Promise<void>,
+  retries: number = 3
+): Promise<void> {
+  for (let i = 0; i < retries; i++) {
+    try {
+      await operation();
+      return;
+    } catch (error) {
+      if (i === retries - 1) throw error;
+      await sleep(100 * Math.pow(2, i)); // Exponential backoff
+    }
+  }
 }
 ```
 
-### ParsedExternalRef (v2.0 proposal)
+### 9.3 C3: Revised Performance Targets
+
+| Operation | Original | Revised | Notes |
+|-----------|----------|---------|-------|
+| Hash check (no changes) | <50ms | <50ms | Keep |
+| Structural parse (TS) | <50ms | p50:<50ms, p95:<200ms | Add percentile |
+| Structural parse (Python) | <200ms | 200-500ms | Accept subprocess cost |
+| Package Parquet write | <100ms | <150ms | Slight increase |
+| Single file change | <300ms | <500ms | More realistic |
+| Batch changes (10 files) | <500ms | <800ms | Unless parallelized |
+| Package query | <100ms | <100ms | Keep |
+| Repo query (10 packages) | <200ms | <200ms | Keep |
+| Cross-repo (3 repos) | <600ms | <600ms | Keep |
+
+### 9.4 C4: Orphan Temp File Cleanup
 
 ```typescript
-interface ParsedExternalRef {
-  id: string;
-  sourceEntityId: string;           // Node making the reference
-  sourceFilePath: string;           // File containing the import
-  sourceLine: number;               // Line number of import statement
+/**
+ * Run on every DevAC startup (CLI or watch mode).
+ */
+async function cleanupOrphanTempFiles(seedPath: string): Promise<void> {
+  const tempFiles = await glob(`${seedPath}/**/*.tmp`);
   
-  moduleSpecifier: string;          // "@shared/schema", "react", "./utils"
-  importedSymbol: string;           // "User", "default", "*"
-  importKind: "named" | "default" | "namespace" | "side-effect";
+  for (const tempFile of tempFiles) {
+    try {
+      await fs.unlink(tempFile);
+      logger.debug(`Cleaned up orphan temp file: ${tempFile}`);
+    } catch (error) {
+      logger.warn(`Failed to clean up ${tempFile}: ${error.message}`);
+    }
+  }
   
-  isResolved: boolean;              // Populated by semantic pass
-  resolvedEntityId?: string;        // Resolved target entity
-  resolvedFilePath?: string;        // Resolved target file
-  isTypeOnly: boolean;              // TypeScript "import type"
+  if (tempFiles.length > 0) {
+    logger.info(`Cleaned up ${tempFiles.length} orphan temp files`);
+  }
 }
-```
 
-### SeedWriter (v2.0 proposal)
-
-```typescript
-interface SeedWriter {
-  writeFile(seedPath: string, result: StructuralParseResult): Promise<void>;
-  deleteFile(seedPath: string, sourceFileHash: string): Promise<void>;
-  updateFile(seedPath: string, result: StructuralParseResult): Promise<void>;
-}
-```
-
-### SemanticResolver (v2.0 proposal - from reviews)
-
-```typescript
-interface SemanticResolver {
-  resolveExternalRefs(
-    refs: ParsedExternalRef[],
-    packageIndex: PackageIndex
-  ): Promise<ResolvedExternalRef[]>;
-  
-  batchSize: number;
-  maxConcurrency: number;
-}
+// Call on startup
+await cleanupOrphanTempFiles(path.join(packagePath, '.devac/seed'));
 ```
 
 ---
 
-*End of Documentation*
+## 10. Conclusion
+
+This document provides a comprehensive view of:
+
+1. **Current state** - v1.x architecture and its limitations
+2. **Proposed state** - v2.0 architecture with DuckDB + Parquet
+3. **Review findings** - Consensus from three independent reviewers
+4. **Required fixes** - 4 CRITICAL, 6 HIGH, 5 MEDIUM items
+5. **System behavior** - Sequence, state, and flow diagrams
+6. **Impact analysis** - Before vs after fix comparison
+7. **Risk assessment** - Prioritized mitigation plan
+8. **Decision framework** - Actionable next steps
+
+**Recommendation:** Proceed with Option B (Critical Only fixes before Phase 1).
+
+The architecture is sound. The technology choice is validated. With the 4 CRITICAL fixes applied (4-6 hours of spec work), Phase 1 can begin with confidence.
+
+---
+
+*End of Comprehensive Review Documentation*

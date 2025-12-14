@@ -1,23 +1,24 @@
 # DevAC/CodeGraph v2.0 Specification - Consolidated Review Recap
 
-**Date:** 2025-12-12  
-**Reviewers:** Claude, GPT, Gemini  
-**Document Reviewed:** devac-spec-v2.0.md  
-**Purpose:** Consolidate findings, identify consensus, highlight disagreements, and provide actionable recommendations
+**Date:** 2025-12-13 (Updated)  
+**Reviewers:** Claude, GPT-4, Gemini  
+**Spec Version Reviewed:** 2.0/2.1 (with per-package-per-branch updates)  
+**Purpose:** Consolidate findings, identify consensus, highlight disagreements, and provide actionable recommendations  
+**Status:** REVIEW COMPLETE - READY FOR DECISION
 
 ---
 
 ## Executive Summary
 
-All three reviewers agree that the v2.0 specification represents a **sound architectural pivot** from Neo4j to DuckDB + Parquet. The core insight—source code is truth and derived data is regenerable—is validated. However, all reviewers identified **critical implementation risks** that must be addressed before proceeding.
+All three reviewers agree that the v2.0 specification represents a **sound architectural pivot** from Neo4j to DuckDB + Parquet. The core insight—source code is truth and derived data is regenerable—is validated. The updated per-package-per-branch partitioning strategy addresses many concerns from the original per-file proposal. However, several **critical implementation gaps** must be addressed before proceeding.
 
-### Overall Verdict: **CONDITIONAL GO** ✅
+### Overall Verdict: **GO WITH MODIFICATIONS** ✅
 
 | Reviewer | Assessment | Key Concern |
 |----------|------------|-------------|
-| **Claude** | ✅ Recommended with modifications | Performance targets aggressive, error handling missing |
-| **GPT** | ✅ Sound with caveats | Semantic resolver underspecified, atomicity missing |
-| **Gemini** | ✅ Architecturally sound | Per-file Parquet is high-risk bet |
+| **Claude** | ✅ Proceed with modifications | Performance targets aggressive, orchestrator undefined, DuckDB lifecycle unclear |
+| **GPT** | ✅ Sound with caveats | Semantic resolver underspecified, partition strategy oscillates, hub lifecycle undefined |
+| **Gemini** | ✅ Architecturally sound | Write amplification for base branch, Windows file locking, reader/writer contention |
 
 ---
 
@@ -25,283 +26,368 @@ All three reviewers agree that the v2.0 specification represents a **sound archi
 
 ### 1.1 Architecture Fundamentals ✅ APPROVED
 
-All reviewers agree on:
+All reviewers agree on these core architectural decisions:
 
-| Aspect | Consensus |
-|--------|-----------|
-| **Two-Phase Parsing** | ✅ Correct approach (Structural → Semantic) |
-| **DuckDB + Parquet Stack** | ✅ Appropriate technology choice |
-| **Per-Package Seeds** | ✅ Good locality, enables federation |
-| **Central Hub Design** | ✅ Lightweight registry approach is correct |
-| **Neo4j Removal** | ✅ Correctly identified as bottleneck |
-| **Source as Truth** | ✅ Core principle validated |
+| Aspect | Consensus | Notes |
+|--------|-----------|-------|
+| **DuckDB + Parquet** | ✅ Correct choice | Eliminates Neo4j operational complexity |
+| **Two-Phase Parsing** | ✅ Sound approach | Structural → Semantic separation correct |
+| **Source as Truth** | ✅ Core principle validated | Seeds are 100% regenerable |
+| **Per-Package-Per-Branch** | ✅ Better than per-file | Addresses original v2.0 file explosion concern |
+| **Entity IDs without branch** | ✅ Enables cross-branch identity | Same code = same entity across branches |
+| **Central Hub Design** | ✅ Lightweight registry | Only stores computed edges, not data copies |
+| **3-Layer Federation** | ✅ Clean hierarchy | Package → Repository → Hub |
 
-### 1.2 Components to Keep from v1.x ✅ APPROVED
+### 1.2 Components to Keep from v1.x ✅ VALIDATED
 
-All reviewers agree these should be ported:
+All reviewers agree these v1.x components are correctly identified for porting:
 
 | Component | Location | Status |
 |-----------|----------|--------|
-| TypeScript Parser (ts-morph) | `src/analyzer/parser.ts` | Keep |
-| Babel Structural Parser | `src/analyzer/structural-parser.ts` | Keep |
-| Python Parser (subprocess) | `src/analyzer/python-parser.ts` | Keep |
-| Relationship Types | `src/analyzer/types.ts` | Keep |
-| Test Fixtures | `test-fixtures/` | Keep |
+| TypeScript Parser (ts-morph) | `src/analyzer/parser.ts` | ✅ Port |
+| Python Parser (subprocess) | `src/analyzer/python-parser.ts` | ✅ Port |
+| Tree-sitter Parsers | `src/analyzer/parsers/` | ✅ Port |
+| Entity ID Generation | `src/analyzer/parser-utils.ts` | ✅ Adapt format |
+| Relationship Types | `src/analyzer/types.ts` | ✅ Keep |
+| File Watcher (chokidar) | `src/devac/services/codegraph/file-watcher.ts` | ✅ Keep |
+| Test Fixtures | `test-fixtures/` | ✅ Keep |
 
-### 1.3 Components to Remove/Replace ✅ APPROVED
+### 1.3 Components to Remove/Replace ✅ VALIDATED
+
+All reviewers confirm these should be removed:
 
 | Component | Action | Reason |
 |-----------|--------|--------|
 | Neo4j Client | Remove | Replaced by DuckDB |
-| StorageManager | Replace | Tightly coupled to Neo4j |
-| NodeIndexCache | Remove | No longer needed |
+| StorageManager | Replace | Tightly coupled to Neo4j, new SeedWriter needed |
+| NodeIndexCache | Remove | Symptom of wrong architecture - no longer needed |
+| XState complexity | Simplify | Simpler state machine for new approach |
+
+### 1.4 Shared Concerns ⚠️ MUST ADDRESS
+
+All three reviewers flagged these issues:
+
+| Issue | Claude | GPT | Gemini | Priority |
+|-------|:------:|:---:|:------:|----------|
+| Performance targets too aggressive | ✓ | ✓ | ✓ | **CRITICAL** |
+| Orchestrator/coordinator undefined | ✓ | ✓ | ✓ | **CRITICAL** |
+| Error handling for mid-operation failures | ✓ | ✓ | ✓ | **HIGH** |
+| Concurrent access / file locking details | ✓ | ✓ | ✓ | **HIGH** |
+| Pass 2 trigger in watch mode undefined | ✓ | ✓ | - | **HIGH** |
+| DuckDB session/connection lifecycle | ✓ | ✓ | - | **HIGH** |
+| Python subprocess optimization deferred | ✓ | - | ✓ | **MEDIUM** |
+| Branch detection edge cases | ✓ | ✓ | - | **MEDIUM** |
+| Windows file locking during rename | - | - | ✓ | **MEDIUM** |
 
 ---
 
 ## 2. Areas of DISAGREEMENT (Need Resolution)
 
-### 2.1 Per-File vs Per-Package Parquet Strategy 🔴 CRITICAL
+### 2.1 Write Amplification for Base Branch 🟡 MEDIUM
 
 | Reviewer | Position | Reasoning |
 |----------|----------|-----------|
-| **Claude** | Cautious - needs validation | 15K files may cause metadata overhead |
-| **GPT** | Critical risk | Semantic resolver underspecified for this model |
-| **Gemini** | Highest risk | File handle limits, query planning overhead |
+| **Gemini** | **Concern raised** | Changing one file in base branch rewrites entire package Parquet. For 500+ file packages, exceeds targets. Suggests "working set" concept. |
+| **Claude** | Acknowledged | Batch optimization makes 10-file changes same cost as single file, mitigates concern. |
+| **GPT** | Noted indirectly | Delete handling (Section 8.4) still references per-file partition deletion, inconsistent with per-package model. |
 
-**Disagreement Summary:**
-- Spec proposes: 1 Parquet file per source file (nodes/, edges/, refs/)
-- All reviewers flag this as **high risk** but differ on fallback:
-  - Claude: Fallback to per-package single files
-  - GPT: Suggests batched semantic pass writes
-  - Gemini: Suggests periodic coalescing
+**Resolution Required:**
+1. Clarify: Is delta storage (branch/) used when working directly on `main`?
+2. Define explicit behavior for base-branch development (most common case)
+3. Consider: Chunked writes within package to reduce rewrite scope?
 
-**RESOLUTION REQUIRED:** Run validation benchmark before Phase 1 completion:
-```typescript
-// Test scenarios:
-// 1. 1,000 small Parquet files (100 nodes each) → Query time?
-// 2. 10,000 tiny Parquet files (10 nodes each) → Query time?
-// 3. Compare: 1 large file (100K nodes) → Query time?
-```
+**DECISION RECOMMENDATION:** 
+Accept higher latency for base-branch edits (300-500ms). The typical development workflow uses feature branches where delta storage keeps updates fast (<200ms). Document this trade-off explicitly in spec.
 
-### 2.2 Incremental Update Target (<100ms) 🔴 CRITICAL
-
-| Reviewer | Assessment | Realistic Target |
-|----------|------------|------------------|
-| **Claude** | 🔴 Unlikely | ~155ms (sum of parts exceeds target) |
-| **GPT** | 🔴 Optimistic | 150-250ms cold, 80-120ms warm |
-| **Gemini** | 🔴 Optimistic | 50-150ms SSD, 200ms+ with antivirus |
-
-**Disagreement Summary:**
-- Spec promises: <100ms per file change
-- All reviewers agree this is **not achievable** as written
-- Differ on whether to revise target or optimize approach
-
-**RESOLUTION REQUIRED:** 
-1. Revise target to **<200ms** (realistic)
-2. Add "warm vs cold" distinction
-3. Document Windows-specific overhead
-
-### 2.3 Python Parser Latency 🟡 MEDIUM
-
-| Reviewer | Position | Solution |
-|----------|----------|----------|
-| **Claude** | ~200-500ms problematic | Long-running Python process |
-| **GPT** | Not explicitly addressed | - |
-| **Gemini** | Not explicitly addressed | - |
-
-**Disagreement Summary:**
-- Only Claude explicitly addressed Python subprocess overhead
-- GPT/Gemini silent on this specific issue
-
-**RESOLUTION REQUIRED:** Defer to Phase 3, but note as known limitation.
-
-### 2.4 Semantic Resolver Specification 🟡 MEDIUM
+### 2.2 Semantic Resolution (Pass 2) Timing 🟡 MEDIUM
 
 | Reviewer | Position |
 |----------|----------|
-| **Claude** | Partially addressed - needs interface unification |
-| **GPT** | Underspecified - lacks ownership, batching policy |
-| **Gemini** | Not explicitly addressed |
+| **Claude** | Pass 2 trigger undefined for watch mode. On every file change? (expensive) On demand? (stale refs) Periodic? (complexity) |
+| **Gemini** | Resolution running on every file save might be too heavy. Suggests async/debounced. |
+| **GPT** | Semantic resolver contract undefined - who writes resolved Parquet? Where are branch deltas applied? |
 
-**Disagreement Summary:**
-- GPT identified as critical gap: "Structural → Semantic resolver and Semantic → SeedWriter update path is vague"
-- Claude noted interface mismatch between spec and current code
-- Gemini focused on other concerns
+**Resolution Required:**
+- Define explicit trigger strategy for watch mode
+- Document which component owns resolution writes
+- Specify idempotency requirements
 
-**RESOLUTION REQUIRED:** Add explicit semantic resolver interface to spec:
-```typescript
-interface SemanticResolver {
-  resolveExternalRefs(
-    refs: ParsedExternalRef[],
-    packageIndex: PackageIndex
-  ): Promise<ResolvedExternalRef[]>;
-  
-  batchSize: number;
-  maxConcurrency: number;
-}
-```
+**DECISION RECOMMENDATION:**
+Debounced background resolution with 5-second settle time. Resolution is non-blocking - structural queries work immediately, semantic queries use best-available resolution state.
+
+### 2.3 Phase 1 Timeline Estimates 🟡 MEDIUM
+
+| Source | Estimate | Notes |
+|--------|----------|-------|
+| **Spec** | 18 days | Original estimate |
+| **Claude** | 25-30 days | Recommends 50% buffer |
+| **GPT** | Not provided | Did not offer alternate estimate |
+| **Gemini** | Not provided | Did not offer alternate estimate |
+
+**Resolution Required:** Align on realistic Phase 1 timeline.
+
+**DECISION RECOMMENDATION:** 
+Use 25 days as target. Entity ID format change touches many callsites, and DuckDB integration learning curve justifies buffer.
+
+### 2.4 MCP Server Migration Path 🟡 MEDIUM
+
+| Reviewer | Position |
+|----------|----------|
+| **Claude** | Current MCP server delegates to CLI rather than querying directly. Spec's MCP integration requires significant rewrite - clarify if this is Phase 5 goal. |
+| **GPT** | Not addressed |
+| **Gemini** | Not addressed |
+
+**Resolution Required:**
+Clarify whether MCP direct-DuckDB query is Phase 5 deliverable or future enhancement.
+
+**DECISION RECOMMENDATION:**
+Keep as Phase 5 goal. Direct DuckDB queries from MCP unlock true AI-native experience.
 
 ---
 
 ## 3. Feasibility Assessment Consensus
 
-### 3.1 What's Feasible ✅
+### 3.1 Technology Choices ✅ VALIDATED
 
-| Component | Confidence | Notes |
-|-----------|------------|-------|
-| DuckDB Integration | ✅ High | Proven technology |
-| Parquet Read/Write | ✅ High | Well-documented APIs |
-| TS Parser Port | ✅ High | Babel already works |
-| Python Parser Port | ✅ High | Subprocess model proven |
-| Basic CLI | ✅ High | Commander.js is standard |
-| Package-local Queries | ✅ High | DuckDB excels here |
+| Technology | Feasibility | Reviewer Notes |
+|------------|-------------|----------------|
+| **DuckDB** | ✅ High | Production-ready, fast analytics, no server needed |
+| **Parquet** | ✅ High | ZSTD compression, columnar queries, portable |
+| **Atomic writes (temp+rename)** | ✅ High | Industry standard pattern, well-documented |
+| **ts-morph** | ✅ High | Already proven in v1.x codebase |
+| **Python subprocess** | ⚠️ Medium | Works but latency 200-500ms |
+| **tree-sitter** | ✅ High | Fast parsing, limited semantic info (acceptable) |
+| **chokidar** | ✅ High | Mature file watcher, cross-platform |
 
-### 3.2 What Needs Validation 🟡
+### 3.2 Performance Targets ⚠️ NEED REVISION
 
-| Component | Confidence | Required Validation |
-|-----------|------------|---------------------|
-| Per-file Partitioning | 🟡 Medium | Benchmark 10K files |
-| <100ms Updates | 🔴 Low | Revise target to 200ms |
-| Recursive CTEs (depth>5) | 🟡 Medium | Benchmark depth limits |
-| Cross-repo Queries | 🟡 Medium | Test with 50K+ files |
+All reviewers flagged these targets as optimistic:
 
-### 3.3 What's Missing 🔴
+| Operation | Spec Target | Revised (Consensus) | Notes |
+|-----------|-------------|---------------------|-------|
+| Hash check (no changes) | <50ms | ✅ **<50ms** (keep) | All agree realistic |
+| Single file change | <300ms | **<500ms** | Accounts for parse + merge + write |
+| Batch changes (10 files) | <500ms | **<800ms** | Unless parallelized |
+| TS parse per file | <50ms | **p50: <50ms, p95: <200ms** | Large files take longer |
+| Python parse per file | <200ms | **200-500ms** | Subprocess overhead accepted |
+| Package query | <100ms | ✅ **<100ms** (keep) | DuckDB excels here |
+| Repo query (10 packages) | <200ms | ✅ **<200ms** (keep) | Realistic |
+| Cross-repo query (3 repos) | <600ms | ✅ **<600ms** (keep) | Realistic |
+
+### 3.3 Risk Assessment Matrix
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|------------|--------|------------|
+| DuckDB memory exhaustion on large repos | Low | High | Batch processing, connection pooling |
+| Windows file locking during rename | Medium | Medium | Retry logic with exponential backoff |
+| Recursive CTE degradation at depth >3 | Medium | Low | Cap depth, warn user, pre-compute later |
+| Cross-repo edge staleness | Medium | Medium | Manual rebuild + background refresh |
+| Python parser latency | High | Low | Accept for now, optimize later |
+| Write amplification on main branch | Medium | Medium | Accept trade-off, document limitation |
+
+### 3.4 What's Missing in Spec 🔴
 
 | Missing Component | Impact | All Agree? |
 |-------------------|--------|------------|
-| Error Handling Strategy | High | ✅ Yes |
-| Atomic Write Pattern | High | ✅ Yes |
-| Rollback/Recovery | Medium | ✅ Yes |
-| File Locking | Medium | Claude + Gemini |
-| Schema Versioning | Medium | Claude only |
-| Observability/Logging | Low | Claude only |
+| AnalysisOrchestrator component | High | ✅ Yes |
+| DuckDB session lifecycle | High | Claude + GPT |
+| Orphan temp file cleanup | High | ✅ Yes |
+| Error recovery for mid-write failures | Medium | ✅ Yes |
+| Lock file format specification | Medium | Claude + GPT |
+| Pass 2 trigger strategy | Medium | Claude + Gemini |
+| Branch detection edge cases | Medium | Claude + GPT |
 
 ---
 
 ## 4. Prioritized Action Items for v2.1
 
-### 4.1 CRITICAL (Must Fix Before Implementation)
+### 4.1 CRITICAL 🔴 (Must Fix Before Phase 1 Starts)
 
-| # | Action Item | Owner | Effort |
-|---|-------------|-------|--------|
-| **C1** | Run Parquet scale validation benchmark | Dev Team | 2-3 days |
-| **C2** | Revise incremental update target to <200ms | Spec Author | 1 hour |
-| **C3** | Add atomic write pattern (write-temp-rename) | Spec Author | 2 hours |
-| **C4** | Add error handling section to spec | Spec Author | 4 hours |
+These MUST be addressed in the spec before implementation begins:
 
-### 4.2 HIGH (Must Fix During Phase 1)
+| # | Action Item | Owner | Effort | Notes |
+|---|-------------|-------|--------|-------|
+| **C1** | Define AnalysisOrchestrator component | Spec | 2 hrs | Who coordinates FileWatcher → Router → Parser → SeedWriter? |
+| **C2** | Add DuckDB session lifecycle section | Spec | 2 hrs | Connection pooling, error recovery, fatal mode handling |
+| **C3** | Revise performance targets to realistic values | Spec | 1 hr | Use consensus from Section 3.2 |
+| **C4** | Add orphan temp file cleanup requirement | Spec | 1 hr | On startup, clean `.tmp` files from interrupted writes |
 
-| # | Action Item | Owner | Effort |
-|---|-------------|-------|--------|
-| **H1** | Define SemanticResolver interface | Spec Author | 2 hours |
-| **H2** | Unify StructuralParseResult interface (spec vs code) | Dev Team | 1 day |
-| **H3** | Add position-independent entity ID strategy | Dev Team | 1 day |
-| **H4** | Add LanguageRouter component to spec | Spec Author | 2 hours |
-| **H5** | Add file locking for concurrent access | Dev Team | 1 day |
+**Estimated Total: 4-6 hours of spec updates**
 
-### 4.3 MEDIUM (Should Fix Before Phase 2)
+### 4.2 HIGH 🟠 (Must Address in Phase 1)
 
-| # | Action Item | Owner | Effort |
-|---|-------------|-------|--------|
-| **M1** | Add schema versioning in meta.json | Dev Team | 4 hours |
-| **M2** | Add seed integrity verification | Dev Team | 1 day |
-| **M3** | Add reconciliation command (handle missed events) | Dev Team | 1 day |
-| **M4** | Document warm vs cold latency budgets | Spec Author | 2 hours |
+| # | Action Item | Owner | Effort | Notes |
+|---|-------------|-------|--------|-------|
+| **H1** | Define Pass 2 trigger for watch mode | Spec | 2 hrs | Debounced background resolution |
+| **H2** | Specify lock file format | Spec | 1 hr | PID + timestamp + hostname for stale detection |
+| **H3** | Add parallel parsing strategy | Dev | 1 day | For batch changes to hit targets |
+| **H4** | Add Windows retry logic | Dev | 1 day | For file locking during rename |
+| **H5** | Define base branch behavior | Spec | 1 hr | Clarify write amplification for main branch work |
+| **H6** | Unify StructuralParseResult interface | Dev | 1 day | Spec vs current code mismatch |
 
-### 4.4 LOW (Nice to Have)
+### 4.3 MEDIUM 🟡 (Pre-Phase 2)
 
-| # | Action Item | Owner | Effort |
-|---|-------------|-------|--------|
-| **L1** | Add structured logging with timing metrics | Dev Team | 4 hours |
-| **L2** | Add Windows-specific platform notes | Spec Author | 2 hours |
-| **L3** | Pre-compute call graph edges optimization | Dev Team | 2 days |
+| # | Action Item | Owner | Effort | Notes |
+|---|-------------|-------|--------|-------|
+| **M1** | Add branch detection utility | Dev | 4 hrs | Handle detached HEAD, worktrees, submodules |
+| **M2** | Add Python availability check | Dev | 2 hrs | Clear error on startup if Python missing |
+| **M3** | Add scoped_name unit test examples | Spec | 2 hrs | Edge cases in spec |
+| **M4** | Document initial vs incremental analysis flow | Spec | 2 hrs | Chicken-and-egg for export index |
+| **M5** | Add interruption handling section | Spec | 2 hrs | Ctrl+C, branch switch during analysis |
+
+### 4.4 LOW 🟢 (Nice to Have / Future)
+
+| # | Action Item | Notes |
+|---|-------------|-------|
+| **L1** | Metrics export (OpenTelemetry) | Future observability |
+| **L2** | Troubleshooting guide | Documentation enhancement |
+| **L3** | `devac repair` command | More granular than `clean + analyze` |
+| **L4** | Pre-computed transitive call graph | Optimize recursive CTEs |
+| **L5** | Python parser optimization (RPC) | Long-running process vs subprocess |
 
 ---
 
 ## 5. GO/NO-GO Recommendation
 
-### 5.1 Decision Framework
+### 5.1 Decision Matrix
 
-| Criteria | Status | Notes |
-|----------|--------|-------|
-| Architecture Sound? | ✅ GO | All reviewers agree |
-| Technology Proven? | ✅ GO | DuckDB + Parquet well-established |
-| Feasible Timeline? | 🟡 CONDITIONAL | Phase 1 underestimated by ~50% |
-| Risks Identified? | ✅ GO | All major risks documented |
-| Fallbacks Defined? | 🟡 CONDITIONAL | Need per-package fallback if per-file fails |
+| Criterion | Status | Notes |
+|-----------|--------|-------|
+| Architecture sound? | ✅ GO | All reviewers approve core design |
+| Technology choices validated? | ✅ GO | DuckDB+Parquet is correct choice |
+| Critical gaps identified? | ✅ GO | 4 critical items, all addressable |
+| Timeline realistic? | ⚠️ CONDITIONAL | Add 7 days buffer (18 → 25 days) |
+| Breaking changes required? | ✅ GO | v1.11 not implemented, clean start |
+| Test strategy defined? | ✅ GO | Spec Section 15.4 is comprehensive |
+| Per-package partitioning validated? | ✅ GO | Addresses original per-file concern |
 
-### 5.2 Final Recommendation
+### 5.2 RECOMMENDATION: **GO WITH MODIFICATIONS** ✅
 
-## **CONDITIONAL GO** ✅
+**Proceed to Phase 1** after addressing the 4 CRITICAL items:
 
-### Conditions for Proceeding:
+1. ✏️ Define AnalysisOrchestrator component (spec update ~2 hrs)
+2. ✏️ Add DuckDB session lifecycle section (spec update ~2 hrs)
+3. ✏️ Revise performance targets to realistic values (spec update ~1 hr)
+4. ✏️ Add orphan temp file cleanup requirement (spec update ~1 hr)
 
-1. **Before Phase 1 starts:**
-   - [ ] Complete Parquet scale validation (C1)
-   - [ ] Revise performance targets (C2)
-   - [ ] Add atomic writes to spec (C3)
-   - [ ] Add error handling section (C4)
+**Estimated spec update effort:** 4-6 hours
 
-2. **During Phase 1:**
-   - [ ] Implement atomic write pattern (H5)
-   - [ ] Unify interfaces (H2)
-   - [ ] Add LanguageRouter (H4)
+**Modified Phase 1 timeline:** 25 days (vs. original 18 days)
 
-3. **Gate between Phase 1 and Phase 2:**
-   - [ ] Validate <200ms target achievable
-   - [ ] If per-file Parquet fails benchmark, switch to per-package
+### 5.3 Key Success Factors
 
-### Stop Criteria (NO-GO triggers):
+1. **Address write amplification** - Document the base-branch latency trade-off explicitly
+2. **Defer Python optimization** - Accept 200-500ms latency for now, optimize in Phase 6+
+3. **Test Parquet scale early** - Validate performance in week 1, not week 3
+4. **Parallelize Phase 2+3** - Python support can run alongside incremental updates
 
-- ❌ If Parquet benchmark shows >500ms query time for 10K files
-- ❌ If DuckDB Node.js API has blocking issues
-- ❌ If atomic writes not achievable without significant overhead
+### 5.4 Accepted Trade-offs
 
----
+| Trade-off | Rationale |
+|-----------|-----------|
+| Python parser latency 200-500ms | Acceptable UX, optimize later |
+| Base-branch single file change 300-500ms | Feature branch workflow is typical, delta storage fast |
+| Recursive CTE depth capped at 3 | Pre-compute transitive closure if needed later |
+| Semantic resolution debounced | Structural queries work immediately, semantic eventually consistent |
 
-## 6. Reviewer-Specific Insights Worth Noting
+### 5.5 Stop Criteria (Triggers for Re-evaluation)
 
-### From Claude (Most Detailed Technical Analysis):
-- Entity ID stability issue: `start_line` changes break IDs on edits above
-- Recursive CTE performance degrades exponentially after depth 5
-- Existing `StructuralParseResult` interface differs from spec
-
-### From GPT (Best on Integration Gaps):
-- Semantic resolver completely underspecified
-- Cross-repo edge staleness strategy is TBD
-- Central hub lifecycle (init/upgrade/migration) not defined
-
-### From Gemini (Best on Operational Risks):
-- Windows file locking more strict than Unix
-- 260 char path limit on Windows with deep nesting
-- chokidar file watcher unreliable under load
+- ❌ If DuckDB Node.js API has blocking issues in Phase 1
+- ❌ If atomic writes cause >100ms overhead consistently
+- ❌ If Parquet query time for 10-package repo exceeds 1s
+- ❌ If memory usage for 50K file repo exceeds 2GB
 
 ---
 
-## 7. Next Steps
+## 6. Reviewer-Specific Unique Contributions
 
-1. **Immediate (This Week):**
-   - Create Parquet benchmark script
-   - Update spec with atomic writes + error handling
+### 6.1 Claude's Unique Insights
 
-2. **Before Phase 1 Kickoff:**
-   - Run benchmark, document results
-   - Update performance targets based on evidence
-   - Define fallback strategy
+- **Detailed Phase 1 task breakdown** with revised estimates (18 → 25-30 days)
+- **MCP migration path clarification** needed (current delegates to CLI vs direct DuckDB)
+- **Specific rollback scenario matrix** - branch switch during analysis, Ctrl+C, disk full
+- **TypeScript path alias limitation** - runtime Node.js doesn't support `@/*` paths
+- **DuckDB "fatal mode"** concern - connection enters unrecoverable state on write failure
 
-3. **Phase 1 Week 1:**
-   - Implement DuckDB integration with atomic writes
-   - Create unified interfaces
+### 6.2 GPT's Unique Insights
+
+- **Partition strategy inconsistency** - delete/rename handling references per-file but schema is per-package
+- **Hub lifecycle undefined** - init, upgrade, backfill, migration not specified
+- **Cross-repo edge invalidation** - TTL, rebuild triggers, failure when hub unavailable
+- **Semantic resolver contract** - ownership unclear, write path to updated seeds not documented
+- **Base branch definition** - how system knows what "base" is (hardcoded? git config?)
+
+### 6.3 Gemini's Unique Insights
+
+- **Windows file locking** - `fs.rename` atomic on POSIX but Windows readers hold locks
+- **Write amplification for base** - "working set" concept might help for hot files
+- **Reader/writer contention** - long-running MCP query vs CLI update race condition
+- **Partial failure atomicity** - nodes.parquet writes but edges.parquet fails = inconsistent state
+- **Directory-swap pattern** - suggested for atomic multi-file package updates
 
 ---
 
-## Appendix: Review Sources
+## 7. Appendix: Quick Reference
 
-| Reviewer | Document |
-|----------|----------|
-| Claude | `devac-spec-v2.0-review-claude.md` |
-| GPT | `devac-spec-v2.0-review-gpt.md` |
-| Gemini | `devac-spec-v2.0-review-gemini.md` |
+### 7.1 Revised Performance Targets
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  REVISED PERFORMANCE TARGETS (Consensus)                      │
+├────────────────────────────────────────────────────────────────┤
+│  Hash check (no changes)     : <50ms      ✓ Keep              │
+│  TS parse (p50)              : <50ms      ✓ Keep              │
+│  TS parse (p95)              : <200ms     ← Revised           │
+│  Python parse                : 200-500ms  ← Revised (accept)  │
+│  Single file change          : <500ms     ← Revised (was 300) │
+│  Batch changes (10 files)    : <800ms     ← Revised (was 500) │
+│  Package query               : <100ms     ✓ Keep              │
+│  Repo query (10 packages)    : <200ms     ✓ Keep              │
+│  Cross-repo query (3 repos)  : <600ms     ✓ Keep              │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### 7.2 Critical Path to Phase 1 Start
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  BEFORE PHASE 1 (Estimated: 4-6 hours)                         │
+├─────────────────────────────────────────────────────────────────┤
+│  1. Update spec: Define AnalysisOrchestrator (~2 hrs)          │
+│  2. Update spec: Add DuckDB lifecycle section (~2 hrs)         │
+│  3. Update spec: Revise performance targets (~1 hr)            │
+│  4. Update spec: Add orphan temp file cleanup (~1 hr)          │
+│  5. Team review of updated spec (optional)                     │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 7.3 Phase 1 Modified Timeline
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  PHASE 1 TIMELINE (Revised: 25 days)                           │
+├─────────────────────────────────────────────────────────────────┤
+│  Original Estimate: 18 days                                    │
+│  Buffer Added:      +7 days (39% increase)                     │
+│                                                                 │
+│  Justification:                                                 │
+│  • Entity ID format change touches many callsites              │
+│  • DuckDB integration learning curve                           │
+│  • Atomic write infrastructure complexity                      │
+│  • LanguageRouter not previously scoped                        │
+│  • Error handling framework not in original estimate           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 8. Review Sources
+
+| Reviewer | Document | Date |
+|----------|----------|------|
+| Claude | `devac-spec-v2.0-review-claude.md` | 2025-12-13 |
+| GPT-4 | `devac-spec-v2.0-review-gpt.md` | 2025-12-13 |
+| Gemini | `devac-spec-v2.0-review-gemini.md` | 2025-12-13 |
 
 ---
 

@@ -1,87 +1,76 @@
-# Review of DevAC/CodeGraph Specification v2.0
-
-**Reviewer:** Gemini (AI Assistant)
-**Date:** 2025-12-12
-**Spec Version:** v2.0
+# DevAC Spec v2.0 Review
 
 ## 1. Feasibility Assessment
 
 ### Working Components
-*   **Parsers:** The reuse of `ts-morph` (TypeScript) and `python-parser.py` (Python) is feasible and leverages existing working code. The transition to `tree-sitter` for other languages is a standard industry practice.
-*   **DuckDB + Parquet:** This stack is proven for analytical workloads. Using it for "code as data" is innovative but technically sound.
+*   **DuckDB + Parquet**: This is a highly feasible and performant choice. It eliminates the operational complexity of Neo4j and aligns well with the "file-based" philosophy.
+*   **Atomic Writes**: The `rename + fsync` pattern is the correct approach for data integrity without a transaction log.
+*   **Language Parsers**: Reusing the existing logic (ts-morph, python AST) but piping output to Parquet is a low-risk refactor.
 
-### "Broken" Components & Categorization
-*   **Neo4j Removal:** Correctly identified as a bottleneck for a local-first CLI tool. Removing the dependency on a heavy database process significantly improves the "developer laptop" feasibility.
-*   **NodeIndexCache:** Correctly identified as a symptom of the "Neo4j is slow for point lookups" problem. Removing it simplifies the architecture.
+### "Broken" Components
+*   **Neo4j**: Correctly identified as the bottleneck for this specific use case (point lookups vs. graph traversals).
+*   **NodeIndexCache**: Correctly identified as a symptom of the database mismatch. Removing it simplifies the architecture significantly.
 
-### Critical Risks
-*   **"Many Small Files" Problem:** The decision to partition Parquet files *per source file* (resulting in thousands of small files) is the highest risk.
-    *   **Risk:** DuckDB may struggle with metadata overhead when querying 10,000+ small Parquet files.
-    *   **Risk:** OS file handle limits (`ulimit -n`) could be exhausted during repository-wide queries.
-    *   **Mitigation:** The spec mentions this in "Open Questions", but it needs a concrete fallback plan (e.g., coalescing small files into larger "package chunks" periodically).
+### Risks
+*   **Write Amplification**: Even with the "branch delta" optimization, changing a single file in the `base` set (e.g., if working directly on main) requires rewriting the entire package's `nodes.parquet`. For large packages (e.g., 500+ files), this could exceed the <200ms target.
+*   **Windows File Locking**: While `fs.rename` is atomic, DuckDB (or other readers) holding file locks on Windows could cause write failures during the rename step. This needs robust retry logic.
 
 ## 2. Architecture Review
 
 ### Soundness
-*   **Two-Phase Parsing:** The retention of the Structural (Pass 1) vs. Semantic (Pass 2) split is excellent. It allows for fast incremental updates (Pass 1) while deferring expensive resolution (Pass 2).
-*   **Federation:** The "Central Hub" as a lightweight registry (only storing computed edges) rather than a data warehouse is a strong design choice. It avoids the "monolithic central database" trap.
+*   **Two-Phase Parsing**: The separation of Structural (Pass 1) and Semantic (Pass 2) is architecturally sound and necessary for resolving cross-file dependencies.
+*   **Federation Model**: The 3-layer hierarchy (Package -> Repo -> Hub) is clean. It allows for "shared nothing" operation at the package level, which is great for scalability.
+*   **Entity IDs**: The shift to content-hash-based IDs (excluding branch) is a critical improvement. It ensures stable IDs across branches, enabling the delta storage strategy.
 
 ### Component Boundaries
-*   **Clear:** The separation between `Package Seeds` (Ground Truth), `Repository Manifest` (Discovery), and `Central Hub` (Federation) is well-defined.
-*   **Query Engine:** Decoupling the query engine (DuckDB) from the storage (Parquet files) allows for flexible consumption (CLI, MCP, etc.).
+*   **Clear**: The separation between `LanguageRouter`, `Parser`, and `SeedWriter` is well-defined.
+*   **Source-of-Truth**: The principle that "Source is Truth" and seeds are disposable/regenerable simplifies the system state management immensely.
 
 ## 3. Implementation Phases
 
 ### Ordering
-*   **Phase 1 (Foundation):** Correctly prioritizes the storage layer.
-*   **Phase 2 (Incremental):** Critical. If the "interactive" promise isn't met early, the v2.0 architecture fails.
-*   **Phase 3 & 4:** Logical progression.
+*   The ordering is logical. Phase 1 (Foundation) and Phase 2 (Incremental) are the correct prerequisites.
+*   **Phase 4 (Federation)** containing the Semantic Resolution logic is the right place, as resolution is inherently a cross-entity operation.
 
 ### Dependencies
-*   **Implicit Dependency:** Phase 2 (Incremental) heavily depends on the performance validation in Phase 1. If Parquet writing is too slow, Phase 2 is blocked.
+*   **Critical Path**: Phase 1 -> Phase 2 -> Phase 4.
+*   **Parallelism**: Phase 3 (Python) and Phase 6 (C#) can indeed be parallelized as they are just plugins to the core architecture.
 
 ## 4. Performance Targets
 
-### Reality Check
-*   **<100ms Incremental Update:**
-    *   **Challenge:** Writing 3 Parquet files (nodes, edges, refs) per source file change involves significant I/O overhead (open, write, close, fsync).
-    *   **Verdict:** Optimistic. On standard SSDs, this might be 50-150ms. On Windows (with Defender/Antivirus), it could easily exceed 200ms.
-*   **Query Performance:**
-    *   **Challenge:** `read_parquet('**/*.parquet')` with 50k files will be metadata-heavy.
-    *   **Verdict:** Likely to miss the <500ms target for large repos without optimization (e.g., Hive-style partitioning or file coalescing).
+### Realistic?
+*   **<50ms Hash Check**: Realistic.
+*   **<300ms Single File Change**:
+    *   *Optimistic* for large packages if modifying `base`.
+    *   *Realistic* for `branch` delta updates (since the delta is small).
+    *   *Concern*: If the user is on `main` (base), every save triggers a full package rewrite. The spec might need a "working set" concept even for the base branch to avoid rewriting 50MB files on every keystroke.
+*   **Query Performance**: DuckDB is exceptionally fast; the <100ms query targets are likely achievable, provided the partition pruning works as expected.
 
-## 5. Missing Pieces
+## 5. Missing Pieces & Gaps
 
-### Error Handling & Reliability
-*   **Atomic Writes:** The spec mentions `rm` then `write`. If the process crashes in between, the seed is corrupt/missing.
-    *   **Recommendation:** Use "write to temp, then rename" pattern for atomicity.
-*   **Concurrency:** What happens if `devac watch` is writing while `devac query` is reading?
-    *   **Risk:** DuckDB might throw errors reading partially written files.
-    *   **Recommendation:** File locking or strict "single writer" coordination.
-
-### Platform Specifics
-*   **Windows:** File locking semantics on Windows are stricter. Deleting a file that DuckDB has open for reading (even momentarily) will fail.
-*   **Path Lengths:** Deeply nested node_modules + `.devac/seed/...` might hit 260 char limit on Windows.
+### Error Handling
+*   **Partial Failures**: If a batch update fails halfway (e.g., `nodes.parquet` writes but `edges.parquet` fails), the package is in an inconsistent state. The spec relies on "Atomic Write" of individual files, but a "Package Update" involves multiple files.
+    *   *Recommendation*: Use a directory-swap pattern for the entire `seed/branch/` folder during updates, or accept eventual consistency where a subsequent run fixes it.
 
 ### Rollback/Recovery
-*   **State Drift:** If the file watcher misses an event (common with `chokidar` under load), the seeds drift from source.
-    *   **Recommendation:** Need a "reconcile" command or startup check to verify seed timestamps vs. source file timestamps.
+*   **Corruption**: The `devac clean` command is a blunt instrument. A more granular `devac repair` that checks checksums and regenerates only broken partitions would be better.
+
+### Concurrency
+*   **Reader/Writer Contention**: If a long-running query (e.g., from the MCP server) is reading the Parquet files while the CLI tries to update them, what happens?
+    *   *Linux/macOS*: Usually fine (unlink works on open files).
+    *   *Windows*: Will likely throw `EPERM`. The spec needs a specific strategy for Windows (e.g., retry with backoff).
+
+### "Base" Branch Definition
+*   The spec assumes a `base` vs `branch` structure. How does the system know what "base" is? Is it hardcoded to `main`/`master`? Does it read from git config? This needs to be explicit in the `LanguageRouter` or `FileScanner` config.
 
 ## 6. Integration Points
 
-### FileWatcher → Pipeline
-*   **Debouncing:** Essential. Saving a file might trigger multiple FS events.
-*   **Rename Handling:** The spec mentions correlating `unlink` + `add`. This is notoriously flaky.
-    *   **Recommendation:** Rely on `git status` or robust heuristics if the watcher doesn't support native renames.
+### FileWatcher -> LanguageRouter -> Parser
+*   This flow is well-specified. The use of `chokidar` with debouncing is standard.
 
-### StorageManager
-*   **Abstraction:** The `SeedWriter` interface is good, but it needs to hide the complexity of the "many files" vs "coalesced files" strategy so the strategy can change without breaking parsers.
+### Semantic Resolution
+*   The connection between "Phase 1 Structural" and "Phase 4 Semantic" is the most complex integration point. The spec notes that `external_refs` are written in Phase 1 but resolved in Phase 4.
+*   *Gap*: When does Phase 4 run? Is it triggered automatically after Phase 1? Or is it lazy? The spec implies it's part of the pipeline, but for "Watch Mode", running full cross-repo resolution on every file save might be too heavy. It might need to be asynchronous/debounced.
 
-## Summary & Recommendations
-
-The v2.0 specification is **architecturally sound** and addresses the core limitations of v1.x (Neo4j dependency). However, the **"Per-File Parquet" strategy is a high-risk bet**.
-
-**Immediate Actions:**
-1.  **Benchmark First:** Before building the full pipeline, write a script to generate 10,000 small Parquet files and query them with DuckDB. If this fails, pivot to "Per-Package" partitioning immediately.
-2.  **Atomic Writes:** Update the spec to mandate atomic file operations (write-temp-move).
-3.  **Reconciliation:** Add a startup step to check for stale seeds (source.mtime > seed.mtime).
+## Summary
+The v2.0 spec is a significant improvement over v1.x. The move to DuckDB/Parquet aligns perfectly with the tool's usage patterns. The primary risks are around **write performance on large packages** and **Windows file locking**, but these are manageable with careful implementation.

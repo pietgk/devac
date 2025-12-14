@@ -1,779 +1,493 @@
-# DevAC/CodeGraph v2.0 Specification Review
+# DevAC/CodeGraph Spec v2.0 Architecture Review
 
 **Reviewer:** Claude (AI Assistant)  
-**Date:** 2025-12-12  
-**Document Reviewed:** devac-spec-v2.0.md  
-**Review Type:** Architecture & Feasibility Analysis
+**Date:** 2025-12-13  
+**Spec Version Reviewed:** 2.1 (updated 2025-12-13)  
+**Status:** DETAILED REVIEW WITH ACTIONABLE CONCERNS
 
 ---
 
 ## Executive Summary
 
-The v2.0 spec represents a **well-reasoned architectural pivot** from Neo4j to DuckDB + Parquet. The core insight—that source code is truth and everything else is derived—is sound. However, several implementation details require attention before this design can be executed successfully.
+The v2.0 spec represents a **sound architectural direction** with the shift from Neo4j to DuckDB+Parquet. The federated, file-based approach aligns well with the "source code is truth" principle and eliminates the complex sync issues that plagued v1.x. However, several implementation gaps and unrealistic performance targets require attention before development begins.
 
-**Overall Assessment:** ✅ Recommended for implementation with modifications
+**Overall Assessment:** ✅ Proceed with modifications
 
-| Category | Rating | Summary |
-|----------|--------|---------|
-| **Feasibility** | 🟡 Mostly Sound | Some optimistic assumptions need validation |
-| **Architecture** | 🟢 Strong | Clean separation, good principles |
-| **Implementation Phases** | 🟡 Needs Work | Missing dependencies, underestimated complexity |
-| **Performance Targets** | 🔴 Aggressive | <100ms incremental update may not be achievable |
-| **Error Handling** | 🔴 Missing | Not addressed in spec |
-| **Integration Points** | 🟡 Partial | Some gaps in component interfaces |
+**Key Risks:**
+1. Performance targets are aggressive and may not account for real-world overhead
+2. Missing rollback/recovery scenarios for mid-operation failures
+3. LanguageRouter→Parser integration undefined at runtime level
+4. Python subprocess optimization deferred without fallback plan
+5. Cross-branch query complexity underestimated
 
 ---
 
-## 1. Feasibility Analysis
+## 1. Feasibility Assessment
 
 ### 1.1 Working Components Correctly Identified ✅
 
-The spec correctly identifies components to **keep** from v1.x:
+The spec correctly identifies these v1.x components as portable:
 
-| Component | Assessment |
-|-----------|------------|
-| **TypeScript Parser (ts-morph)** | ✅ Correct - exists in `src/analyzer/parser.ts` |
-| **Python Parser (subprocess)** | ✅ Correct - exists in `src/analyzer/python-parser.ts` |
-| **Babel Structural Parser** | ✅ Correct - exists in `src/analyzer/structural-parser.ts` |
-| **Relationship Types** | ✅ Correct - defined in `src/analyzer/types.ts` |
-| **Entity ID Format** | ✅ Correct - needs repo/package prefix added |
-| **Test Fixtures** | ✅ Correct - exists in `test-fixtures/` |
+| Component | Spec Claim | Reality | Verdict |
+|-----------|------------|---------|---------|
+| TypeScript parser (ts-morph) | Port | Exists in `src/analyzer/parser.ts`, uses ts-morph Project | ✅ Accurate |
+| Python parser (subprocess) | Port | Exists in `python_parser.py` + `src/analyzer/python-parser.ts` | ✅ Accurate |
+| C/C++, Java, Go, C# parsers | Port (tree-sitter) | All exist in `src/analyzer/parsers/` | ✅ Accurate |
+| Entity ID generation | Adapt | Exists in `src/analyzer/parser-utils.ts` | ✅ Accurate |
+| Relationship types | Keep | Defined in `src/analyzer/types.ts` | ✅ Accurate |
+| File watcher (chokidar) | Keep | Exists in `src/devac/services/codegraph/file-watcher.ts` | ✅ Accurate |
 
-### 1.2 Components to Remove/Replace ✅
+### 1.2 "Broken" Components Correctly Categorized ✅
 
-| Component | Assessment |
-|-----------|------------|
-| **Neo4j Client** | ✅ Correct to remove - `src/database/neo4j-client.ts` |
-| **StorageManager** | ✅ Correct to replace - tightly coupled to Neo4j |
-| **NodeIndexCache** | ⚠️ Note: Not implemented in current codebase (v1.11 was never built) |
+| Component | Spec Claim | Reality | Verdict |
+|-----------|------------|---------|---------|
+| Neo4j Client | Remove | `src/database/neo4j-client.ts` - correctly identified for removal | ✅ Accurate |
+| NodeIndexCache | Remove | Was proposed in v1.11, never implemented | ✅ Accurate |
+| StorageManager | Replace | `src/analyzer/storage-manager.ts` is Neo4j-specific | ✅ Accurate |
 
-### 1.3 Feasibility Concerns
+### 1.3 Missing Feasibility Considerations ⚠️
 
-#### 🔴 Critical: Per-File Parquet Partitioning May Not Scale
+**a) DuckDB Node.js Binding Maturity**
 
-The spec proposes one Parquet file per source file. This is a bold design choice that needs validation:
+The spec assumes `duckdb-async` is production-ready but doesn't address:
+- Memory management for large in-memory databases
+- Connection pooling (DuckDB Node.js is single-threaded per connection)
+- Error recovery when DuckDB enters "fatal mode"
 
-```
-Typical monorepo: 5,000 files
-Expected Parquet files: 5,000 × 3 (nodes, edges, refs) = 15,000 files
-```
+**Recommendation:** Add Phase 1 task: "DuckDB stress test with 50K+ rows, validate memory behavior"
 
-**Risk:** DuckDB's `read_parquet('*.parquet')` with 15,000 files may have significant overhead for:
-- File handle management
-- Metadata reading (row group info, statistics)
-- Query planning
+**b) Parquet Write Performance**
 
-**Recommendation:** Run the validation tests in Section 14.1 **before** committing to this design. Have a fallback to per-package single files with row-level filtering by `source_file`.
+The spec assumes "~50-100ms" for package Parquet writes but doesn't account for:
+- ZSTD compression CPU overhead
+- Multiple concurrent writes (watch mode with multiple file changes)
+- File system sync (fsync) overhead
 
-#### 🟡 Medium: Babel Parser Limitation
-
-The spec proposes Babel for structural parsing, but the existing `structural-parser.ts` already uses Babel. The issue is:
-
-```typescript
-// Current structural-parser.ts line 269-274
-ImportDeclaration: (path) => {
-  const importString = path.node.source.value;
-  result.importStrings.push(importString);
-  // Only captures import STRING, not what symbols are imported
-}
-```
-
-This doesn't capture the full import structure needed for `external_refs` schema:
-- `imported_symbol` (what was imported)
-- `import_kind` (named, default, namespace, side-effect)
-- `is_type_only` (TypeScript `import type`)
-
-**Recommendation:** Extend `structural-parser.ts` to capture full import metadata:
-
-```typescript
-interface ParsedExternalRef {
-  moduleSpecifier: string;
-  importedSymbol: string;  // "User", "*", "default"
-  importKind: "named" | "default" | "namespace" | "side-effect";
-  isTypeOnly: boolean;
-  localName?: string;  // if aliased: import { User as U }
-}
-```
-
-#### 🟡 Medium: Python Subprocess Latency
-
-The spec acknowledges 200-500ms Python parsing latency but defers optimization. This is problematic for the <100ms incremental update target:
-
-```
-File change detected → Parse (500ms) → Write Parquet (20ms)
-Total: 520ms ≠ <100ms target
-```
-
-**Recommendation:** For Phase 3 (Python Support), plan for a long-running Python process:
-
-```typescript
-// Maintain persistent Python process
-const pythonProcess = spawn('python3', ['-u', 'python_parser_server.py']);
-
-// Send file paths, receive JSON
-async function parsePython(filePath: string): Promise<ParseResult> {
-  pythonProcess.stdin.write(filePath + '\n');
-  return await readJSONFromStdout();
-}
-```
-
-This could reduce Python parsing to ~50-100ms per file.
+**Recommendation:** Benchmark actual write performance in Phase 1 before committing to targets.
 
 ---
 
 ## 2. Architecture Assessment
 
-### 2.1 Two-Phase Parsing Design ✅ Sound
+### 2.1 Two-Pass Parsing Design ✅ Sound
 
-The two-pass architecture is **correct** and aligns with the existing codebase:
-
-```
-Pass 1 (Structural): Fast, per-file, parallel
-  └── Extracts: nodes, intra-file edges, unresolved external_refs
-
-Pass 2 (Semantic): Cross-file, batched
-  └── Resolves: external_refs → actual target entity IDs
-```
-
-**Existing Implementation Status:**
-- Pass 1: Implemented in `structural-parser.ts` (Babel-based)
-- Pass 2: Partially implemented in `relationship-resolver.ts` (needs adaptation)
-
-### 2.2 Component Boundaries ✅ Clear
-
-The spec defines clear component boundaries:
+The two-pass architecture (Structural → Semantic) is correctly preserved from v1.x:
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        CLI (Commander.js)                       │
-├─────────────────────────────────────────────────────────────────┤
-│  FileWatcher  │  LanguageRouter  │  QueryEngine  │  HubManager  │
-├───────────────┼─────────────────-┼──────────────-┼──────────────┤
-│           StructuralParser(s)    │  SeedWriter   │  SeedReader  │
-├──────────────────────────────────┴───────────────┴──────────────┤
-│                        DuckDB + Parquet                         │
-└─────────────────────────────────────────────────────────────────┘
+Pass 1: File → AST → Nodes + Edges + External Refs (per-file, parallelizable)
+Pass 2: External Refs → Resolved Refs (cross-file, requires index)
 ```
 
-### 2.3 Missing Component: LanguageRouter
+**Strengths:**
+- Clear separation of concerns
+- Pass 1 can run in parallel (spec correctly identifies this)
+- Pass 2 deferred to Phase 4 (smart - reduces initial complexity)
 
-The spec mentions parsers for different languages but doesn't define how files are routed:
+**Concern:** The spec doesn't define when Pass 2 runs in watch mode:
+- On every file change? (expensive)
+- On demand? (stale refs)
+- Periodic background? (complexity)
 
-```typescript
-// MISSING: src/analyzer/language-router.ts
+**Recommendation:** Add explicit trigger definition for Pass 2 in watch mode.
 
-export interface LanguageRouter {
-  getParser(filePath: string): LanguageParser | null;
-  getSupportedExtensions(): string[];
-}
+### 2.2 Component Boundaries ⚠️ Partially Clear
 
-export function createLanguageRouter(
-  parsers: LanguageParser[]
-): LanguageRouter {
-  const extensionMap = new Map<string, LanguageParser>();
-  
-  for (const parser of parsers) {
-    for (const ext of parser.extensions) {
-      extensionMap.set(ext, parser);
-    }
-  }
-  
-  return {
-    getParser: (filePath) => extensionMap.get(path.extname(filePath)) ?? null,
-    getSupportedExtensions: () => [...extensionMap.keys()],
-  };
-}
-```
+**Well-defined boundaries:**
+- SeedWriter (Section 6.4) - clear interface
+- StructuralParser (Section 6.2) - clear interface
+- LanguageRouter (Section 6.2.1) - clear interface
 
-**Recommendation:** Add LanguageRouter to Phase 1 scope.
+**Unclear boundaries:**
 
-### 2.4 Data Model Concern: Entity ID Stability
+**a) StorageManager vs SeedWriter**
 
-The spec proposes content-hash based entity IDs:
+The spec introduces SeedWriter but doesn't clarify:
+- Is SeedWriter a 1:1 replacement for StorageManager?
+- What happens to batch processing logic?
 
-```
-{repo}:{package_path}:{kind}:{content_hash}
-content_hash = hash(file_path + name + start_line + kind)
-```
+Current `StorageManager.saveNodesBatch()` handles batching internally. SeedWriter interface shows single-file operations. **Gap: batch optimization path unclear.**
 
-**Problem:** `start_line` changes when lines are added above the symbol. This breaks entity IDs for unchanged code.
+**b) Parser coordination**
 
-**Example:**
-```typescript
-// Before:
-// Line 10: function foo() {}  → entityId: "...:function:hash(line10)"
+Current `Parser` class in `src/analyzer/parser.ts` orchestrates all language parsers. The spec's `LanguageRouter` is a simpler extension mapping. **Gap: Who owns the ts-morph Project lifecycle in v2.0?**
 
-// After adding a comment at line 1:
-// Line 11: function foo() {}  → entityId: "...:function:hash(line11)"  // DIFFERENT!
-```
+**Recommendation:** Add component diagram showing SeedWriter, LanguageRouter, and Parser relationships.
 
-**Recommendation:** Use position-independent hashing:
+### 2.3 Data Model ✅ Solid
 
-```typescript
-function generateEntityId(
-  repo: string,
-  packagePath: string, 
-  kind: string,
-  filePath: string,
-  name: string,
-  parentName?: string,  // For methods: class name
-  signatureHint?: string  // For overloads
-): string {
-  // Position-independent: based on qualified name only
-  const qualifiedName = parentName 
-    ? `${filePath}:${parentName}.${name}` 
-    : `${filePath}:${name}`;
-  
-  return `${repo}:${packagePath}:${kind}:${hash(qualifiedName + (signatureHint || ''))}`;
-}
-```
+The node/edge/external_refs Parquet schema is well-designed:
+- `entity_id` without branch (correct - enables cross-branch identity)
+- `file_content_hash` for incremental optimization (correct)
+- `is_deleted` for delta storage (correct approach for branch deltas)
+
+**Minor concern:** The `scoped_name` generation rules (Section 4.5) are complex. Edge cases like computed properties (`Foo.[key]`) and reassigned variables (`handler$1`) will be tricky to implement correctly.
+
+**Recommendation:** Add unit test examples for each scoped_name case to the spec.
 
 ---
 
-## 3. Implementation Phases Analysis
+## 3. Implementation Phases Assessment
 
-### 3.1 Phase Dependencies Not Fully Captured
-
-The spec lists phases but doesn't explicitly show dependencies:
+### 3.1 Phase Ordering ✅ Correct
 
 ```
-Phase 1 (Foundation) 
-  ↓
-Phase 2 (Incremental) ← Depends on Phase 1 SeedWriter
-  ↓
-Phase 3 (Python) ← Can run parallel to Phase 2
-  ↓  
-Phase 4 (Federation) ← Depends on Phases 1-3
-  ↓
-Phase 5 (Validation) ← Depends on Phase 4 for cross-repo
-  ↓
-Phase 6 (C#) ← Can run parallel to Phase 5
+Phase 1 (Foundation) → Phase 2 (Incremental) ↘
+                                              → Phase 4 (Federation) → Phase 5 (Validation)
+Phase 1 (Foundation) → Phase 3 (Python)     ↗
 ```
 
-### 3.2 Phase 1 Underestimated
+The dependency graph is correct:
+- Phase 1 must complete before 2 or 3
+- Phases 2 and 3 can run in parallel ✅
+- Phase 4 requires 2 and 3 ✅
+- Phase 5 requires 4 ✅
+- Phase 6 (C#) is optional ✅
 
-Phase 1 tasks with realistic estimates:
+### 3.2 Phase 1 Task Estimates ⚠️ Optimistic
 
-| Task | Spec Estimate | Realistic Estimate | Reason |
-|------|---------------|-------------------|--------|
-| DuckDB setup | 1 day | 1 day | Accurate |
-| Parquet writer | 2 days | 3-4 days | DuckDB Node.js API quirks, ZSTD compression tuning |
-| Seed directory | 1 day | 2 days | Error handling, atomic writes, cleanup |
-| Port TS parser | 3 days | 5-7 days | Need to add full import/export capture |
-| Entity ID | 1 day | 2 days | Need to handle edge cases (overloads, anonymous, nested) |
-| CLI | 2 days | 2 days | Accurate |
-| Performance tests | 2 days | 3 days | Need scale tests for many-file scenarios |
-| Integration tests | 2 days | 3 days | Need to mock/stub DuckDB appropriately |
-| **Total** | **14 days** | **21-24 days** | **~50% underestimate** |
+| Task | Spec Estimate | Realistic Estimate | Notes |
+|------|---------------|-------------------|-------|
+| DuckDB Node.js setup | 1 day | 1-2 days | Include error handling research |
+| Parquet writer | 2 days | 3-4 days | Atomic write complexity underestimated |
+| Port TS parser | 3 days | 5-7 days | Entity ID format change touches many callsites |
+| Entity ID generation | 1 day | 2-3 days | Scoped name edge cases |
+| Performance tests | 2 days | 3-4 days | Need real-world dataset |
+| **Total** | 18 days | **25-30 days** | ~50% buffer recommended |
 
-### 3.3 Missing Phase: Migration/Compatibility
+### 3.3 Missing Phase Dependencies ⚠️
 
-If any existing Neo4j data needs to be preserved or compared, add:
+**a) Phase 2 depends on branch detection**
 
-**Phase 0.5: Compatibility Layer (1 week)**
-- Export existing Neo4j data to Parquet for comparison
-- Create validation script to compare Neo4j vs DuckDB query results
-- Document data differences and migration notes
+The spec assumes `git rev-parse --abbrev-ref HEAD` but doesn't address:
+- Detached HEAD state
+- Worktrees (multiple checkouts of same repo)
+- Submodules
 
-### 3.4 Phase 2 Critical Path Risk
+**Recommendation:** Add branch detection utility to Phase 1.
 
-Phase 2 (Incremental Updates) is the **most critical** for developer experience. If <100ms isn't achievable, the whole architecture value proposition weakens.
+**b) Phase 4 semantic resolution depends on export index**
 
-**Recommendation:** Create a spike/POC before Phase 1 ends:
+The resolution algorithm queries "target package's exports" but the export index doesn't exist until all packages are analyzed. **Chicken-and-egg problem for initial analysis.**
 
-```bash
-# Validation spike (2-3 days)
-1. Create 1,000 small Parquet files (10 rows each)
-2. Measure: read_parquet('*.parquet') query time
-3. Measure: delete + write single file time
-4. If >200ms total, re-evaluate partitioning strategy
-```
+**Recommendation:** Document initial analysis flow vs incremental flow separately.
 
 ---
 
-## 4. Performance Targets Analysis
+## 4. Performance Targets Assessment
 
-### 4.1 Target Breakdown
+### 4.1 Targets Summary
 
-| Operation | Target | Achievable? | Notes |
-|-----------|--------|-------------|-------|
-| TS structural parse | <50ms | ✅ Yes | Babel is fast, 10-30ms typical |
-| Python parse | <200ms | 🟡 Maybe | Subprocess overhead, consider persistent process |
-| Seed write | <20ms | 🟡 Maybe | Depends on file count, Parquet row count |
-| **Total incremental** | **<100ms** | 🔴 Unlikely | Sum of parts exceeds target |
-| Package query (1K files) | <100ms | ✅ Yes | DuckDB excels here |
-| Repo query (10K files) | <500ms | ✅ Yes | With proper column projection |
-| Cross-repo (50K files) | <2s | 🟡 Maybe | Depends on query complexity |
+| Operation | Spec Target | Assessment |
+|-----------|-------------|------------|
+| Hash check (no changes) | <50ms | ✅ Realistic |
+| Structural parse (TS) | <50ms/file | ⚠️ Optimistic for large files |
+| Structural parse (Python) | <200ms/file | ✅ Realistic (subprocess overhead) |
+| Package Parquet write | <100ms | ⚠️ Depends heavily on package size |
+| Single file change | <300ms | ⚠️ Aggressive, includes parse+merge+write |
+| Batch changes (10 files) | <500ms | ❌ Unlikely without parallelization |
 
-### 4.2 Realistic Incremental Update Timeline
+### 4.2 Detailed Analysis
 
-```
-1. File change detected              0ms
-2. Debounce wait                    50ms (prevent rapid fire)
-3. Read file                         5ms
-4. Babel parse                      30ms
-5. Generate nodes/edges/refs        10ms
-6. Delete old Parquet files          5ms (3 files × ~1-2ms each)
-7. Open DuckDB in-memory            15ms (if not cached)
-8. Insert to DuckDB                 10ms
-9. Export 3 Parquet files           30ms (3 × 10ms)
-─────────────────────────────────────────
-TOTAL                              155ms
-```
+**a) <50ms TypeScript parsing is optimistic**
 
-**Recommendation:** Revise target to **<200ms** for incremental updates, or:
-- Keep DuckDB connection pool warm (eliminate #7)
-- Batch multiple file changes together (amortize #2)
-- Use faster Parquet write options (snappy instead of ZSTD for writes, ZSTD for reads)
+The existing codebase uses ts-morph with full type checker. The spec mentions "Babel for fast structural parsing" as an alternative, but:
+- Babel doesn't provide type information
+- Switching to Babel loses export resolution accuracy
+- Current `parseFunctions`, `parseClasses`, etc. use ts-morph APIs
 
-### 4.3 Recursive CTE Performance
+**Reality check:** 50ms is achievable for small files (<100 LOC). Files with complex types, generics, or heavy JSX will take 100-300ms.
 
-The spec includes recursive CTEs for call graphs (Section 7.4). These are computationally expensive:
+**Recommendation:** Set realistic target: "p95 <200ms, p50 <50ms"
 
-```sql
--- This query joins across ALL parquet files 3 times per recursion level
-WITH RECURSIVE call_chain AS (
-  SELECT ... FROM read_parquet('**/*.parquet')  -- Scan 1
-  UNION ALL
-  SELECT ... FROM call_chain c
-  JOIN read_parquet('**/*.parquet') e ON ...    -- Scan 2
-  JOIN read_parquet('**/*.parquet') n ON ...    -- Scan 3
-)
-```
+**b) <300ms single file change is aggressive**
 
-For depth=5 with 10K files: potentially 15 full scans.
+Breakdown of expected time:
+- Read file + compute hash: 5-10ms
+- Parse with ts-morph: 50-200ms
+- Load existing Parquet: 20-50ms
+- Merge nodes: 10-20ms
+- Write new Parquet (ZSTD): 30-100ms
+- **Total:** 115-380ms
 
-**Recommendation:** Pre-compute call graph edges in a separate Parquet file during Pass 2:
+The 300ms target is at the optimistic end. **Watch mode UX will suffer if average is 200-300ms.**
 
-```sql
--- call_graph.parquet: pre-joined data
-caller_entity_id, callee_entity_id, depth_from_root
-```
+**Recommendation:** 
+- Target <500ms for watch mode (still feels responsive)
+- Target <100ms for "no changes" case (critical for perceived speed)
+
+**c) <500ms for 10 files is unrealistic without parallelization**
+
+If single file = 200-300ms, 10 files sequentially = 2-3 seconds. The spec needs to explicitly state parallel parsing strategy.
+
+**Recommendation:** Add "parallel parse up to 4 files concurrently" to Phase 2.
+
+### 4.3 Recursive CTE Warning ✅ Good
+
+The spec correctly identifies recursive CTE performance degradation at depth >3. The mitigation strategies are appropriate.
 
 ---
 
 ## 5. Missing Pieces
 
-### 5.1 Error Handling ❌ Not Addressed
+### 5.1 Error Handling ⚠️ Partially Addressed
 
-The spec has no error handling strategy. Critical scenarios:
+**Covered:**
+- Parse errors (Section 8.5) - partial results, continue
+- Write failures (Section 8.5) - atomic write prevents corruption
+- Corruption recovery (Section 8.5) - regenerate from source
 
-| Scenario | Handling Needed |
-|----------|-----------------|
-| Parse error in source file | Partial result? Skip file? Mark as error? |
-| Parquet write fails mid-batch | Rollback? Orphaned partitions? |
-| DuckDB connection failure | Retry? Fallback? |
-| Corrupt Parquet file | Regenerate from source? Alert user? |
-| Out of disk space | Fail gracefully, don't corrupt existing data |
+**Not covered:**
 
-**Recommendation:** Add Section 8.5 "Error Handling":
+**a) Mid-operation failures**
 
-```typescript
-// Error handling strategy
-interface AnalysisError {
-  type: 'parse' | 'write' | 'read' | 'corrupt';
-  filePath: string;
-  message: string;
-  recoverable: boolean;
-}
+What happens if:
+- System crashes during `writeParquetAtomic()` after temp file write but before rename?
+- Power failure during fsync?
 
-// For parse errors: emit partial result + error node
-// For write errors: atomic write (write to temp, rename)
-// For corrupt files: delete and regenerate on next analysis
-```
+The atomic write pattern handles this (temp file remains, original intact), but **startup should clean orphan .tmp files**.
+
+**Recommendation:** Add to Phase 1: "Orphan temp file cleanup on startup"
+
+**b) Concurrent access conflicts**
+
+The spec mentions file locking (Section 8.5) but:
+- Lock timeout is 30s - what if legitimate long operation?
+- Stale lock detection via PID - what about container restarts?
+
+**Recommendation:** Add lock file format specification with PID + timestamp + hostname.
+
+**c) Schema migration failures**
+
+Section 5.5 says "Regenerate over migrate" but doesn't specify:
+- What if regeneration fails midway?
+- What if source code was deleted?
+
+**Recommendation:** Add "graceful degradation" mode - serve stale data with warning.
 
 ### 5.2 Rollback Scenarios ❌ Not Addressed
 
-What happens when:
+**Missing scenarios:**
 
-1. **Analysis interrupted mid-way?**
-   - Partial Parquet files exist
-   - Some files analyzed, others not
-   - Solution: Use `meta.json` to track last successful full analysis
+| Scenario | Expected Behavior | Currently Specified |
+|----------|-------------------|---------------------|
+| Failed analysis mid-package | Rollback to previous state | ❌ Not specified |
+| Branch switch during analysis | Cancel and restart | ❌ Not specified |
+| User cancellation (Ctrl+C) | Clean shutdown, no corruption | ❌ Not specified |
+| Disk full during write | Graceful error, no corruption | Partial (atomic write helps) |
 
-2. **User wants to undo analysis?**
-   - Currently: Delete `.devac/seed/` directory
-   - Better: `devac clean` command
+**Recommendation:** Add Section 8.6 "Interruption Handling" with explicit behaviors.
 
-3. **Parquet schema changes between versions?**
-   - Old Parquet files incompatible
-   - Solution: Version in `meta.json`, auto-regenerate on mismatch
+### 5.3 Failure Modes ⚠️ Partially Addressed
 
-### 5.3 Failure Modes ❌ Not Addressed
+**Covered:**
+- Parse failures → continue with other files ✅
+- Write failures → atomic pattern ✅
 
-| Failure Mode | Impact | Mitigation |
-|--------------|--------|------------|
-| **Neo4j data loss** | N/A (DuckDB file-based) | ✅ Addressed by design |
-| **Parquet corruption** | Loss of analysis for affected files | Regenerate from source |
-| **Stale cross-repo edges** | Incorrect query results | Timestamp validation, auto-rebuild |
-| **File watcher misses events** | Stale Parquet data | Periodic full sync option |
-| **Concurrent writes** | Data corruption | Lock files per package |
+**Not covered:**
 
-**Recommendation:** Add file locking:
+**a) DuckDB connection failures**
 
-```typescript
-// src/seed/seed-lock.ts
-export async function withSeedLock<T>(
-  seedPath: string,
-  fn: () => Promise<T>
-): Promise<T> {
-  const lockFile = path.join(seedPath, '.lock');
-  await acquireLock(lockFile);
-  try {
-    return await fn();
-  } finally {
-    await releaseLock(lockFile);
-  }
-}
-```
+DuckDB in-memory connections can fail on:
+- Out of memory
+- File handle exhaustion
+- Thread pool exhaustion
 
-### 5.4 Observability ❌ Not Addressed
+**Recommendation:** Add retry logic with exponential backoff for DuckDB operations.
 
-No logging, metrics, or debugging strategy:
+**b) Filesystem full**
 
-- How to debug slow queries?
-- How to identify which files are slow to parse?
-- How to monitor incremental update health?
+The spec mentions "Check before write, fail gracefully" but:
+- How much space to check for?
+- What's the error message?
+- Can user recover without data loss?
 
-**Recommendation:** Add structured logging:
+**Recommendation:** Add pre-flight check: "Require 2x estimated Parquet size free"
 
-```typescript
-// Every operation should log timing
-logger.info('parse_file', {
-  file: filePath,
-  durationMs: 45,
-  nodeCount: 23,
-  edgeCount: 15,
-  refCount: 8,
-});
+**c) Python subprocess failures**
 
-logger.info('write_parquet', {
-  seedPath,
-  files: 3,
-  totalBytes: 15234,
-  durationMs: 28,
-});
-```
+Current Python parser spawns subprocess per file. If Python is not installed:
+- Silent failure?
+- Skip Python files?
+- Error to user?
+
+**Recommendation:** Add Python availability check on startup with clear error.
 
 ---
 
-## 6. Integration Points Analysis
+## 6. Integration Points Assessment
 
-### 6.1 FileWatcher → LanguageRouter → Parser ✅ Well-Defined
+### 6.1 FileWatcher → LanguageRouter → Parser ⚠️ Needs Clarification
 
-The spec describes this flow clearly in Section 8.1-8.2:
-
+The spec shows:
 ```
-FileChangeEvent
-  ↓
-FileWatcher.onFileChange()
-  ↓
-LanguageRouter.getParser(filePath)  // [MISSING: need to add]
-  ↓
-Parser.parse(filePath)
-  ↓
-SeedWriter.updateFile(seedPath, result)
+FileChangeEvent → LanguageRouter.getParser() → Parser.parse() → SeedWriter.writeFile()
 ```
 
-### 6.2 Parser → StorageManager ⚠️ Needs Interface Update
-
-The spec defines `SeedWriter` but doesn't show how it differs from existing `StorageManager`:
-
-**Current (Neo4j):**
+**Existing code shows:**
 ```typescript
-class StorageManager {
-  async saveNodesBatch(nodes: AstNode[]): Promise<void>;
-  async saveRelationshipsBatch(type: string, rels: RelationshipInfo[]): Promise<void>;
-}
+// src/devac/services/codegraph/file-watcher.ts
+onEvent: (event: FileChangeEvent) => void  // What calls this?
 ```
 
-**New (DuckDB):**
+**Gap:** The spec defines the interfaces but not the **orchestrator** that:
+1. Receives FileChangeEvent
+2. Calls LanguageRouter
+3. Manages Parser lifecycle
+4. Calls SeedWriter
+5. Handles errors
+
+**Recommendation:** Add "AnalysisOrchestrator" component to spec or clarify existing component ownership.
+
+### 6.2 SeedWriter → Parquet ✅ Well-Defined
+
+The atomic write pattern is clear:
+1. Write to .tmp
+2. Rename to final
+3. Fsync directory
+
+**Minor issue:** The `writeParquetAtomic` function signature shows DuckDB Database parameter, but DuckDB connections are ephemeral. **Clarify connection lifecycle.**
+
+### 6.3 Parser → DuckDB (in-memory) → Parquet ⚠️ Partially Defined
+
+The data flow is:
+```
+Parse AST → Insert into DuckDB tables → COPY to Parquet
+```
+
+**Not specified:**
+- Table schema creation (CREATE TABLE?) - happens each time?
+- Connection pooling - new connection per file?
+- Memory limits - what if file produces 100K nodes?
+
+**Recommendation:** Add DuckDB session management section.
+
+### 6.4 Central Hub → Package Seeds ✅ Well-Defined
+
+The federated query pattern using `read_parquet([glob patterns])` is elegant and correct.
+
+### 6.5 MCP Server Integration ⚠️ Spec vs Reality Gap
+
+**Spec says:** MCP tools query DuckDB directly with read_parquet.
+
+**Current code shows:** (`mcp/src/index.ts`)
 ```typescript
-interface SeedWriter {
-  writeFile(seedPath: string, result: StructuralParseResult): Promise<void>;
-  deleteFile(seedPath: string, sourceFileHash: string): Promise<void>;
-  updateFile(seedPath: string, result: StructuralParseResult): Promise<void>;
-}
+// Returns command to execute externally
+return {
+  content: [{ type: "text", text: JSON.stringify(commandDetails) }],
+  _meta: { requires_execute_command: true }
+};
 ```
 
-**Gap:** The `StructuralParseResult` interface in spec differs from current:
+The current MCP server **delegates to CLI** rather than querying directly. The spec's MCP integration is a significant rewrite.
 
-```typescript
-// Spec Section 6.2
-interface StructuralParseResult {
-  filePath: string;
-  sourceFileHash: string;           // NEW - not in current
-  nodes: ParsedNode[];              // Different from AstNode?
-  edges: ParsedEdge[];              // Different from RelationshipInfo?
-  externalRefs: ParsedExternalRef[]; // NEW
-  metadata: {...};
-}
-
-// Current structural-parser.ts line 26-39
-interface StructuralParseResult {
-  filePath: string;
-  nodes: AstNode[];
-  relationships: RelationshipInfo[];
-  importStrings: string[];           // Different from externalRefs
-  exportedSymbols: ExportedSymbol[];
-  metadata: {...};
-}
-```
-
-**Recommendation:** Unify these interfaces. The spec's `externalRefs` is more complete than current `importStrings`.
-
-### 6.3 Query Engine → Parquet Files ✅ Well-Defined
-
-DuckDB's `read_parquet()` is the integration point. The spec correctly shows:
-
-```sql
-SELECT * FROM read_parquet('packages/*/.devac/seed/nodes/*.parquet')
-WHERE kind = 'function'
-```
-
-### 6.4 MCP Server Integration ⚠️ Underspecified
-
-The spec mentions MCP integration (Section 15.1 Phase 5) but doesn't detail:
-
-- How MCP server discovers seed files
-- Query API for MCP (same as CLI? Different?)
-- How to handle cross-repo queries from MCP
-
-**Current MCP (mcp/src/index.ts):** Uses Neo4j queries. Needs complete rewrite for DuckDB.
-
-**Recommendation:** Add Section 11.5 "MCP Server Commands":
-
-```typescript
-// MCP tools to expose
-const tools = [
-  { name: 'find_symbol', input: { name: string, kind?: string } },
-  { name: 'get_dependencies', input: { file: string } },
-  { name: 'get_dependents', input: { file: string } },
-  { name: 'get_call_graph', input: { symbol: string, depth: number } },
-  { name: 'query_sql', input: { sql: string } },  // Power user
-];
-```
+**Recommendation:** Clarify MCP migration path - is direct DuckDB query a Phase 5 goal?
 
 ---
 
 ## 7. Additional Recommendations
 
-### 7.1 Add Schema Versioning
+### 7.1 Testing Strategy Gaps
 
+The spec's test strategy (Section 15.4) is good but missing:
+
+**a) Integration test for branch switching**
 ```typescript
-// .devac/seed/meta.json
-{
-  "version": "2.0.0",
-  "schemaVersion": 1,  // Increment when Parquet schema changes
-  "analyzedAt": "2025-01-15T10:30:00Z",
-  "fileCount": 245,
-  "nodeCount": 8934,
-  "edgeCount": 12456,
-  "refCount": 3421
-}
+describe("branch switching", () => {
+  it("updates seeds when branch changes", async () => {
+    await git.checkout("feature-branch");
+    await devac.analyze("--if-changed");
+    // Verify branch/ directory updated
+  });
+});
 ```
 
-### 7.2 Add Integrity Checks
-
+**b) Chaos testing for concurrent access**
 ```typescript
-// devac verify command
-async function verifySeedIntegrity(seedPath: string): Promise<VerifyResult> {
-  // 1. Check all source files have corresponding Parquet files
-  // 2. Check Parquet files are readable
-  // 3. Check entity IDs are consistent
-  // 4. Check edge source/target IDs reference existing nodes
-}
+describe("concurrent access", () => {
+  it("handles simultaneous file changes", async () => {
+    await Promise.all([
+      writeFile("a.ts"),
+      writeFile("b.ts"),
+      writeFile("c.ts"),
+    ]);
+    // Verify no corruption
+  });
+});
 ```
 
-### 7.3 Consider Warm Start Optimization
+### 7.2 Observability Gaps
 
-```typescript
-// On devac watch start:
-// 1. Pre-load DuckDB with all Parquet files
-// 2. Keep connection warm
-// 3. Use incremental updates (delete+insert) instead of file replacement
+Section 12.5 covers logging but not:
 
-const db = new DuckDB(':memory:');
-await db.run("CREATE TABLE nodes AS SELECT * FROM read_parquet('**/*.parquet')");
+**a) Metrics export**
+- How to integrate with Prometheus/Grafana?
+- OpenTelemetry support?
 
-// On file change:
-await db.run("DELETE FROM nodes WHERE source_file = ?", [filePath]);
-await db.run("INSERT INTO nodes VALUES ...");
+**b) Health checks**
+- Is there a `/health` endpoint for MCP server?
+- Watch mode heartbeat?
 
-// Periodic: flush to Parquet
-await db.run("COPY nodes TO 'nodes.parquet'");
-```
+### 7.3 Documentation Gaps
 
-### 7.4 Test Strategy
+**a) Troubleshooting guide**
+- "Seeds out of sync" symptoms and solutions
+- "DuckDB query timeout" debugging
+- "Python parser fails" resolution
 
-The spec doesn't define testing approach for v2.0:
-
-```
-Unit Tests:
-- LanguageRouter.getParser()
-- Entity ID generation edge cases
-- SeedWriter atomic writes
-
-Integration Tests:
-- Full parse → write → query cycle
-- Incremental update correctness
-- Cross-package query resolution
-
-Performance Tests:
-- 1K, 10K, 50K file scenarios
-- Parquet file count scaling
-- Recursive CTE depth limits
-
-E2E Tests:
-- Watch mode file changes
-- CLI command matrix
-- MCP tool responses
-```
+**b) Migration guide for existing users**
+- Step-by-step from v1.x to v2.0
+- Data migration (if any)
 
 ---
 
-## 8. Summary of Action Items
+## 8. Summary of Required Spec Changes
 
-### Before Phase 1 Starts
+### Critical (Block Phase 1)
 
-1. **[CRITICAL]** Run Parquet scale validation spike (2-3 days)
-2. **[HIGH]** Update `StructuralParseResult` interface to capture full import metadata
-3. **[HIGH]** Design position-independent entity ID strategy
-4. **[MEDIUM]** Add LanguageRouter to Phase 1 scope
-5. **[MEDIUM]** Create error handling section in spec
+1. **Add orphan temp file cleanup** to Phase 1 tasks
+2. **Define AnalysisOrchestrator** component or clarify ownership
+3. **Add DuckDB session management** section
+4. **Clarify MCP migration path** (direct query vs CLI delegation)
 
-### During Phase 1
+### Important (Address in Phase 1)
 
-6. **[HIGH]** Implement atomic Parquet writes (temp file + rename)
-7. **[HIGH]** Add seed integrity verification
-8. **[MEDIUM]** Add schema versioning in meta.json
-9. **[LOW]** Add structured logging with timing metrics
+5. **Revise performance targets** to realistic p95 values
+6. **Add parallel parsing strategy** for batch changes
+7. **Define Pass 2 trigger** for watch mode
+8. **Add lock file format** specification
 
-### Before Phase 2 Starts
+### Recommended (Pre-Phase 2)
 
-10. **[CRITICAL]** Validate <200ms target is achievable (adjust if needed)
-11. **[HIGH]** Implement file locking for concurrent access
+9. **Add interruption handling** section (Ctrl+C, branch switch)
+10. **Add branch detection utility** requirements
+11. **Add Python availability check** requirement
+12. **Add scoped_name unit test examples**
 
-### Before Phase 4 Starts
+### Nice-to-Have (Future)
 
-12. **[HIGH]** Define MCP server interface for DuckDB
-13. **[MEDIUM]** Plan cross-repo edge staleness strategy
-
----
-
-## Appendix: Code Snippets for Key Gaps
-
-### A. Enhanced Import Capture (for structural-parser.ts)
-
-```typescript
-ImportDeclaration: (nodePath) => {
-  const node = nodePath.node;
-  const moduleSpecifier = node.source.value;
-  
-  for (const specifier of node.specifiers) {
-    let externalRef: ParsedExternalRef;
-    
-    if (t.isImportDefaultSpecifier(specifier)) {
-      externalRef = {
-        moduleSpecifier,
-        importedSymbol: 'default',
-        importKind: 'default',
-        isTypeOnly: node.importKind === 'type',
-        localName: specifier.local.name,
-      };
-    } else if (t.isImportNamespaceSpecifier(specifier)) {
-      externalRef = {
-        moduleSpecifier,
-        importedSymbol: '*',
-        importKind: 'namespace',
-        isTypeOnly: node.importKind === 'type',
-        localName: specifier.local.name,
-      };
-    } else if (t.isImportSpecifier(specifier)) {
-      const importedName = t.isIdentifier(specifier.imported)
-        ? specifier.imported.name
-        : specifier.imported.value;
-      externalRef = {
-        moduleSpecifier,
-        importedSymbol: importedName,
-        importKind: 'named',
-        isTypeOnly: node.importKind === 'type' || specifier.importKind === 'type',
-        localName: specifier.local.name !== importedName ? specifier.local.name : undefined,
-      };
-    }
-    
-    result.externalRefs.push(externalRef);
-  }
-  
-  // Handle side-effect imports: import './polyfills'
-  if (node.specifiers.length === 0) {
-    result.externalRefs.push({
-      moduleSpecifier,
-      importedSymbol: '',
-      importKind: 'side-effect',
-      isTypeOnly: false,
-    });
-  }
-}
-```
-
-### B. Atomic Parquet Write
-
-```typescript
-async function writeParquetAtomic(
-  targetPath: string,
-  data: any[]
-): Promise<void> {
-  const tempPath = `${targetPath}.tmp.${Date.now()}`;
-  
-  try {
-    const db = new DuckDB(':memory:');
-    await db.run(`CREATE TABLE data AS SELECT * FROM ?`, [data]);
-    await db.run(`COPY data TO '${tempPath}' (FORMAT PARQUET, COMPRESSION ZSTD)`);
-    await db.close();
-    
-    // Atomic rename
-    await fs.rename(tempPath, targetPath);
-  } catch (error) {
-    // Cleanup temp file on failure
-    await fs.unlink(tempPath).catch(() => {});
-    throw error;
-  }
-}
-```
-
-### C. File Lock Implementation
-
-```typescript
-import { open, FileHandle } from 'fs/promises';
-
-async function acquireLock(lockPath: string, timeoutMs = 5000): Promise<FileHandle> {
-  const startTime = Date.now();
-  
-  while (Date.now() - startTime < timeoutMs) {
-    try {
-      // Exclusive create - fails if file exists
-      const handle = await open(lockPath, 'wx');
-      return handle;
-    } catch (error) {
-      if (error.code === 'EEXIST') {
-        // Lock held by another process, wait
-        await new Promise(r => setTimeout(r, 50));
-      } else {
-        throw error;
-      }
-    }
-  }
-  
-  throw new Error(`Failed to acquire lock: ${lockPath} after ${timeoutMs}ms`);
-}
-
-async function releaseLock(handle: FileHandle, lockPath: string): Promise<void> {
-  await handle.close();
-  await fs.unlink(lockPath);
-}
-```
+13. Metrics export (OpenTelemetry)
+14. Troubleshooting guide
+15. Migration guide
 
 ---
 
-*End of Review*
+## 9. Conclusion
+
+The DevAC v2.0 specification is **architecturally sound** and represents a significant improvement over v1.x. The shift to DuckDB+Parquet eliminates the fundamental mismatch between graph queries and point lookups that motivated the NodeIndexCache proposal.
+
+**Proceed with Phase 1** after addressing the critical gaps:
+1. Define the orchestration layer
+2. Add DuckDB lifecycle management
+3. Revise performance targets to realistic values
+4. Add error recovery mechanisms
+
+The 18-day Phase 1 estimate should be extended to **25-30 days** to account for:
+- Entity ID format migration complexity
+- DuckDB integration learning curve
+- Real-world performance validation
+
+With these adjustments, the spec provides a solid foundation for implementation.
+
+---
+
+*Review complete. Questions welcome.*
