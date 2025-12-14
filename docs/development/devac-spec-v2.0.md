@@ -837,6 +837,184 @@ async function checkSchemaVersion(seedPath: string): Promise<void> {
 
 4. **Document changes:** Schema changes must be documented in the spec's Document History section.
 
+### 5.6 DuckDB Session Lifecycle
+
+DuckDB connection management differs between CLI mode (ephemeral) and watch mode (persistent). Proper lifecycle management ensures performance and reliability.
+
+#### Connection Strategies
+
+| Mode | Strategy | Rationale |
+|------|----------|-----------|
+| **CLI (analyze, query)** | Single ephemeral connection | Simple, no resource leak risk |
+| **Watch mode** | Pooled connections, kept warm | Avoid 100-200ms cold-start per file |
+| **MCP server** | Long-lived pool, connection reuse | Handle concurrent queries efficiently |
+
+#### Connection Pool Interface
+
+```typescript
+interface DuckDBPool {
+  /**
+   * Get a connection from the pool.
+   * Creates new connection if pool is empty.
+   */
+  acquire(): Promise<DuckDBConnection>;
+  
+  /**
+   * Return connection to pool for reuse.
+   */
+  release(conn: DuckDBConnection): void;
+  
+  /**
+   * Close all connections and clean up.
+   */
+  shutdown(): Promise<void>;
+  
+  /**
+   * Get pool statistics for monitoring.
+   */
+  stats(): PoolStats;
+}
+
+interface PoolStats {
+  totalConnections: number;
+  activeConnections: number;
+  idleConnections: number;
+  waitingRequests: number;
+}
+
+// Pool configuration
+interface PoolConfig {
+  maxConnections: number;      // Default: 4
+  minConnections: number;      // Default: 1 (keep 1 warm)
+  idleTimeoutMs: number;       // Default: 60000 (1 minute)
+  acquireTimeoutMs: number;    // Default: 30000 (30 seconds)
+}
+```
+
+#### Memory Management
+
+```typescript
+// DuckDB memory configuration
+const duckdbConfig = {
+  // Memory limit per connection (prevent OOM)
+  memory_limit: process.env.DEVAC_DUCKDB_MEMORY || "512MB",
+  
+  // Temp directory for spilling (large operations)
+  temp_directory: path.join(os.tmpdir(), "devac-duckdb"),
+  
+  // Thread count for parallel operations
+  threads: Math.max(1, os.cpus().length - 1),
+};
+```
+
+**Memory limits by operation:**
+
+| Operation | Typical Usage | Max Recommended |
+|-----------|---------------|-----------------|
+| Single file analysis | 50-100MB | 256MB |
+| Package analysis | 100-300MB | 512MB |
+| Repo-wide query | 200-500MB | 1GB |
+| Cross-repo query | 300-800MB | 2GB |
+
+#### Error Recovery
+
+DuckDB can enter an unrecoverable "fatal mode" on certain errors. The system must handle this gracefully.
+
+```typescript
+async function executeWithRecovery<T>(
+  pool: DuckDBPool,
+  operation: (conn: DuckDBConnection) => Promise<T>
+): Promise<T> {
+  const conn = await pool.acquire();
+  
+  try {
+    return await operation(conn);
+  } catch (error) {
+    if (isFatalError(error)) {
+      // Connection is unusable - do NOT return to pool
+      console.warn("DuckDB fatal error, creating new connection", error);
+      await conn.close().catch(() => {}); // Best-effort close
+      
+      // Get fresh connection and retry once
+      const freshConn = await pool.acquire();
+      try {
+        return await operation(freshConn);
+      } finally {
+        pool.release(freshConn);
+      }
+    }
+    throw error;
+  } finally {
+    // Only release if not fatal
+    if (!isFatalError(error)) {
+      pool.release(conn);
+    }
+  }
+}
+
+function isFatalError(error: unknown): boolean {
+  if (error instanceof Error) {
+    return error.message.includes("FATAL") ||
+           error.message.includes("database has been invalidated");
+  }
+  return false;
+}
+```
+
+**Fatal error scenarios:**
+- fsync failure during Parquet write
+- Out of memory during large operation
+- Corrupted database file
+- Connection lost during transaction
+
+**Recovery strategy:**
+1. Log the fatal error with full context
+2. Close the corrupted connection (don't repool)
+3. Create fresh connection
+4. Retry operation once
+5. If retry fails, bubble up error to caller
+
+#### Session Warmth
+
+Keep connections warm in watch mode to avoid cold-start latency:
+
+```typescript
+class WarmConnectionManager {
+  private pool: DuckDBPool;
+  private warmupInterval: NodeJS.Timeout | null = null;
+  
+  async startWarmup(): Promise<void> {
+    // Initial warmup - acquire and release to establish connection
+    const conn = await this.pool.acquire();
+    await conn.run("SELECT 1"); // Ensure connection is live
+    this.pool.release(conn);
+    
+    // Periodic warmup to keep connection alive
+    this.warmupInterval = setInterval(async () => {
+      const conn = await this.pool.acquire();
+      await conn.run("SELECT 1");
+      this.pool.release(conn);
+    }, 30000); // Every 30 seconds
+  }
+  
+  stopWarmup(): void {
+    if (this.warmupInterval) {
+      clearInterval(this.warmupInterval);
+      this.warmupInterval = null;
+    }
+  }
+}
+```
+
+#### Environment Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEVAC_DUCKDB_MEMORY` | `512MB` | Memory limit per connection |
+| `DEVAC_DUCKDB_THREADS` | `CPU count - 1` | Parallel threads |
+| `DEVAC_DUCKDB_POOL_SIZE` | `4` | Max pool connections |
+| `DEVAC_DUCKDB_TEMP_DIR` | System temp | Spill directory |
+
 ---
 
 ## 6. Parsing Pipeline
@@ -1314,6 +1492,468 @@ Phase 1-3 operate with `is_resolved = false` for all external refs. This is acce
 - Queries work without resolution
 - Validation can still detect type errors via TypeScript
 
+### 6.6 Analysis Orchestrator
+
+The AnalysisOrchestrator coordinates the analysis pipeline, connecting FileWatcher events to the parsing and writing subsystems. It provides the central control flow for both CLI mode and watch mode.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                             │
+│  ANALYSIS ORCHESTRATOR - Control Flow                                       │
+│  ────────────────────────────────────                                       │
+│                                                                             │
+│  CLI Mode (devac analyze):                                                  │
+│  ┌──────────────┐                                                           │
+│  │   CLI        │                                                           │
+│  │   invoke     │                                                           │
+│  └──────┬───────┘                                                           │
+│         ▼                                                                   │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                   │
+│  │   File       │ → │   Language   │ → │   Parser     │                   │
+│  │   Scanner    │    │   Router     │    │   (batched)  │                   │
+│  └──────────────┘    └──────────────┘    └──────┬───────┘                   │
+│                                                  ▼                          │
+│                                           ┌──────────────┐                   │
+│                                           │   Seed       │                   │
+│                                           │   Writer     │                   │
+│                                           └──────────────┘                   │
+│                                                                             │
+│  Watch Mode (devac watch):                                                  │
+│  ┌──────────────┐                                                           │
+│  │   File       │ (chokidar events)                                         │
+│  │   Watcher    │─────┐                                                     │
+│  └──────────────┘     │                                                     │
+│                       ▼                                                     │
+│              ┌──────────────────┐                                           │
+│              │   Debounce       │ (100ms settle)                            │
+│              │   Buffer         │                                           │
+│              └────────┬─────────┘                                           │
+│                       ▼                                                     │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                   │
+│  │   Batch      │ → │   Language   │ → │   Parser     │                   │
+│  │   Collector  │    │   Router     │    │   (parallel) │                   │
+│  └──────────────┘    └──────────────┘    └──────┬───────┘                   │
+│                                                  ▼                          │
+│                                           ┌──────────────┐                   │
+│                                           │   Seed       │                   │
+│                                           │   Writer     │                   │
+│                                           └──────┬───────┘                   │
+│                                                  │                          │
+│                                    (5s settle)   ▼                          │
+│                                           ┌──────────────┐                   │
+│                                           │   Semantic   │ (background)     │
+│                                           │   Resolver   │                   │
+│                                           └──────────────┘                   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Orchestrator Interface
+
+```typescript
+// src/analyzer/analysis-orchestrator.ts
+
+export interface AnalysisOrchestrator {
+  /**
+   * Analyze a single file (CLI or watch mode).
+   * Routes to appropriate parser, writes seeds atomically.
+   */
+  analyzeFile(event: FileChangeEvent): Promise<AnalysisResult>;
+  
+  /**
+   * Analyze all supported files in a package (CLI mode).
+   * Scans directory, batches by language, writes seeds.
+   */
+  analyzePackage(packagePath: string): Promise<PackageResult>;
+  
+  /**
+   * Analyze a batch of file changes (watch mode).
+   * Groups by package, processes in parallel where safe.
+   */
+  analyzeBatch(events: FileChangeEvent[]): Promise<BatchResult>;
+  
+  /**
+   * Trigger semantic resolution pass (Phase 4).
+   * Called after structural analysis settles.
+   */
+  resolveSemantics(packagePath: string): Promise<ResolutionResult>;
+  
+  /**
+   * Get current analysis status and progress.
+   */
+  getStatus(): OrchestratorStatus;
+}
+
+export interface FileChangeEvent {
+  type: "add" | "change" | "unlink";
+  filePath: string;
+  packagePath: string;
+  timestamp: number;
+}
+
+export interface AnalysisResult {
+  filePath: string;
+  success: boolean;
+  nodeCount: number;
+  edgeCount: number;
+  refCount: number;
+  parseTimeMs: number;
+  writeTimeMs: number;
+  error?: string;
+}
+
+export interface PackageResult {
+  packagePath: string;
+  filesAnalyzed: number;
+  filesSkipped: number;
+  filesFailed: number;
+  totalNodes: number;
+  totalEdges: number;
+  totalRefs: number;
+  totalTimeMs: number;
+  errors: Array<{ filePath: string; error: string }>;
+}
+
+export interface BatchResult {
+  events: FileChangeEvent[];
+  results: AnalysisResult[];
+  totalTimeMs: number;
+}
+
+export interface OrchestratorStatus {
+  mode: "idle" | "analyzing" | "resolving";
+  currentFile?: string;
+  progress?: {
+    completed: number;
+    total: number;
+    percentage: number;
+  };
+  lastError?: string;
+}
+```
+
+#### CLI Mode Implementation
+
+```typescript
+export function createCLIOrchestrator(
+  router: LanguageRouter,
+  writer: SeedWriter,
+  pool: DuckDBPool
+): AnalysisOrchestrator {
+  return {
+    async analyzePackage(packagePath: string): Promise<PackageResult> {
+      const startTime = Date.now();
+      const errors: Array<{ filePath: string; error: string }> = [];
+      
+      // 1. Scan for supported files
+      const files = await scanSupportedFiles(packagePath, router);
+      
+      // 2. Cleanup orphans before analysis (Section 8.5)
+      await cleanupOrphans(getSeedPath(packagePath));
+      
+      // 3. Process files in batches (limit concurrency for memory)
+      const BATCH_SIZE = 50;
+      let totalNodes = 0, totalEdges = 0, totalRefs = 0;
+      let filesAnalyzed = 0, filesFailed = 0;
+      
+      for (const batch of chunk(files, BATCH_SIZE)) {
+        const results = await Promise.all(
+          batch.map(file => this.analyzeFile({
+            type: "add",
+            filePath: file,
+            packagePath,
+            timestamp: Date.now()
+          }))
+        );
+        
+        for (const result of results) {
+          if (result.success) {
+            filesAnalyzed++;
+            totalNodes += result.nodeCount;
+            totalEdges += result.edgeCount;
+            totalRefs += result.refCount;
+          } else {
+            filesFailed++;
+            errors.push({ filePath: result.filePath, error: result.error! });
+          }
+        }
+      }
+      
+      return {
+        packagePath,
+        filesAnalyzed,
+        filesSkipped: files.length - filesAnalyzed - filesFailed,
+        filesFailed,
+        totalNodes,
+        totalEdges,
+        totalRefs,
+        totalTimeMs: Date.now() - startTime,
+        errors
+      };
+    },
+    
+    async analyzeFile(event: FileChangeEvent): Promise<AnalysisResult> {
+      const startTime = Date.now();
+      
+      // Get appropriate parser
+      const parser = router.getParser(event.filePath);
+      if (!parser) {
+        return {
+          filePath: event.filePath,
+          success: false,
+          nodeCount: 0, edgeCount: 0, refCount: 0,
+          parseTimeMs: 0, writeTimeMs: 0,
+          error: "No parser for file type"
+        };
+      }
+      
+      try {
+        // Parse file
+        const parseStart = Date.now();
+        const parseResult = await parser.parse(event.filePath);
+        const parseTimeMs = Date.now() - parseStart;
+        
+        // Write seeds (atomic)
+        const writeStart = Date.now();
+        if (event.type === "unlink") {
+          await writer.deleteFile(
+            getSeedPath(event.packagePath),
+            parseResult.sourceFileHash
+          );
+        } else {
+          await writer.updateFile(
+            getSeedPath(event.packagePath),
+            parseResult
+          );
+        }
+        const writeTimeMs = Date.now() - writeStart;
+        
+        return {
+          filePath: event.filePath,
+          success: true,
+          nodeCount: parseResult.nodes.length,
+          edgeCount: parseResult.edges.length,
+          refCount: parseResult.externalRefs.length,
+          parseTimeMs,
+          writeTimeMs
+        };
+      } catch (error) {
+        return {
+          filePath: event.filePath,
+          success: false,
+          nodeCount: 0, edgeCount: 0, refCount: 0,
+          parseTimeMs: Date.now() - startTime, writeTimeMs: 0,
+          error: error instanceof Error ? error.message : String(error)
+        };
+      }
+    },
+    
+    // ... other methods
+  };
+}
+```
+
+#### Watch Mode Implementation
+
+```typescript
+export function createWatchOrchestrator(
+  router: LanguageRouter,
+  writer: SeedWriter,
+  pool: DuckDBPool,
+  options: WatchOptions = {}
+): AnalysisOrchestrator & WatchController {
+  const {
+    debounceMs = 100,           // Batch collection window
+    semanticSettleMs = 5000,   // Wait before semantic resolution
+    maxConcurrency = 4          // Parallel parse limit
+  } = options;
+  
+  // Event buffer for debouncing
+  let pendingEvents: FileChangeEvent[] = [];
+  let debounceTimer: NodeJS.Timeout | null = null;
+  let semanticTimer: NodeJS.Timeout | null = null;
+  let dirtyPackages = new Set<string>();
+  
+  const processBatch = async () => {
+    if (pendingEvents.length === 0) return;
+    
+    const events = pendingEvents;
+    pendingEvents = [];
+    
+    // Group by package for efficient processing
+    const byPackage = groupBy(events, e => e.packagePath);
+    
+    for (const [packagePath, packageEvents] of Object.entries(byPackage)) {
+      // Process with concurrency limit
+      const results = await pMap(
+        packageEvents,
+        event => orchestrator.analyzeFile(event),
+        { concurrency: maxConcurrency }
+      );
+      
+      // Track packages needing semantic resolution
+      const hasChanges = results.some(r => r.success);
+      if (hasChanges) {
+        dirtyPackages.add(packagePath);
+        scheduleSemanticResolution();
+      }
+      
+      // Report progress
+      emitProgress(results);
+    }
+  };
+  
+  const scheduleSemanticResolution = () => {
+    // Cancel existing timer
+    if (semanticTimer) {
+      clearTimeout(semanticTimer);
+    }
+    
+    // Schedule after settle period (5s of no activity)
+    semanticTimer = setTimeout(async () => {
+      const packages = Array.from(dirtyPackages);
+      dirtyPackages.clear();
+      
+      for (const pkg of packages) {
+        await orchestrator.resolveSemantics(pkg);
+      }
+    }, semanticSettleMs);
+  };
+  
+  const orchestrator: AnalysisOrchestrator & WatchController = {
+    // ... analyzeFile, analyzeBatch from CLI implementation
+    
+    start(packagePath: string): void {
+      const watcher = chokidar.watch(packagePath, {
+        ignored: [/node_modules/, /\.devac/, /\.git/],
+        persistent: true,
+        ignoreInitial: true
+      });
+      
+      const handleEvent = (type: "add" | "change" | "unlink") => 
+        (filePath: string) => {
+          if (!router.getParser(filePath)) return; // Skip unsupported
+          
+          pendingEvents.push({
+            type,
+            filePath,
+            packagePath,
+            timestamp: Date.now()
+          });
+          
+          // Debounce: process after 100ms of no activity
+          if (debounceTimer) clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(processBatch, debounceMs);
+        };
+      
+      watcher
+        .on("add", handleEvent("add"))
+        .on("change", handleEvent("change"))
+        .on("unlink", handleEvent("unlink"));
+    },
+    
+    stop(): void {
+      // Cleanup timers and watcher
+      if (debounceTimer) clearTimeout(debounceTimer);
+      if (semanticTimer) clearTimeout(semanticTimer);
+      // ... close watcher
+    }
+  };
+  
+  return orchestrator;
+}
+```
+
+#### Error Aggregation and Reporting
+
+```typescript
+export interface ProgressReporter {
+  onFileStart(filePath: string): void;
+  onFileComplete(result: AnalysisResult): void;
+  onBatchComplete(results: BatchResult): void;
+  onError(error: OrchestratorError): void;
+  onSemanticStart(packagePath: string): void;
+  onSemanticComplete(result: ResolutionResult): void;
+}
+
+export interface OrchestratorError {
+  phase: "parse" | "write" | "resolve";
+  filePath?: string;
+  packagePath?: string;
+  error: Error;
+  recoverable: boolean;
+}
+
+// Error aggregation for batch reporting
+export function aggregateErrors(
+  results: AnalysisResult[]
+): AggregatedErrorReport {
+  const errors = results.filter(r => !r.success);
+  
+  // Group by error type for summary
+  const byType = groupBy(errors, r => classifyError(r.error!));
+  
+  return {
+    totalErrors: errors.length,
+    byType: Object.fromEntries(
+      Object.entries(byType).map(([type, errs]) => [
+        type,
+        { count: errs.length, examples: errs.slice(0, 3) }
+      ])
+    ),
+    recommendations: generateRecommendations(byType)
+  };
+}
+
+function classifyError(error: string): string {
+  if (error.includes("syntax")) return "parse_error";
+  if (error.includes("permission")) return "permission_error";
+  if (error.includes("ENOENT")) return "file_not_found";
+  if (error.includes("DuckDB")) return "database_error";
+  return "unknown";
+}
+```
+
+#### Semantic Resolution Trigger Strategy
+
+Semantic resolution (Pass 2) is triggered after structural analysis settles:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                             │
+│  SEMANTIC RESOLUTION TRIGGER - Watch Mode                                   │
+│  ────────────────────────────────────────                                   │
+│                                                                             │
+│  Time ──────────────────────────────────────────────────────────▶           │
+│                                                                             │
+│  File changes:  ○──○───○─────○──○                                           │
+│                                                                             │
+│  Debounce:         └──┴───┴─────┴──┴─▶ [100ms] ▶ Structural Parse          │
+│                                                                             │
+│  Semantic timer:                              ├─────[5s settle]─────▶       │
+│                                                                             │
+│  New change:                                        ○                       │
+│                                                                             │
+│  Timer reset:                                       ├─────[5s]─────▶       │
+│                                                                             │
+│  Semantic run:                                                    ▶ Run!   │
+│                                                                             │
+│  CLI Mode: Run semantic resolution immediately after structural pass       │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Why 5-second settle time for watch mode:**
+- Cross-package resolution is expensive (queries multiple packages)
+- Rapid file saves shouldn't trigger redundant resolution passes
+- IDE save-on-keystroke patterns would otherwise cause thrashing
+- User typically saves multiple files when making cross-cutting changes
+
+**CLI mode behavior:**
+- `devac analyze`: Run semantic resolution immediately after structural pass
+- `devac analyze --structural-only`: Skip semantic resolution entirely
+- `devac analyze --force`: Force re-resolution even if seeds exist
+
 ---
 
 ## 7. Query Patterns
@@ -1675,6 +2315,102 @@ async function withSeedLock<T>(
 - Released after write completes (success or failure)
 - Timeout after 30s to prevent deadlocks
 - Stale locks (process crash) detected via PID in lock file
+
+#### Startup Cleanup
+
+On startup, DevAC must clean orphan artifacts from previous interrupted operations. This ensures a clean state before any analysis begins.
+
+**Orphan artifacts to clean:**
+
+| Artifact | Pattern | Age Threshold | Action |
+|----------|---------|---------------|--------|
+| Temp Parquet files | `*.parquet.tmp` | >1 hour | Delete |
+| Orphan temp files | `*.tmp` (no matching final) | >1 hour | Delete |
+| Stale lock files | `.devac.lock` | PID not running | Delete |
+
+**Cleanup implementation:**
+
+```typescript
+interface CleanupResult {
+  tempFilesRemoved: number;
+  staleLockFilesRemoved: number;
+  errors: string[];
+}
+
+async function cleanupOrphans(seedPath: string): Promise<CleanupResult> {
+  const result: CleanupResult = {
+    tempFilesRemoved: 0,
+    staleLockFilesRemoved: 0,
+    errors: []
+  };
+  
+  // 1. Find all .tmp files
+  const tmpFiles = await glob(path.join(seedPath, "**/*.tmp"));
+  const oneHourAgo = Date.now() - (60 * 60 * 1000);
+  
+  for (const tmpFile of tmpFiles) {
+    try {
+      const stat = await fs.stat(tmpFile);
+      if (stat.mtimeMs < oneHourAgo) {
+        await fs.unlink(tmpFile);
+        result.tempFilesRemoved++;
+      }
+    } catch (error) {
+      result.errors.push(`Failed to clean ${tmpFile}: ${error}`);
+    }
+  }
+  
+  // 2. Check lock files for stale PIDs
+  const lockFiles = await glob(path.join(seedPath, "**/.devac.lock"));
+  
+  for (const lockFile of lockFiles) {
+    if (await isLockStale(lockFile)) {
+      await fs.unlink(lockFile);
+      result.staleLockFilesRemoved++;
+    }
+  }
+  
+  return result;
+}
+
+async function isLockStale(lockFile: string): Promise<boolean> {
+  try {
+    const content = await fs.readFile(lockFile, "utf-8");
+    const { pid, timestamp } = JSON.parse(content);
+    
+    // Check if PID is still running
+    try {
+      process.kill(pid, 0); // Signal 0 = check if process exists
+      return false; // Process still running, lock is valid
+    } catch {
+      return true; // Process not running, lock is stale
+    }
+  } catch {
+    // Can't read lock file - treat as stale
+    return true;
+  }
+}
+```
+
+**Lock file format:**
+
+```json
+{
+  "pid": 12345,
+  "timestamp": "2025-12-14T10:30:00Z",
+  "hostname": "developer-laptop"
+}
+```
+
+**When cleanup runs:**
+- On `devac analyze` start (before any processing)
+- On `devac watch` start (before watching begins)
+- On `devac verify` (as part of integrity checks)
+
+**Logging:**
+- Log cleaned files at DEBUG level
+- Log cleanup summary at INFO level if any files were cleaned
+- Log errors at WARN level (non-fatal, continue operation)
 
 ---
 
@@ -2259,20 +2995,66 @@ async function findSymbolAcrossRepos(name: string): Promise<Symbol[]> {
 
 ### 12.1 Target Performance
 
-> **Updated 2025-12-13:** Revised targets based on per-package-per-branch storage approach.
+> **Updated 2025-12-14:** Revised targets based on consolidated review feedback. These are **guidelines, not hard limits**. Real-world testing during Phase 1 will validate and refine these targets.
 
-| Operation | Target | Notes |
-|-----------|--------|-------|
-| Hash check (no changes) | <50ms | File content hash comparison |
-| Structural parse (TS) | <50ms | Per file, Babel-based |
-| Structural parse (Python) | <200ms | Per file, subprocess |
-| Package Parquet write | <100ms | All nodes/edges for package |
-| **Single file change** | **<300ms** | Hash + parse + merge + write |
-| **Batch changes (10 files)** | **<500ms** | Same as single (batch optimized) |
-| Package query | <100ms | Single branch, hive partition pruning |
-| Repo query (10 packages) | <200ms | Multiple package globs |
-| Cross-repo query (3 repos) | <600ms | Federated globs |
-| Cross-branch query | <150ms | Hive partitioning across branches |
+#### Performance Philosophy
+
+Performance targets serve as design guidelines during development. We accept that:
+1. Targets may need adjustment based on real-world testing
+2. Cold paths (first run, no cache) will be slower than warm paths
+3. Python parsing latency (200-500ms) is acceptable for now; optimize later if needed
+4. Base-branch edits may be slower than feature-branch edits (trade-off accepted)
+
+#### Target Performance Table
+
+| Operation | Target (p50) | Target (p95) | Notes |
+|-----------|--------------|--------------|-------|
+| Hash check (no changes) | <50ms | <100ms | File content hash comparison |
+| Structural parse (TS) | <50ms | <200ms | Per file, Babel-based. Large files with complex types take longer. |
+| Structural parse (Python) | <200ms | <500ms | Per file, subprocess. Without warm worker, expect 250-500ms. |
+| Package Parquet write | <100ms | <200ms | Size-dependent. Large packages take longer. |
+| **Single file change (warm)** | **<300ms** | **<500ms** | Hash + parse + merge + write. Warm DuckDB connection. |
+| **Single file change (cold)** | **<500ms** | **<800ms** | Includes DuckDB connection startup. |
+| **Batch changes (10 files)** | **<500ms** | **<800ms** | Requires parallelization. Sequential would exceed. |
+| Package query | <100ms | <200ms | Single branch, partition pruning |
+| Repo query (10 packages) | <200ms | <400ms | Multiple package globs |
+| Cross-repo query (3 repos) | <600ms | <1000ms | Federated globs, cold cache may exceed |
+| Cross-branch query | <150ms | <300ms | Hive partitioning across branches |
+
+#### Cold vs Warm Path Distinction
+
+| Path Type | Description | Expected Overhead |
+|-----------|-------------|-------------------|
+| **Cold** | First analysis, DuckDB connection startup, no cached metadata | +100-200ms |
+| **Warm** | DuckDB connection alive, Parquet metadata cached | Baseline |
+| **Hot** | Watch mode, everything in memory | -50ms from warm |
+
+#### Latency Budget Breakdown (Single File Change)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  SINGLE FILE CHANGE LATENCY BUDGET (Warm Path)                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  Read file + compute hash       :  5-10ms                                  │
+│  Compare with stored hash       :  5-10ms                                  │
+│  Parse with ts-morph/Babel      : 50-200ms (file size dependent)          │
+│  Load existing Parquet          : 20-50ms                                  │
+│  Merge nodes/edges              : 10-20ms                                  │
+│  Write new Parquet (ZSTD)       : 30-100ms                                 │
+│  fsync directory                : 10-30ms                                  │
+│  ─────────────────────────────────────────────────────────────────────────  │
+│  TOTAL (p50)                    : ~150-300ms                               │
+│  TOTAL (p95)                    : ~300-500ms                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Validation Strategy
+
+Performance targets will be validated during Phase 1:
+1. **Week 1:** Benchmark DuckDB write performance with ZSTD compression
+2. **Week 2:** Measure ts-morph parsing across file size distribution
+3. **Week 3:** End-to-end latency testing with realistic package sizes
+4. **Adjust targets** if real-world data differs significantly from estimates
 
 ### 12.2 Parquet Optimization
 

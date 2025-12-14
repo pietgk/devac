@@ -99,6 +99,9 @@ All three reviewers flagged these issues:
 **DECISION RECOMMENDATION:** 
 Accept higher latency for base-branch edits (300-500ms). The typical development workflow uses feature branches where delta storage keeps updates fast (<200ms). Document this trade-off explicitly in spec.
 
+Piet: Agree not an issue as normal development is in small branch updates as we prefer small pr's if there is a major large refactor the performance penalty is ok for now.
+
+
 ### 2.2 Semantic Resolution (Pass 2) Timing 🟡 MEDIUM
 
 | Reviewer | Position |
@@ -115,6 +118,8 @@ Accept higher latency for base-branch edits (300-500ms). The typical development
 **DECISION RECOMMENDATION:**
 Debounced background resolution with 5-second settle time. Resolution is non-blocking - structural queries work immediately, semantic queries use best-available resolution state.
 
+Piet: agree
+
 ### 2.3 Phase 1 Timeline Estimates 🟡 MEDIUM
 
 | Source | Estimate | Notes |
@@ -129,6 +134,8 @@ Debounced background resolution with 5-second settle time. Resolution is non-blo
 **DECISION RECOMMENDATION:** 
 Use 25 days as target. Entity ID format change touches many callsites, and DuckDB integration learning curve justifies buffer.
 
+Piet: Timeline is already very global and rough, so adding buffer is ok.
+
 ### 2.4 MCP Server Migration Path 🟡 MEDIUM
 
 | Reviewer | Position |
@@ -142,6 +149,8 @@ Clarify whether MCP direct-DuckDB query is Phase 5 deliverable or future enhance
 
 **DECISION RECOMMENDATION:**
 Keep as Phase 5 goal. Direct DuckDB queries from MCP unlock true AI-native experience.
+
+Piet: agree
 
 ---
 
@@ -174,6 +183,9 @@ All reviewers flagged these targets as optimistic:
 | Repo query (10 packages) | <200ms | ✅ **<200ms** (keep) | Realistic |
 | Cross-repo query (3 repos) | <600ms | ✅ **<600ms** (keep) | Realistic |
 
+Its ok to verify performance while testing anf base it on real world numbers, lets not over specify Performance at this stage and accept that we need to do real world testing to verify. lets state the targets as guidelines not hard limits.
+We are ok that we need to improve performance when it is a problem. we already have a reasonable speed context specified and the amount of python parsing should be low in normal usage as we only have a small aount of python code at the moment.
+
 ### 3.3 Risk Assessment Matrix
 
 | Risk | Likelihood | Impact | Mitigation |
@@ -184,6 +196,8 @@ All reviewers flagged these targets as optimistic:
 | Cross-repo edge staleness | Medium | Medium | Manual rebuild + background refresh |
 | Python parser latency | High | Low | Accept for now, optimize later |
 | Write amplification on main branch | Medium | Medium | Accept trade-off, document limitation |
+
+Piet: let state that these risk are currently acceptable and can be addresses when we have a real issue.
 
 ### 3.4 What's Missing in Spec 🔴
 
@@ -211,6 +225,8 @@ These MUST be addressed in the spec before implementation begins:
 | **C2** | Add DuckDB session lifecycle section | Spec | 2 hrs | Connection pooling, error recovery, fatal mode handling |
 | **C3** | Revise performance targets to realistic values | Spec | 1 hr | Use consensus from Section 3.2 |
 | **C4** | Add orphan temp file cleanup requirement | Spec | 1 hr | On startup, clean `.tmp` files from interrupted writes |
+
+Piet: lets address these critical issues before starting implementation to have a clear spec to work from.
 
 **Estimated Total: 4-6 hours of spec updates**
 
