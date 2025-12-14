@@ -1,76 +1,67 @@
-# DevAC Spec v2.0 Review
+# DevAC Specification v2.0 Review
 
 ## 1. Feasibility Assessment
 
-### Working Components
-*   **DuckDB + Parquet**: This is a highly feasible and performant choice. It eliminates the operational complexity of Neo4j and aligns well with the "file-based" philosophy.
-*   **Atomic Writes**: The `rename + fsync` pattern is the correct approach for data integrity without a transaction log.
-*   **Language Parsers**: Reusing the existing logic (ts-morph, python AST) but piping output to Parquet is a low-risk refactor.
+**Verdict: High Feasibility**
 
-### "Broken" Components
-*   **Neo4j**: Correctly identified as the bottleneck for this specific use case (point lookups vs. graph traversals).
-*   **NodeIndexCache**: Correctly identified as a symptom of the database mismatch. Removing it simplifies the architecture significantly.
+The specification accurately categorizes the system components:
+*   **Working Components:** The core language parsing logic (`ts-morph`, `python-parser`) is reusable. The file scanning infrastructure is solid.
+*   **"Broken" Components:** The diagnosis of Neo4j as an architectural mismatch is correct. Replacing the complex `StorageManager` and `Neo4jClient` with a stateless `SeedWriter` and DuckDB is a feasible and necessary simplification.
+*   **Technology Stack:** DuckDB and Parquet are mature, high-performance technologies well-suited for this "read-heavy, write-batch" workload.
 
-### Risks
-*   **Write Amplification**: Even with the "branch delta" optimization, changing a single file in the `base` set (e.g., if working directly on main) requires rewriting the entire package's `nodes.parquet`. For large packages (e.g., 500+ files), this could exceed the <200ms target.
-*   **Windows File Locking**: While `fs.rename` is atomic, DuckDB (or other readers) holding file locks on Windows could cause write failures during the rename step. This needs robust retry logic.
+**Risk:** The transition from `ts-morph` (which carries heavy type-checking overhead) to a "Babel fast path" for the structural pass (Phase 1) requires careful implementation. If the current `TypeScriptParser` is tightly coupled to `ts-morph`'s `Project` object, refactoring it to be purely AST-based for Pass 1 might be more work than estimated.
 
 ## 2. Architecture Review
 
-### Soundness
-*   **Two-Phase Parsing**: The separation of Structural (Pass 1) and Semantic (Pass 2) is architecturally sound and necessary for resolving cross-file dependencies.
-*   **Federation Model**: The 3-layer hierarchy (Package -> Repo -> Hub) is clean. It allows for "shared nothing" operation at the package level, which is great for scalability.
-*   **Entity IDs**: The shift to content-hash-based IDs (excluding branch) is a critical improvement. It ensures stable IDs across branches, enabling the delta storage strategy.
+**Verdict: Sound and Robust**
 
-### Component Boundaries
-*   **Clear**: The separation between `LanguageRouter`, `Parser`, and `SeedWriter` is well-defined.
-*   **Source-of-Truth**: The principle that "Source is Truth" and seeds are disposable/regenerable simplifies the system state management immensely.
+The **Two-Phase Parsing** architecture is the strongest part of this spec.
+1.  **Decoupling:** Separating "Structural" (Pass 1) from "Semantic" (Pass 2) allows for massive parallelism in Pass 1.
+2.  **Source is Truth:** Treating Parquet files as derived artifacts that can be blown away and regenerated eliminates the "state drift" bugs common in the v1.x Neo4j sync logic.
+3.  **Federation:** The "Three-Layer Federation Model" (Package -> Repo -> Hub) maps perfectly to how developers actually work (monorepos, polyrepos).
+
+**Critique:**
+*   **Branch Partitioning:** The move from "per-file parquet" (v2.0 original) to "per-package-per-branch" (v2.1) is architecturally superior for read performance but introduces the "write amplification" risk on the base branch. This is an acceptable trade-off, but the architecture relies heavily on the assumption that most edits happen on feature branches.
 
 ## 3. Implementation Phases
 
-### Ordering
-*   The ordering is logical. Phase 1 (Foundation) and Phase 2 (Incremental) are the correct prerequisites.
-*   **Phase 4 (Federation)** containing the Semantic Resolution logic is the right place, as resolution is inherently a cross-entity operation.
+**Verdict: Logical Ordering**
 
-### Dependencies
-*   **Critical Path**: Phase 1 -> Phase 2 -> Phase 4.
-*   **Parallelism**: Phase 3 (Python) and Phase 6 (C#) can indeed be parallelized as they are just plugins to the core architecture.
+The phases are correctly ordered to minimize risk.
+*   **Phase 1 (Foundation):** Rightly focuses on the storage layer (DuckDB/Parquet) and the primary language (TS). Without this, nothing else matters.
+*   **Phase 2 (Incremental):** Essential for DX. Doing this before adding more languages (Phase 3) is the correct prioritization.
+*   **Phase 4 (Federation):** Pushed to later. This is smart; get the single-repo experience right first.
+
+**Missing Dependency:** Phase 5 (Validation) relies on "Affected Detection". This logic needs to be robust. The spec implies this comes from querying the graph. This dependency is clear.
 
 ## 4. Performance Targets
 
-### Realistic?
-*   **<50ms Hash Check**: Realistic.
-*   **<300ms Single File Change**:
-    *   *Optimistic* for large packages if modifying `base`.
-    *   *Realistic* for `branch` delta updates (since the delta is small).
-    *   *Concern*: If the user is on `main` (base), every save triggers a full package rewrite. The spec might need a "working set" concept even for the base branch to avoid rewriting 50MB files on every keystroke.
-*   **Query Performance**: DuckDB is exceptionally fast; the <100ms query targets are likely achievable, provided the partition pruning works as expected.
+**Verdict: Aggressive but Plausible**
 
-## 5. Missing Pieces & Gaps
+*   **<300ms Single File Change (Feature Branch):** Realistic. Parsing one file (~50ms) + writing a small delta Parquet (~50ms) + overhead fits the budget.
+*   **Base Branch Edits:** The spec acknowledges the 300-500ms latency for base branch edits due to full package rewriting. This is the primary performance risk. If a "utils" package has 2,000 files, rewriting its `nodes.parquet` on every save might exceed 500ms.
+    *   *Mitigation:* The spec mentions "Adaptive Batch Sizing" in the current codebase. A similar logic might be needed here: if a package is >500 files, force it into "chunked" mode or warn the user? The spec doesn't explicitly handle "Huge Package" edge cases for the base branch write.
 
-### Error Handling
-*   **Partial Failures**: If a batch update fails halfway (e.g., `nodes.parquet` writes but `edges.parquet` fails), the package is in an inconsistent state. The spec relies on "Atomic Write" of individual files, but a "Package Update" involves multiple files.
-    *   *Recommendation*: Use a directory-swap pattern for the entire `seed/branch/` folder during updates, or accept eventual consistency where a subsequent run fixes it.
+## 5. Missing Pieces & Risks
 
-### Rollback/Recovery
-*   **Corruption**: The `devac clean` command is a blunt instrument. A more granular `devac repair` that checks checksums and regenerates only broken partitions would be better.
-
-### Concurrency
-*   **Reader/Writer Contention**: If a long-running query (e.g., from the MCP server) is reading the Parquet files while the CLI tries to update them, what happens?
-    *   *Linux/macOS*: Usually fine (unlink works on open files).
-    *   *Windows*: Will likely throw `EPERM`. The spec needs a specific strategy for Windows (e.g., retry with backoff).
-
-### "Base" Branch Definition
-*   The spec assumes a `base` vs `branch` structure. How does the system know what "base" is? Is it hardcoded to `main`/`master`? Does it read from git config? This needs to be explicit in the `LanguageRouter` or `FileScanner` config.
+1.  **Windows Support:** The spec explicitly excludes Windows file locking handling for Phase 1. While acceptable for a prototype, this is a major blocker for general adoption. The `rename` + `fsync` dance is notoriously flaky on Windows/NTFS.
+2.  **Concurrency:** The spec mentions `DuckDB` single-writer limitations. What happens if a user runs `devac analyze` in one terminal and `devac watch` in another? Or two VS Code windows open?
+    *   *Recommendation:* Implement a PID lock file (`.devac/lock`) early in Phase 1 to prevent concurrent writers to the same package seeds.
+3.  **Error Handling in Watch Mode:** If a file has a syntax error, the parser fails. Does the old seed remain? Is it marked as "error"? The spec mentions `StructuralParseResult` but doesn't detail how "broken code" is represented in the graph. (e.g., does a syntax error file disappear from the graph, breaking all references to it?)
 
 ## 6. Integration Points
 
-### FileWatcher -> LanguageRouter -> Parser
-*   This flow is well-specified. The use of `chokidar` with debouncing is standard.
+**Verdict: Well-Defined**
 
-### Semantic Resolution
-*   The connection between "Phase 1 Structural" and "Phase 4 Semantic" is the most complex integration point. The spec notes that `external_refs` are written in Phase 1 but resolved in Phase 4.
-*   *Gap*: When does Phase 4 run? Is it triggered automatically after Phase 1? Or is it lazy? The spec implies it's part of the pipeline, but for "Watch Mode", running full cross-repo resolution on every file save might be too heavy. It might need to be asynchronous/debounced.
+The interfaces are clear:
+*   `LanguageRouter` correctly abstracts the file extension mapping.
+*   `SeedWriter` abstracts the storage complexity.
+*   The `FileWatcher` integration is standard.
+
+**Refinement:** The connection between `FileWatcher` and `LanguageRouter` needs to be efficient. The watcher should only watch relevant extensions. The spec mentions `router.getSupportedExtensions()`, which covers this.
 
 ## Summary
-The v2.0 spec is a significant improvement over v1.x. The move to DuckDB/Parquet aligns perfectly with the tool's usage patterns. The primary risks are around **write performance on large packages** and **Windows file locking**, but these are manageable with careful implementation.
+
+This is a high-quality, well-thought-out specification. It addresses the fundamental flaws of the v1.x architecture (Neo4j complexity, sync issues) with a radical but sound "file-based database" approach. The risks are primarily in the low-level file I/O performance on the base branch and Windows compatibility, both of which are managed risks.
+
+**Recommendation:** Proceed with Phase 1 immediately.

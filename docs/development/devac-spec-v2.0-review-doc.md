@@ -1,9 +1,11 @@
 # DevAC/CodeGraph v2.0 - Comprehensive Review Documentation
 
-**Date:** 2025-12-13 (Updated)  
+**Date:** 2025-12-14 (Final)  
 **Purpose:** Enable decision-making for v2.1 spec or implementation  
 **Based On:** Consolidated review from Claude, GPT-4, and Gemini  
-**Status:** DECISION-READY
+**Status:** ✅ DECISION-READY - **GO WITH MODIFICATIONS**
+
+> **Companion Document:** See `devac-spec-v2.0-review-recap.md` for the consolidated review summary with prioritized action items.
 
 ---
 
@@ -18,6 +20,10 @@
 7. [Risk Assessment](#7-risk-assessment)
 8. [Decision Framework](#8-decision-framework)
 9. [Appendix: Detailed Fix Specifications](#9-appendix-detailed-fix-specifications)
+10. [Appendix A: Current Codebase Mapping](#appendix-a-current-codebase-mapping)
+11. [Appendix B: Performance Benchmarks](#appendix-b-performance-benchmarks-current-v1x)
+12. [Appendix C: Entity ID Migration Examples](#appendix-c-entity-id-migration-examples)
+13. [Appendix D: Quick Reference Cards](#appendix-d-quick-reference-cards)
 
 ---
 
@@ -806,3 +812,244 @@ The architecture is sound. The technology choice is validated. With the 4 CRITIC
 ---
 
 *End of Comprehensive Review Documentation*
+
+---
+
+## Appendix A: Current Codebase Mapping
+
+### A.1 Files to Keep (Portable to v2.0)
+
+| File | Location | Notes |
+|------|----------|-------|
+| TypeScript Parsers | `src/analyzer/parsers/*.ts` | Core parsing logic reusable via adapter |
+| Python Parser | `src/analyzer/python-parser.ts` | Subprocess model preserved |
+| Type Definitions | `src/analyzer/types.ts` | `AstNode`, `RelationshipInfo` definitions |
+| Parser Utils | `src/analyzer/parser-utils.ts` | `generateEntityId`, `generateInstanceId` |
+| File Scanner | `src/scanner/file-scanner.ts` | Directory scanning with ignore patterns |
+| File Watcher | `src/devac/services/codegraph/file-watcher.ts` | Chokidar-based watching |
+| Relationship Resolver | `src/analyzer/relationship-resolver.ts` | Pass 2 logic (evolves to SemanticResolver) |
+| Test Fixtures | `test-fixtures/`, `test_fixtures/` | Reusable test data |
+
+### A.2 Files to Replace
+
+| Current File | Replacement | Reason |
+|--------------|-------------|--------|
+| `src/database/neo4j-client.ts` | `src/seed/duckdb-client.ts` | Storage technology change |
+| `src/analyzer/storage-manager.ts` | `src/seed/seed-writer.ts` | Per-package Parquet writes |
+| `src/analyzer/analyzer-service.ts` | `src/seed/orchestrator.ts` | New coordination pattern |
+
+### A.3 Key Interface Transformations
+
+```typescript
+// CURRENT: src/analyzer/types.ts
+interface AstNode {
+  id: string;           // Instance ID: "func_0_parseData"
+  entityId: string;     // Format: file:<path>:<name>@<line>:<col>
+  kind: string;
+  name: string;
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  startColumn: number;
+  endColumn: number;
+  language: string;
+  properties?: Record<string, any>;
+  createdAt: string;
+}
+
+// v2.0: src/seed/types.ts (NEW)
+interface ParsedNode {
+  entityId: string;     // Format: <kind>:<package>/<module>.<name>
+  kind: string;
+  scopedName: string;   // NEW: Package-relative qualified name
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  language: string;
+  isExported?: boolean;
+  signature?: string;   // NEW: For overloaded functions
+  parseStatus?: 'success' | 'partial' | 'failed'; // NEW: Error tracking
+}
+
+// ADAPTER FUNCTION (Phase 1)
+function adaptAstNode(node: AstNode, context: AdaptContext): ParsedNode {
+  return {
+    entityId: generateScopedEntityId(node, context),
+    kind: node.kind,
+    scopedName: generateScopedName(node, context),
+    filePath: node.filePath,
+    startLine: node.startLine,
+    endLine: node.endLine,
+    language: node.language,
+    isExported: node.isExported ?? node.properties?.isExported,
+    parseStatus: 'success',
+  };
+}
+```
+
+### A.4 Current Data Flow (for reference)
+
+```
+src/cli/commands/analyze.ts (CLI entry)
+    │
+    └── AnalyzerService.analyze(directory)
+           │
+           ├── FileScanner.scan()           → FileInfo[]
+           │
+           ├── Parser.initializePackages()  → PackageInfo[]
+           │
+           ├── Parser.parseFiles(files)     → Pass 1
+           │   │
+           │   ├── ts-morph Project (for TS/JS)
+           │   ├── PythonAstParser (subprocess)
+           │   └── Tree-sitter parsers (Java, Go, C#, C++)
+           │
+           ├── Parser.collectResults()      → {allNodes, allRelationships}
+           │   │
+           │   └── Reads temp JSON files + in-memory TS results
+           │
+           ├── RelationshipResolver.resolveRelationships() → Pass 2
+           │   │
+           │   ├── resolveTsModules()
+           │   ├── resolveTsInheritance()
+           │   ├── resolveTsCrossFileInteractions()
+           │   ├── resolveImportRelationships()
+           │   └── derivePackageDependencies()
+           │
+           └── StorageManager.saveNodesBatch() / saveRelationshipsBatch()
+               │
+               └── Neo4j MERGE queries (to be replaced with SeedWriter)
+```
+
+---
+
+## Appendix B: Performance Benchmarks (Current v1.x)
+
+These benchmarks from current implementation inform v2.0 targets:
+
+| Repository | Files | Batch Size | Analysis Time | Nodes Extracted |
+|------------|-------|------------|---------------|-----------------|
+| CodeGraph (this repo) | 76 | 100 | ~3s | 1,537 |
+| frontend-monorepo | 945 | 100 | ~57s | 26,670 |
+| app | ~3K | 100 | ~2m | 140,563 |
+| monorepo-3.0 | 2,099* | 100 | ~5-10m** | TBD |
+
+\* After `.d.ts` filtering (was 180K+ total files)  
+\** Estimated based on file count
+
+**Key Insights:**
+- Per-file parsing averages 50-100ms for TypeScript
+- Batch size of 50-100 optimal for memory management
+- Neo4j writes add 30-50% overhead (target for removal)
+
+---
+
+## Appendix C: Entity ID Migration Examples
+
+### C.1 Standard Function
+
+```typescript
+// Source: /packages/auth/src/services/authService.ts
+
+export function validateToken(token: string): boolean { ... }
+
+// v1.x entityId (line-based):
+"function:/packages/auth/src/services/authService.ts:validateToken@15:0"
+
+// v2.0 entityId (scoped-name):
+"function:@auth/services/authService.validateToken"
+```
+
+### C.2 Class Method
+
+```typescript
+// Source: /packages/auth/src/services/authService.ts
+
+export class AuthService {
+  public async login(credentials: Credentials): Promise<User> { ... }
+}
+
+// v1.x entityId:
+"method:/packages/auth/src/services/authService.ts:login@25:2"
+
+// v2.0 entityId:
+"method:@auth/services/authService.AuthService.login"
+```
+
+### C.3 Anonymous Function
+
+```typescript
+// Source: /packages/utils/src/helpers.ts
+
+export const processItems = items.map(item => item.value);
+//                                    ^^^^^ anonymous
+
+// v1.x entityId:
+"function:/packages/utils/src/helpers.ts:<anonymous>@10:32"
+
+// v2.0 entityId:
+"function:@utils/helpers.processItems.<anon0>"
+```
+
+### C.4 Callback Parameter
+
+```typescript
+// Source: /packages/api/src/client.ts
+
+export function fetchData(onSuccess: (data: Data) => void) { ... }
+//                        ^^^^^^^^^ callback parameter
+
+// v1.x entityId:
+"parameter:/packages/api/src/client.ts:onSuccess@5:22"
+
+// v2.0 entityId:
+"parameter:@api/client.fetchData.onSuccess"
+```
+
+---
+
+## Appendix D: Quick Reference Cards
+
+### D.1 Command Quick Reference
+
+```bash
+# v1.x Commands (current)
+npm run analyze               # Full analysis to Neo4j
+npm run build && npm test     # Build and test
+
+# v2.0 Commands (proposed)
+devac analyze <path>          # Analyze to Parquet seeds
+devac watch <path>            # Watch mode with live updates
+devac query "<cypher>"        # Query via DuckDB
+devac verify                  # Validate seed integrity
+devac clean                   # Remove all seeds
+```
+
+### D.2 File Structure Quick Reference
+
+```
+# v1.x (current)
+analysis-data/temp/           # Temp JSON files during parsing
+src/analyzer/                 # Core analysis
+src/database/                 # Neo4j integration
+
+# v2.0 (proposed)
+.devac/seeds/<package>/       # Per-package Parquet files
+.devac/config.json            # Workspace configuration
+.devac/manifest.json          # Package registry
+src/seed/                     # New core module
+```
+
+### D.3 Error Handling Quick Reference
+
+```
+# v1.x Error Flow
+Parse error → Log warning → Continue
+Neo4j error → Throw → CLI exits with error
+
+# v2.0 Error Flow (with fixes)
+Parse error → Mark node with parseStatus='failed' → Continue
+Write error → Retry with backoff → Clean up temp → Log
+Lock conflict → Wait or fail fast → No corruption
+Shutdown signal → Complete current op → Clean up → Exit 0
+```
