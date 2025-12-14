@@ -20,7 +20,10 @@ export {
   generateEntityIdsForFile,
   deriveChildEntityId,
 } from "./entity-id-generator.js";
-export type { EntityIdComponents, ParsedEntityId } from "./entity-id-generator.js";
+export type {
+  EntityIdComponents,
+  ParsedEntityId,
+} from "./entity-id-generator.js";
 
 // Language router
 export {
@@ -30,3 +33,16 @@ export {
   resetDefaultRouter,
   DEFAULT_EXTENSION_MAP,
 } from "./language-router.js";
+
+// Analysis orchestrator
+export { createAnalysisOrchestrator } from "./analysis-orchestrator.js";
+export type {
+  AnalysisOrchestrator,
+  FileChangeEvent,
+  AnalysisResult,
+  PackageResult,
+  BatchResult,
+  ResolutionResult,
+  OrchestratorStatus,
+  OrchestratorOptions,
+} from "./analysis-orchestrator.js";

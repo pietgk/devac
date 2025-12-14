@@ -69,8 +69,20 @@ export {
   getDefaultRouter,
   resetDefaultRouter,
   DEFAULT_EXTENSION_MAP,
+  createAnalysisOrchestrator,
 } from "./analyzer/index.js";
-export type { EntityIdComponents, ParsedEntityId } from "./analyzer/index.js";
+export type {
+  EntityIdComponents,
+  ParsedEntityId,
+  AnalysisOrchestrator,
+  FileChangeEvent,
+  AnalysisResult,
+  PackageResult,
+  BatchResult,
+  ResolutionResult,
+  OrchestratorStatus,
+  OrchestratorOptions,
+} from "./analyzer/index.js";
 
 // Parsers
 export * from "./parsers/index.js";

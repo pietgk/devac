@@ -35,3 +35,9 @@ export type {
   SymbolInfo,
   SymbolKind,
 } from "./scoped-name-generator.js";
+
+// TypeScript/JavaScript parser
+export {
+  TypeScriptParser,
+  createTypeScriptParser,
+} from "./typescript-parser.js";

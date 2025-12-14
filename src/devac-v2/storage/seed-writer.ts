@@ -22,16 +22,7 @@ import {
   getSeedPaths,
   type SeedPaths,
 } from "../types/config.js";
-
-/**
- * Result of a structural parse operation
- */
-export interface StructuralParseResult {
-  nodes: ParsedNode[];
-  edges: ParsedEdge[];
-  externalRefs: ParsedExternalRef[];
-  fileHashes: Map<string, string>;
-}
+import type { StructuralParseResult } from "../parsers/parser-interface.js";
 
 /**
  * Write options
@@ -299,7 +290,7 @@ export class SeedWriter {
       nodesWritten: result.nodes.length,
       edgesWritten: result.edges.length,
       refsWritten: result.externalRefs.length,
-      filesProcessed: result.fileHashes.size,
+      filesProcessed: 1, // Single file per parse result
     };
   }
 
@@ -846,7 +837,7 @@ export class SeedWriter {
       nodesWritten,
       edgesWritten,
       refsWritten,
-      filesProcessed: result.fileHashes.size,
+      filesProcessed: 1, // Single file per parse result
     };
   }
 
