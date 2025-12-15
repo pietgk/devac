@@ -907,6 +907,9 @@ class ParserContext {
       is_generator: opts.isGenerator ?? false,
       source_file_hash: this.sourceFileHash,
       branch: this.config.branch,
+      properties: {
+        language: "typescript",
+      },
     });
   }
 

@@ -11,6 +11,7 @@ import * as path from "path";
 import { tmpdir } from "os";
 
 import { TypeScriptParser } from "../parsers/typescript-parser.js";
+import { PythonParser } from "../parsers/python-parser.js";
 import { DuckDBPool } from "../storage/duckdb-pool.js";
 import { SeedWriter } from "../storage/seed-writer.js";
 import { SeedReader } from "../storage/seed-reader.js";
@@ -18,6 +19,18 @@ import { DEFAULT_PARSER_CONFIG } from "../parsers/parser-interface.js";
 
 // Test fixtures path
 const FIXTURES_DIR = path.join(__dirname, "fixtures");
+
+// Helper to parse properties (may be string or object after Parquet round-trip)
+function parseProperties(props: unknown): Record<string, unknown> {
+  if (typeof props === "string") {
+    try {
+      return JSON.parse(props);
+    } catch {
+      return {};
+    }
+  }
+  return (props as Record<string, unknown>) ?? {};
+}
 
 describe("Integration: Parse → Write → Read Cycle", () => {
   let pool: DuckDBPool;
@@ -353,5 +366,333 @@ describe("Integration: Query Capabilities", () => {
 
     expect(result.rows.length).toBe(1);
     expect(Number(result.rows[0].count)).toBeGreaterThan(0);
+  });
+});
+
+describe("Integration: Python Parser", () => {
+  let pool: DuckDBPool;
+  let tempDir: string;
+
+  beforeEach(async () => {
+    pool = new DuckDBPool({ memoryLimit: "256MB" });
+    await pool.initialize();
+    tempDir = await fs.mkdtemp(path.join(tmpdir(), "devac-python-test-"));
+  });
+
+  afterEach(async () => {
+    await pool.shutdown();
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("parses a Python file and extracts nodes", async () => {
+    const parser = new PythonParser();
+    const filePath = path.join(FIXTURES_DIR, "sample-class.py");
+
+    const config = {
+      ...DEFAULT_PARSER_CONFIG,
+      repoName: "test-repo",
+      packagePath: "test-package",
+      branch: "main",
+    };
+
+    const result = await parser.parse(filePath, config);
+
+    // Should have parsed successfully
+    expect(result.nodes.length).toBeGreaterThan(0);
+    expect(result.filePath).toBe(filePath);
+    expect(result.sourceFileHash).toBeTruthy();
+
+    // Should have found key entities
+    const nodeNames = result.nodes.map((n) => n.name);
+    expect(nodeNames).toContain("UserService");
+    expect(nodeNames).toContain("BaseService");
+  });
+
+  it("parses Python classes with inheritance", async () => {
+    const parser = new PythonParser();
+    const filePath = path.join(FIXTURES_DIR, "sample-class.py");
+
+    const config = {
+      ...DEFAULT_PARSER_CONFIG,
+      repoName: "test-repo",
+      packagePath: "test-package",
+      branch: "main",
+    };
+
+    const result = await parser.parse(filePath, config);
+
+    // Find class nodes
+    const classNodes = result.nodes.filter((n) => n.kind === "class");
+    expect(classNodes.length).toBeGreaterThan(0);
+
+    // Find EXTENDS edges for inheritance
+    const extendsEdges = result.edges.filter((e) => e.edge_type === "EXTENDS");
+    expect(extendsEdges.length).toBeGreaterThan(0);
+  });
+
+  it("parses Python functions with type hints", async () => {
+    const parser = new PythonParser();
+    const filePath = path.join(FIXTURES_DIR, "sample-functions.py");
+
+    const config = {
+      ...DEFAULT_PARSER_CONFIG,
+      repoName: "test-repo",
+      packagePath: "test-package",
+      branch: "main",
+    };
+
+    const result = await parser.parse(filePath, config);
+
+    // Find function nodes
+    const functionNodes = result.nodes.filter((n) => n.kind === "function");
+    expect(functionNodes.length).toBeGreaterThan(0);
+
+    // Find the 'add' function with return type (stored in type_signature)
+    const addFunc = functionNodes.find((n) => n.name === "add");
+    expect(addFunc).toBeTruthy();
+    expect(addFunc?.type_signature).toBe("int");
+  });
+
+  it("extracts Python imports as external references", async () => {
+    const parser = new PythonParser();
+    const filePath = path.join(FIXTURES_DIR, "sample-imports.py");
+
+    const config = {
+      ...DEFAULT_PARSER_CONFIG,
+      repoName: "test-repo",
+      packagePath: "test-package",
+      branch: "main",
+    };
+
+    const result = await parser.parse(filePath, config);
+
+    // Should have external references
+    expect(result.externalRefs.length).toBeGreaterThan(0);
+
+    // Check for specific imports
+    const moduleSpecs = result.externalRefs.map((r) => r.module_specifier);
+    expect(moduleSpecs).toContain("os");
+    expect(moduleSpecs).toContain("typing");
+  });
+
+  it("writes Python parse results to Parquet and reads back", async () => {
+    const parser = new PythonParser();
+    const filePath = path.join(FIXTURES_DIR, "sample-class.py");
+
+    const config = {
+      ...DEFAULT_PARSER_CONFIG,
+      repoName: "test-repo",
+      packagePath: tempDir,
+      branch: "main",
+    };
+
+    const parseResult = await parser.parse(filePath, config);
+
+    // Write to seeds
+    const writer = new SeedWriter(pool, tempDir);
+    const writeResult = await writer.writeFile(parseResult);
+
+    expect(writeResult.success).toBe(true);
+    expect(writeResult.nodesWritten).toBeGreaterThan(0);
+
+    // Read back from seeds
+    const reader = new SeedReader(pool, tempDir);
+    const nodesResult = await reader.readNodes();
+
+    // Should have same number of nodes
+    expect(nodesResult.rows.length).toBe(parseResult.nodes.length);
+
+    // Check Python-specific node exists
+    const userServiceNode = nodesResult.rows.find(
+      (n) => n.name === "UserService",
+    );
+    expect(userServiceNode).toBeTruthy();
+    expect(userServiceNode?.kind).toBe("class");
+    // Language is stored in properties JSON field
+    const props = parseProperties(userServiceNode?.properties);
+    expect(props.language).toBe("python");
+  });
+
+  it("handles async Python functions", async () => {
+    const parser = new PythonParser();
+    const filePath = path.join(FIXTURES_DIR, "sample-functions.py");
+
+    const config = {
+      ...DEFAULT_PARSER_CONFIG,
+      repoName: "test-repo",
+      packagePath: "test-package",
+      branch: "main",
+    };
+
+    const result = await parser.parse(filePath, config);
+
+    // Find async function
+    const asyncFunc = result.nodes.find(
+      (n) => n.kind === "function" && n.name === "fetch_data",
+    );
+    expect(asyncFunc).toBeTruthy();
+    expect(asyncFunc?.is_async).toBe(true);
+  });
+
+  it("handles Python methods with decorators", async () => {
+    const parser = new PythonParser();
+    const filePath = path.join(FIXTURES_DIR, "sample-class.py");
+
+    const config = {
+      ...DEFAULT_PARSER_CONFIG,
+      repoName: "test-repo",
+      packagePath: "test-package",
+      branch: "main",
+    };
+
+    const result = await parser.parse(filePath, config);
+
+    // Find methods marked as static or property (decorator info stored in properties)
+    const staticMethods = result.nodes.filter(
+      (n) => n.kind === "method" && n.is_static === true,
+    );
+    expect(staticMethods.length).toBeGreaterThan(0);
+  });
+});
+
+describe("Integration: Mixed TypeScript/Python Package", () => {
+  let pool: DuckDBPool;
+  let tempDir: string;
+
+  beforeEach(async () => {
+    pool = new DuckDBPool({ memoryLimit: "256MB" });
+    await pool.initialize();
+    tempDir = await fs.mkdtemp(path.join(tmpdir(), "devac-mixed-test-"));
+  });
+
+  afterEach(async () => {
+    await pool.shutdown();
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("parses and stores both TypeScript and Python files", async () => {
+    const tsParser = new TypeScriptParser();
+    const pyParser = new PythonParser();
+
+    const config = {
+      ...DEFAULT_PARSER_CONFIG,
+      repoName: "test-repo",
+      packagePath: tempDir,
+      branch: "main",
+    };
+
+    // Parse TypeScript file
+    const tsResult = await tsParser.parse(
+      path.join(FIXTURES_DIR, "sample-class.ts"),
+      config,
+    );
+
+    // Parse Python file
+    const pyResult = await pyParser.parse(
+      path.join(FIXTURES_DIR, "sample-class.py"),
+      config,
+    );
+
+    // Write both to seeds
+    const writer = new SeedWriter(pool, tempDir);
+    await writer.writeFile(tsResult);
+    await writer.writeFile(pyResult);
+
+    // Read back all nodes
+    const reader = new SeedReader(pool, tempDir);
+    const nodesResult = await reader.readNodes();
+
+    // Should have nodes from both languages (language stored in properties)
+    const tsNodes = nodesResult.rows.filter((n) => {
+      const props = parseProperties(n.properties);
+      return props.language === "typescript";
+    });
+    const pyNodes = nodesResult.rows.filter((n) => {
+      const props = parseProperties(n.properties);
+      return props.language === "python";
+    });
+
+    expect(tsNodes.length).toBeGreaterThan(0);
+    expect(pyNodes.length).toBeGreaterThan(0);
+
+    // Total should be sum of both
+    expect(nodesResult.rows.length).toBe(
+      tsResult.nodes.length + pyResult.nodes.length,
+    );
+  });
+
+  it("maintains unique entity IDs across languages", async () => {
+    const tsParser = new TypeScriptParser();
+    const pyParser = new PythonParser();
+
+    const config = {
+      ...DEFAULT_PARSER_CONFIG,
+      repoName: "test-repo",
+      packagePath: "test-package",
+      branch: "main",
+    };
+
+    const tsResult = await tsParser.parse(
+      path.join(FIXTURES_DIR, "sample-class.ts"),
+      config,
+    );
+
+    const pyResult = await pyParser.parse(
+      path.join(FIXTURES_DIR, "sample-class.py"),
+      config,
+    );
+
+    // All entity IDs should be unique across both results
+    const allIds = [
+      ...tsResult.nodes.map((n) => n.entity_id),
+      ...pyResult.nodes.map((n) => n.entity_id),
+    ];
+
+    const uniqueIds = new Set(allIds);
+    expect(uniqueIds.size).toBe(allIds.length);
+  });
+
+  it("can query nodes by language", async () => {
+    const tsParser = new TypeScriptParser();
+    const pyParser = new PythonParser();
+
+    const config = {
+      ...DEFAULT_PARSER_CONFIG,
+      repoName: "test-repo",
+      packagePath: tempDir,
+      branch: "main",
+    };
+
+    // Parse and write both files
+    const tsResult = await tsParser.parse(
+      path.join(FIXTURES_DIR, "sample-class.ts"),
+      config,
+    );
+    const pyResult = await pyParser.parse(
+      path.join(FIXTURES_DIR, "sample-class.py"),
+      config,
+    );
+
+    const writer = new SeedWriter(pool, tempDir);
+    await writer.writeFile(tsResult);
+    await writer.writeFile(pyResult);
+
+    // Query nodes and filter by language
+    const reader = new SeedReader(pool, tempDir);
+    const nodesResult = await reader.readNodes();
+
+    // Filter Python classes (language stored in properties)
+    const pythonClasses = nodesResult.rows.filter((n) => {
+      const props = parseProperties(n.properties);
+      return props.language === "python" && n.kind === "class";
+    });
+    expect(pythonClasses.length).toBeGreaterThan(0);
+
+    // Filter TypeScript classes
+    const tsClasses = nodesResult.rows.filter((n) => {
+      const props = parseProperties(n.properties);
+      return props.language === "typescript" && n.kind === "class";
+    });
+    expect(tsClasses.length).toBeGreaterThan(0);
   });
 });

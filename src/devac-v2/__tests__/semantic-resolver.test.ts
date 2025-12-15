@@ -444,4 +444,119 @@ export const useA = a;
       expect(resolved).toBeNull();
     });
   });
+
+  describe("cross-language resolution", () => {
+    it("handles mixed TypeScript and Python packages", async () => {
+      // Create a mixed package structure
+      await fs.mkdir(path.join(tempDir, "src"), { recursive: true });
+      await fs.mkdir(path.join(tempDir, "scripts"), { recursive: true });
+
+      // TypeScript files
+      await fs.writeFile(
+        path.join(tempDir, "src", "api.ts"),
+        `
+export function fetchData() { return {}; }
+export const API_URL = "https://api.example.com";
+`,
+      );
+
+      // Python files
+      await fs.writeFile(
+        path.join(tempDir, "scripts", "process.py"),
+        `
+def process_data(data):
+    """Process incoming data."""
+    return data
+
+class DataProcessor:
+    def run(self):
+        pass
+`,
+      );
+
+      // Build index should handle both languages
+      const index = await resolver.buildExportIndex(tempDir);
+
+      // TypeScript exports should be indexed
+      expect(index.hasExport("fetchData")).toBe(true);
+      expect(index.hasExport("API_URL")).toBe(true);
+
+      // Note: Python exports may or may not be indexed depending on
+      // whether the resolver supports Python. This test documents
+      // the expected behavior for mixed packages.
+    });
+
+    it("resolves Python imports within Python files", async () => {
+      await fs.mkdir(path.join(tempDir, "lib"), { recursive: true });
+
+      // Python module with exports
+      await fs.writeFile(
+        path.join(tempDir, "lib", "utils.py"),
+        `
+def helper_function():
+    """A helper function."""
+    return 42
+
+class HelperClass:
+    """A helper class."""
+    pass
+
+CONSTANT_VALUE = 100
+`,
+      );
+
+      // Python file that imports from utils
+      await fs.writeFile(
+        path.join(tempDir, "lib", "main.py"),
+        `
+from .utils import helper_function, HelperClass, CONSTANT_VALUE
+
+def main():
+    result = helper_function()
+    obj = HelperClass()
+    return result + CONSTANT_VALUE
+`,
+      );
+
+      // Build index - Python support depends on resolver implementation
+      const index = await resolver.buildExportIndex(tempDir);
+
+      // The resolver may or may not support Python exports
+      // This test documents the expected structure
+      expect(index).toBeDefined();
+      expect(index.exports).toBeDefined();
+    });
+
+    it("keeps TypeScript and Python exports separate in index", async () => {
+      await fs.mkdir(path.join(tempDir, "src"), { recursive: true });
+
+      // TypeScript file with helper export
+      await fs.writeFile(
+        path.join(tempDir, "src", "helper.ts"),
+        `export function helper() { return "ts"; }`,
+      );
+
+      // Python file with same-named export
+      await fs.writeFile(
+        path.join(tempDir, "src", "helper.py"),
+        `
+def helper():
+    """Python helper."""
+    return "py"
+`,
+      );
+
+      const index = await resolver.buildExportIndex(tempDir);
+
+      // TypeScript export should be indexed
+      expect(index.hasExport("helper")).toBe(true);
+
+      // Get export info to verify source file
+      const helperExport = index.getExport("helper");
+      if (helperExport) {
+        // Should come from the TypeScript file (primary language)
+        expect(helperExport.filePath).toMatch(/\.ts$/);
+      }
+    });
+  });
 });

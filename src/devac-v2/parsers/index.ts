@@ -41,3 +41,6 @@ export {
   TypeScriptParser,
   createTypeScriptParser,
 } from "./typescript-parser.js";
+
+// Python parser
+export { PythonParser, createPythonParser } from "./python-parser.js";
