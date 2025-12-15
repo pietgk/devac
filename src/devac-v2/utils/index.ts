@@ -43,3 +43,12 @@ export {
   verifySeedStructure,
 } from "./cleanup.js";
 export type { CleanupOptions, CleanupResult } from "./cleanup.js";
+
+// Logger utilities
+export {
+  createLogger,
+  setGlobalLogLevel,
+  getGlobalLogLevel,
+  logger,
+} from "./logger.js";
+export type { Logger, LogLevel, LoggerOptions } from "./logger.js";

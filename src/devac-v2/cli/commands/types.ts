@@ -107,3 +107,72 @@ export interface CleanResult {
   bytesFreed: number;
   error?: string;
 }
+
+/**
+ * Options for watch command
+ */
+export interface WatchOptions {
+  /** Path to the package to watch */
+  packagePath: string;
+  /** Repository name for entity ID generation */
+  repoName: string;
+  /** Git branch name */
+  branch?: string;
+  /** Debounce time in ms (default: 100) */
+  debounceMs?: number;
+  /** Force initial analysis even if seeds exist */
+  force?: boolean;
+  /** Enable verbose output */
+  verbose?: boolean;
+  /** Enable debug output */
+  debug?: boolean;
+}
+
+/**
+ * Result from watch command when stopped
+ */
+export interface WatchResult {
+  success: boolean;
+  filesWatched: number;
+  eventsProcessed: number;
+  exitReason: "signal" | "error" | "manual";
+  error?: string;
+}
+
+/**
+ * Watch status information
+ */
+export interface WatchStatus {
+  isWatching: boolean;
+  initialAnalysisComplete: boolean;
+  initialAnalysisSkipped: boolean;
+  filesAnalyzed: number;
+  changesProcessed: number;
+  errors: number;
+  error?: string;
+}
+
+/**
+ * File change event from watch
+ */
+export interface WatchChangeEvent {
+  type: "add" | "change" | "unlink";
+  filePath: string;
+  timestamp: number;
+}
+
+/**
+ * Watch controller interface
+ */
+export interface WatchController {
+  /** Stop watching */
+  stop(options?: { flush?: boolean }): Promise<WatchResult>;
+  /** Get current status */
+  getStatus(): WatchStatus;
+  /** Get options */
+  getOptions(): Required<WatchOptions>;
+  /** Register event handler */
+  on(event: "change", handler: (event: WatchChangeEvent) => void): void;
+  /** Remove event handler */
+  off(event: "change", handler: (event: WatchChangeEvent) => void): void;
+}

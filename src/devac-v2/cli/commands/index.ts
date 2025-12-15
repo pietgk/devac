@@ -8,6 +8,7 @@ export { analyzeCommand } from "./analyze.js";
 export { queryCommand } from "./query.js";
 export { verifyCommand } from "./verify.js";
 export { cleanCommand } from "./clean.js";
+export { watchCommand } from "./watch.js";
 
 export type {
   AnalyzeOptions,
@@ -18,4 +19,9 @@ export type {
   VerifyResult,
   CleanOptions,
   CleanResult,
+  WatchOptions,
+  WatchResult,
+  WatchStatus,
+  WatchChangeEvent,
+  WatchController,
 } from "./types.js";
